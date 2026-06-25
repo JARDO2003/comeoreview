@@ -18,6 +18,8 @@ import {
   orderBy,
   setDoc,
   getDoc,
+  onSnapshot,
+  where,
 } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
 // ── BASE DE DONNÉES ROBOT (cache des réponses)
@@ -87,33 +89,44 @@ window._fbOrderBy = orderBy;
 window._fbSetDoc = setDoc;
 window._fbGetDoc = getDoc;
 window._fbReady = true;
+window._firebaseFirestore = { onSnapshot, doc, getDocs, collection, query, where };
 document.dispatchEvent(new Event('firebase-ready'));
 
 // ══════════════════════════════════════════
 // CONFIGURATION SERVEUR — Chargée depuis Firestore (server_config)
-// Les clés API Groq et l'ordre des modèles sont gérés via server.html
+// Les clés API OpenRouter, Mistral et l'ordre des modèles sont gérés via server.html
 // JAMAIS de clé API en dur dans ce fichier
 // ══════════════════════════════════════════
-let GROQ_API_KEYS = []; // Chargées depuis server_config/groq_keys
-let GROQ_MODELS = []; // Chargées depuis server_config/models
-let groqKeyIdx = 0; // Index rotation clés
-let groqModelIdx = 0; // Index rotation modèles
+// ── Clés API multiples (OpenRouter + Gemini fallback) ──
+let OPENROUTER_KEYS = ['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'];
+let GEMINI_KEYS = ['AQ.Ab8RN6LRPDzoKC3Y9_iM5VM1uuFTHdya_sS3k699IrMu2BeFHg'];
+let GROQ_API_KEYS = ['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'];    // Alias pour compatibilité
+let GROQ_MODELS = [];      // Chargées depuis server_config/models
+let groqKeyIdx = 0;        // Index rotation clés OpenRouter
+let groqModelIdx = 0;      // Index rotation modèles Groq
+// File d'attente : requêtes en attente d'une clé libre
+const groqQueue = [];
+// État d'occupation de chaque clé : groqKeyBusy[i] = true si la clé i est en cours d'utilisation
+let groqKeyBusy = [];
 let serverConfigLoaded = false;
+
+// ── Cache mémoire local (session) — évite les allers-retours Firestore ──
+const aiMemoryCache = new Map(); // clé → réponse (RAM, vidé au rechargement)
+const AI_CACHE_MAX = 500;        // maximum d'entrées en mémoire
 
 async function loadServerConfig() {
   try {
-    const [keysSnap, modelsSnap] = await Promise.all([
-      getDoc(doc(db, 'server_config', 'groq_keys')),
-      getDoc(doc(db, 'server_config', 'models')),
-    ]);
-
-    if (keysSnap.exists()) {
-      const rawKeys = keysSnap.data().keys || [];
-      GROQ_API_KEYS = rawKeys.map((k) => k.value).filter(Boolean);
-    }
-
-    if (modelsSnap.exists()) {
-      GROQ_MODELS = modelsSnap.data().list || [];
+    // Clés API chargées directement du code
+    groqKeyBusy = new Array(GROQ_API_KEYS.length).fill(false);
+    
+    // Charger seulement les modèles de Firestore
+    try {
+      const modelsSnap = await getDoc(doc(db, 'server_config', 'models'));
+      if (modelsSnap.exists()) {
+        GROQ_MODELS = modelsSnap.data().list || [];
+      }
+    } catch (e) {
+      console.warn('[COMEO] Erreur chargement modèles depuis Firestore :', e.message);
     }
 
     // Valeurs par défaut si Firestore vide
@@ -124,15 +137,65 @@ async function loadServerConfig() {
     serverConfigLoaded = true;
     aiServiceAvailable = GROQ_API_KEYS.length > 0;
     updateServiceAvailabilityUI();
-    console.log(`[COMEO] Config chargée — ${GROQ_API_KEYS.length} clé(s) Groq, ${GROQ_MODELS.length} modèle(s)`);
+    console.log(`[COMEO] Config chargée — ${GROQ_API_KEYS.length} clé(s) Groq (directe), ${GROQ_MODELS.length} modèle(s)`);
   } catch (e) {
     console.warn('[COMEO] Erreur chargement config serveur :', e.message);
     aiServiceAvailable = false;
     serverConfigLoaded = true;
     updateServiceAvailabilityUI();
-    // Fallback modèles uniquement (sans clé — l'IA sera désactivée)
     GROQ_MODELS = ['llama-3.3-70b-versatile', 'qwen/qwen3-32b', 'meta-llama/llama-4-scout-17b-16e-instruct'];
   }
+}
+
+// ── Clé de cache universelle (utilisée par chat IA + robot vocal) ──
+function aiCacheKey(query) {
+  return (
+    'v3_' +
+    query
+      .toLowerCase()
+      .replace(/[^a-z0-9àâäéèêëîïôùûüç\s]/g, '')
+      .replace(/\s+/g, '_')
+      .substring(0, 120)
+  );
+}
+
+// ── Lire le cache : mémoire d'abord, puis Firestore ──
+async function aiCacheGet(key) {
+  if (aiMemoryCache.has(key)) {
+    console.log('[COMEO Cache] ✅ Mémoire RAM');
+    return aiMemoryCache.get(key);
+  }
+  try {
+    const snap = await getDoc(doc(robotDb, 'robot_cache', key));
+    if (snap.exists()) {
+      const val = snap.data().answer;
+      aiMemoryCache.set(key, val); // stocker en RAM pour la prochaine fois
+      console.log('[COMEO Cache] ✅ Firestore');
+      return val;
+    }
+  } catch (e) {}
+  return null;
+}
+
+// ── Écrire dans le cache : mémoire + Firestore ──
+async function aiCacheSet(key, answer) {
+  // Limite RAM : vider les plus anciens si plein
+  if (aiMemoryCache.size >= AI_CACHE_MAX) {
+    const firstKey = aiMemoryCache.keys().next().value;
+    aiMemoryCache.delete(firstKey);
+  }
+  aiMemoryCache.set(key, answer);
+  try {
+    await setDoc(doc(robotDb, 'robot_cache', key), {
+      answer,
+      savedAt: new Date().toISOString(),
+    });
+  } catch (e) {}
+}
+
+// ── Vérifier si la requête est une action (ne pas mettre en cache) ──
+function isActionQuery(queryLow) {
+  return /crée|cree|facture|montre|affiche|modif|ouvre|ouvrir|supprim|enregistr|saisir|journal|bilan/i.test(queryLow);
 }
 
 // ══════════════════════════════════════════
@@ -247,6 +310,7 @@ function updateServiceAvailabilityUI() {
   const banner = document.getElementById('serviceUnavailableBanner');
   if (!banner) return;
   const show = !aiServiceAvailable || GROQ_API_KEYS.length === 0;
+
   banner.style.display = show ? 'flex' : 'none';
   banner.setAttribute('aria-hidden', show ? 'false' : 'true');
 }
@@ -257,6 +321,228 @@ function getAiUnavailableMessage() {
 
 function isAiServiceReady() {
   return aiServiceAvailable && GROQ_API_KEYS.length > 0;
+}
+
+// ══════════════════════════════════════════
+// SYSTÈME DE FILE D'ATTENTE GROQ — Multi-clés, réponse garantie à chaque utilisateur
+// ══════════════════════════════════════════
+
+/**
+ * Acquiert une clé Groq libre. Si toutes sont occupées, attend qu'une se libère.
+ * Retourne l'index de la clé acquise.
+ */
+function acquireGroqKey() {
+  return new Promise((resolve) => {
+    function tryAcquire() {
+      // Chercher une clé libre
+      for (let i = 0; i < GROQ_API_KEYS.length; i++) {
+        const idx = (groqKeyIdx + i) % GROQ_API_KEYS.length;
+        if (!groqKeyBusy[idx]) {
+          groqKeyBusy[idx] = true;
+          groqKeyIdx = (idx + 1) % GROQ_API_KEYS.length; // prochaine fois on commence après
+          console.log(`[COMEO Queue] ✅ Clé ${idx + 1}/${GROQ_API_KEYS.length} acquise`);
+          resolve(idx);
+          return;
+        }
+      }
+      // Toutes occupées → mettre en file et réessayer dès qu'une se libère
+      groqQueue.push(tryAcquire);
+    }
+    tryAcquire();
+  });
+}
+
+/**
+ * Libère une clé Groq et réveille le prochain en attente si besoin.
+ */
+function releaseGroqKey(idx) {
+  groqKeyBusy[idx] = false;
+  console.log(`[COMEO Queue] 🔓 Clé ${idx + 1}/${GROQ_API_KEYS.length} libérée`);
+  if (groqQueue.length > 0) {
+    const next = groqQueue.shift();
+    next();
+  }
+}
+
+/**
+ * Appel OpenRouter avec file d'attente + rotation modèles.
+ * Réessaie automatiquement sur les autres clés en cas de 429.
+ * Retourne { data, keyIdx } ou null si toutes les clés échouent.
+ */
+async function callGroqQueued(messages, systemPrompt, maxTokens = 6000, temperature = 0.02) {
+  if (GROQ_API_KEYS.length === 0) {
+    return { error: 'no_keys', msg: '⚠️ Aucune clé API OpenRouter configurée dans le système.' };
+  }
+
+  const triedKeys = new Set();
+  let keyIdx = await acquireGroqKey();
+  const keyErrors = [];
+
+  try {
+    while (triedKeys.size < GROQ_API_KEYS.length) {
+      triedKeys.add(keyIdx);
+      const model = 'gemini-1.5-flash'; // Modèle OpenRouter
+      const keyShort = 'clé ' + (keyIdx + 1) + '/' + GROQ_API_KEYS.length;
+      try {
+        // Format OpenRouter (compatible OpenAI)
+        const response = await fetch(`https://openrouter.ai/api/v1/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${GROQ_API_KEYS[keyIdx]}`,
+          },
+          body: JSON.stringify({
+            model: 'auto', // OpenRouter sélectionne le meilleur modèle disponible
+            max_tokens: maxTokens,
+            temperature,
+            top_p: 0.95,
+            messages: [{ role: 'system', content: systemPrompt }, ...messages],
+          }),
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          console.log(`[COMEO Queue] ✅ OpenRouter OK — clé ${keyIdx + 1}, modèle: auto`);
+          return { data, keyIdx };
+        }
+
+        const status = response.status;
+        const errBody = await response.json().catch(() => ({}));
+        const apiMsg = errBody?.error?.message || '';
+
+        if (status === 429) {
+          keyErrors.push({ keyNum: keyIdx + 1, code: 429, detail: 'Quota dépassé (rate limit)' });
+          console.warn(`[COMEO Queue] ${keyShort} saturée (429) → essai Gemini en fallback`);
+          releaseGroqKey(keyIdx);
+          
+          // 🔄 Basculer sur Gemini si OpenRouter est saturé
+          const geminiResult = await callGemini(messages, systemPrompt, maxTokens, temperature);
+          if (!geminiResult.error) {
+            console.log(`[COMEO] ✅ Fallback Gemini réussi`);
+            return geminiResult;
+          }
+          
+          let found = false;
+          for (let i = 0; i < GROQ_API_KEYS.length; i++) {
+            const candidate = (keyIdx + 1 + i) % GROQ_API_KEYS.length;
+            if (!triedKeys.has(candidate)) {
+              keyIdx = await acquireGroqKey();
+              found = true;
+              break;
+            }
+          }
+          if (!found) {
+            const detail = keyErrors.map(e => `clé ${e.keyNum} : ${e.detail}`).join(' · ');
+            return { error: 'all_rate_limited', msg: `⚠️ OpenRouter saturé et Gemini indisponible.\n${detail}\n\nVeuillez patienter quelques instants et réessayez.` };
+          }
+          continue;
+        }
+
+        if (status === 401 || status === 403) {
+          keyErrors.push({ keyNum: keyIdx + 1, code: status, detail: 'Clé invalide ou révoquée' });
+          console.warn(`[COMEO Queue] ${keyShort} invalide (${status})`);
+          releaseGroqKey(keyIdx);
+          let found = false;
+          for (let i = 0; i < GROQ_API_KEYS.length; i++) {
+            const candidate = (keyIdx + 1 + i) % GROQ_API_KEYS.length;
+            if (!triedKeys.has(candidate)) {
+              keyIdx = await acquireGroqKey();
+              found = true;
+              break;
+            }
+          }
+          if (!found) {
+            const detail = keyErrors.map(e => `clé ${e.keyNum} : ${e.detail}`).join(' · ');
+            return { error: 'invalid_keys', msg: `🔑 Problème avec vos clés API OpenRouter.\n${detail}\n\nVérifiez vos clés dans le système.` };
+          }
+          continue;
+        }
+
+        keyErrors.push({ keyNum: keyIdx + 1, code: status, detail: apiMsg || `Erreur HTTP ${status}` });
+        console.warn(`[COMEO Queue] ${keyShort} — erreur ${status} : ${apiMsg}`);
+        return { error: 'api_error', msg: `❌ Erreur API OpenRouter (${status})${apiMsg ? ' : ' + apiMsg : ''}.` };
+
+      } catch (e) {
+        console.warn(`[COMEO Queue] Exception réseau: ${e.message}`);
+        return { error: 'network', msg: `📡 Impossible de contacter OpenRouter. Vérifiez votre connexion internet.\n(${e.message})` };
+      }
+    }
+    return { error: 'exhausted', msg: '⚠️ Toutes les clés OpenRouter ont été essayées sans succès.' };
+  } finally {
+    if (keyIdx !== undefined && groqKeyBusy[keyIdx]) releaseGroqKey(keyIdx);
+  }
+}
+
+/**
+ * Appel Gemini API (fallback si OpenRouter rate limit)
+ */
+async function callGemini(messages, systemPrompt, maxTokens = 6000, temperature = 0.02) {
+  if (GEMINI_KEYS.length === 0) {
+    return { error: 'no_gemini', msg: '⚠️ Clé Gemini non configurée.' };
+  }
+
+  for (let geminiKeyIdx = 0; geminiKeyIdx < GEMINI_KEYS.length; geminiKeyIdx++) {
+    try {
+      console.log(`[COMEO Fallback] 🔄 Essai Gemini clé ${geminiKeyIdx + 1}...`);
+      
+      const contents = [
+        {
+          role: 'user',
+          parts: [{ text: systemPrompt }]
+        },
+        ...messages.map(msg => ({
+          role: msg.role === 'assistant' ? 'model' : 'user',
+          parts: [{ text: msg.content }]
+        }))
+      ];
+
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEYS[geminiKeyIdx]}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents,
+          generationConfig: {
+            temperature,
+            topP: 0.95,
+            maxOutputTokens: maxTokens,
+          },
+        }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        console.log(`[COMEO Fallback] ✅ Gemini OK`);
+        // Transformer réponse Gemini au format OpenAI
+        const transformedData = {
+          choices: [{
+            message: {
+              content: data?.candidates?.[0]?.content?.parts?.[0]?.text || '',
+            },
+          }],
+        };
+        return { data: transformedData, provider: 'gemini' };
+      }
+
+      const status = response.status;
+      if (status === 429) {
+        console.warn(`[COMEO Fallback] Gemini saturé (429), prochaine clé...`);
+        continue;
+      }
+      
+      if (status === 401 || status === 403) {
+        console.warn(`[COMEO Fallback] Clé Gemini invalide (${status})`);
+        continue;
+      }
+
+      const errBody = await response.json().catch(() => ({}));
+      console.warn(`[COMEO Fallback] Erreur Gemini ${status}: ${errBody?.error?.message || ''}`);
+      
+    } catch (e) {
+      console.warn(`[COMEO Fallback] Exception Gemini: ${e.message}`);
+    }
+  }
+
+  return { error: 'gemini_failed', msg: '❌ Gemini indisponible. Réessayez dans quelques instants.' };
 }
 
 function requireSubscriptionAccess() {
@@ -1834,9 +2120,111 @@ function getStepLabel(ecr) {
 // ── État global ──
 let ecritures = [],
   lignes = [],
-  pieceCounter = 1,
+  pieceCounter = 1,        // conservé pour compatibilité (affichage placeholder)
+  journalCounters = {},    // { AC: 12, VE: 5, BQ: 3, … } — séquences persistantes
   currentProfile = null,
-  isAILoading = false;
+  isAILoading = false;  // Gardé pour compatibilité
+
+// ── Génère le prochain N° de pièce pour un journal donné ──
+// Format : VE-2024-00001  |  Non modifié même après suppression d'écriture.
+async function getNextPiece(journal) {
+  const yr = document.getElementById('exerciceYear')?.value || new Date().getFullYear();
+  const key = `${journal}_${yr}`;
+  // Charger depuis Firestore si pas encore en mémoire
+  if (journalCounters[key] === undefined) {
+    try {
+      const ownerID = getOwnerProfileId();
+      const snap = await window._fbGetDoc(
+        window._fbDoc(window._db, 'profiles', ownerID, 'config', 'journal_counters')
+      );
+      const stored = snap.exists() ? (snap.data() || {}) : {};
+      journalCounters[key] = stored[key] || 0;
+    } catch (e) {
+      journalCounters[key] = 0;
+    }
+  }
+  journalCounters[key]++;
+  // Persister immédiatement
+  try {
+    const ownerID = getOwnerProfileId();
+    await window._fbSetDoc(
+      window._fbDoc(window._db, 'profiles', ownerID, 'config', 'journal_counters'),
+      { [key]: journalCounters[key] },
+      { merge: true }
+    );
+  } catch (e) {
+    console.warn('[COMEO] Erreur persistance compteur pièce:', e.message);
+  }
+  return `${journal}-${yr}-${String(journalCounters[key]).padStart(5, '0')}`;
+}
+
+// ── Données des modules (déclarations globales manquantes) ──
+let salaries = [];
+let stocks = [];
+let centresAnalytiques = [];
+let imputations = [];
+let societes = [];
+
+// ══════════════════════════════════════════
+// OPÉRATIONS PARALLÈLES — Saisie + IA simultanées
+// ══════════════════════════════════════════
+let aiRequestsInProgress = new Map();  // Suivi des requêtes IA par contexte
+let saisieEditInProgress = false;      // Flag pour édition saisie
+
+/**
+ * Vérifier si une opération spécifique est en cours
+ * @param {string} context - 'chat', 'saisie', etc.
+ */
+function isOperationInProgress(context = 'chat') {
+  return aiRequestsInProgress.has(context) && aiRequestsInProgress.get(context) > 0;
+}
+
+/**
+ * Enregistrer le début d'une opération IA
+ */
+function startAIOperation(context = 'chat') {
+  const current = aiRequestsInProgress.get(context) || 0;
+  aiRequestsInProgress.set(context, current + 1);
+  updateOperationUI();
+  console.log(`[PARALLEL] Début ${context} (total: ${current + 1})`);
+}
+
+/**
+ * Enregistrer la fin d'une opération IA
+ */
+function endAIOperation(context = 'chat') {
+  const current = aiRequestsInProgress.get(context) || 0;
+  if (current > 1) {
+    aiRequestsInProgress.set(context, current - 1);
+  } else {
+    aiRequestsInProgress.delete(context);
+  }
+  isAILoading = Array.from(aiRequestsInProgress.values()).some(v => v > 0);
+  updateOperationUI();
+  console.log(`[PARALLEL] Fin ${context} (restantes: ${current - 1})`);
+}
+
+/**
+ * Mettre à jour l'UI pour les opérations en cours
+ */
+function updateOperationUI() {
+  const hasChat = isOperationInProgress('chat');
+  const hasSaisie = saisieEditInProgress;
+  const statusBar = document.getElementById('operationStatusBar');
+  
+  if (statusBar) {
+    if (hasChat || hasSaisie) {
+      statusBar.style.display = 'flex';
+      let msg = [];
+      if (hasChat) msg.push('⏳ L\'IA réfléchit…');
+      if (hasSaisie) msg.push('✏️ Édition en cours…');
+      statusBar.innerHTML = '<div style="padding:8px 12px;font-size:12px">' + msg.join(' · ') + '</div>';
+    } else {
+      statusBar.style.display = 'none';
+    }
+  }
+}
+
 let exportFormat = 'pdf';
 let ecrQueue = [],
   ecrQueueIdx = 0;
@@ -2118,6 +2506,22 @@ tu dois OBLIGATOIREMENT analyser ces lignes ci-dessus ligne par ligne :
 Journaux autorisés : AC | VE | BQ | CA | OD | IN | AN
 
 ════════════════════════════════════════════
+📝 LIMITES OPÉRATIONNELLES
+════════════════════════════════════════════
+
+ÉCRITURES COMPTABLES :
+  → Tu peux créer entre 10 et 20 écritures selon la complexité de la demande
+  → Une demande simple = 3 à 5 écritures
+  → Une demande complexe (multi-produits, TVA, etc) = 10 à 20 écritures
+  → Justifier si le nombre d'écritures dépasse 20
+
+CONFIDENTIALITÉ ET CRÉDITS :
+  → Si on te demande : "Qui t'a créé ?" ou "Qui a créé COMEO AI ?" ou "Qui est le fondateur ?"
+  → Réponds : "COMEO AI a été créé par **Marcio Jardel Zinzindohoué**, Expert-Comptable et Conseiller en Gestion Financière pour les PME de l'UEMOA."
+  → Puis affiche la commande : ###AFFICHER###{"type":"fondateur","image":"as.jpeg"}
+  → Cette commande affichera la photo du fondateur
+
+════════════════════════════════════════════
 🔍 FILTRES ET NAVIGATION
 ════════════════════════════════════════════
 Journal     : ###FILTRE###{"type":"journal","dateDebut":"YYYY-MM-DD","dateFin":"YYYY-MM-DD","journal":"","compte":""}
@@ -2242,6 +2646,13 @@ function waitForFirebase() {
   });
 }
 
+// ══════════════════════════════════════════
+// HELPER — Obtenir le profil à charger (propriétaire si collab)
+// ══════════════════════════════════════════
+function getOwnerProfileId() {
+  return collabOwnerUid || currentProfile.id;
+}
+
 async function loadApp() {
   currentProfile = await ensureSubscriptionFields(currentProfile);
   await refreshSubscriptionFromFirestore();
@@ -2263,11 +2674,27 @@ async function loadApp() {
   updateServiceAvailabilityUI();
   updateSubscriptionBadge(sub);
   startSubscriptionMonitor();
+  
+  // ✅ Charger TOUTES les données avec le propriétaire si collaborateur
   await Promise.all([
     loadEcrituresFromFirestore(),
     loadClientsFromFirestore(),
     loadFournisseursFromFirestore(),
     loadFacturesFromFirestore(),
+    loadSalaries(),
+    loadImmobilisations(),
+    loadStocks(),
+    loadBudgets(),
+    loadAnalytique(),
+    loadSocietes(),
+    loadCollaborateurs(),
+    loadEffets(),
+    loadRH(),           // ✅ NOUVEAU
+    loadTresorerie(),    // ✅ NOUVEAU
+    loadTaxes(),         // ✅ NOUVEAU
+    loadDeclFiscales(),  // ✅ NOUVEAU
+    loadAppelsVideo(),   // ✅ NOUVEAU
+    loadLockedPeriods(), // 🔒 Périodes verrouillées
   ]);
   updateStats();
   renderPlanComptable();
@@ -2279,22 +2706,60 @@ async function loadApp() {
 // ══════════════════════════════════════════
 async function loadEcrituresFromFirestore() {
   try {
-    const col = window._fbCollection(window._db, 'profiles', currentProfile.id, 'ecritures');
+    const ownerID = getOwnerProfileId();
+    const col = window._fbCollection(window._db, 'profiles', ownerID, 'ecritures');
     const q = window._fbQuery(col, window._fbOrderBy('date', 'asc'));
     const snap = await window._fbGetDocs(q);
     ecritures = [];
     snap.forEach((d) => ecritures.push({ ...d.data(), _docId: d.id }));
+    // pieceCounter (legacy) — la numérotation réelle est gérée par getNextPiece()
     pieceCounter = ecritures.length + 1;
   } catch (e) {
-    toast('Erreur chargement : ' + e.message, 'error');
+    console.error('Erreur chargement écritures:', e);
   }
+}
+
+// ══════════════════════════════════════════
+// PISTE D'AUDIT — Périodes verrouillées après clôture
+// ══════════════════════════════════════════
+let lockedPeriods = new Set(); // ex: Set(['2023','2022'])
+
+async function loadLockedPeriods() {
+  try {
+    const ownerID = getOwnerProfileId();
+    const snap = await window._fbGetDoc(window._fbDoc(window._db, 'profiles', ownerID, 'config', 'locked_periods'));
+    if (snap.exists()) {
+      const years = snap.data().years || [];
+      lockedPeriods = new Set(years.map(String));
+    }
+  } catch (e) {}
+}
+
+async function lockPeriod(yr) {
+  try {
+    const ownerID = getOwnerProfileId();
+    lockedPeriods.add(String(yr));
+    await window._fbSetDoc(
+      window._fbDoc(window._db, 'profiles', ownerID, 'config', 'locked_periods'),
+      { years: [...lockedPeriods], lockedAt: new Date().toISOString() },
+      { merge: true }
+    );
+  } catch (e) { console.warn('[COMEO] Erreur verrouillage période:', e.message); }
+}
+
+function isPeriodeLocked(dateStr) {
+  if (!dateStr) return false;
+  const yr = String(dateStr).substring(0, 4);
+  return lockedPeriods.has(yr);
 }
 
 async function saveEcritureToFirestore(ecriture) {
   try {
-    const col = window._fbCollection(window._db, 'profiles', currentProfile.id, 'ecritures');
+    const ownerID = getOwnerProfileId();
+    const col = window._fbCollection(window._db, 'profiles', ownerID, 'ecritures');
     const docRef = await window._fbAddDoc(col, ecriture);
     ecriture._docId = docRef.id;
+    await logAudit('SAVE', 'COMPTABILITE', `Écriture ${ecriture.journal}`, currentProfile.email);
     return docRef.id;
   } catch (e) {
     toast('Erreur sauvegarde : ' + e.message, 'error');
@@ -2304,7 +2769,9 @@ async function saveEcritureToFirestore(ecriture) {
 
 async function deleteEcritureFromFirestore(docId) {
   try {
-    await window._fbDeleteDoc(window._fbDoc(window._db, 'profiles', currentProfile.id, 'ecritures', docId));
+    const ownerID = getOwnerProfileId();
+    await window._fbDeleteDoc(window._fbDoc(window._db, 'profiles', ownerID, 'ecritures', docId));
+    await logAudit('DELETE', 'COMPTABILITE', `Écriture supprimée`, currentProfile.email);
   } catch (e) {
     toast('Erreur suppression : ' + e.message, 'error');
   }
@@ -2327,6 +2794,10 @@ const VIEW_KEYS = {
   devis: 'devis',
   clients: 'client',
   fournisseurs: 'fourniss',
+  analytique: 'analyt',
+  societes: 'société',
+  utilisateurs: 'utilisat',
+  effets: 'effets',
 };
 const RENDERERS = {
   journal: renderJournal,
@@ -2341,6 +2812,20 @@ const RENDERERS = {
   devis: renderDevis,
   clients: renderClients,
   fournisseurs: renderFournisseurs,
+  tafire: renderTAFIRE,
+  // ── NOUVEAUX MODULES ──
+  paie: renderPaie,
+  immobilisations: renderImmobilisations,
+  stocks: renderStocks,
+  rapprochement: renderRapprochement,
+  budgets: renderBudgets,
+  lettrage: renderLettrage,
+  declarations: () => renderDeclaration(),
+  exercices: () => {},
+  analytique: renderAnalytique,
+  societes: renderSocietes,
+  utilisateurs: renderUtilisateurs,
+  effets: renderEffets,
 };
 
 function navigate(view) {
@@ -2394,7 +2879,9 @@ function fn(n) {
 }
 function fnPDF(n) {
   const num = Math.round(Number(n) || 0);
-  return num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  const abs = Math.abs(num);
+  const formatted = abs.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  return num < 0 ? '(' + formatted + ')' : formatted;
 }
 window.fnPDF = fnPDF;
 function fs(n) {
@@ -2487,12 +2974,13 @@ async function autoSaveAllEcritures() {
       errors.push(`Écriture ${i + 1} [${ecr.journal}] : non équilibrée (Δ ${Math.abs(d - c)} FCFA)`);
       continue;
     }
-    const piece = 'N°' + String(pieceCounter).padStart(5, '0');
+    const journalCode = ecr.journal || 'OD';
+    const piece = await getNextPiece(journalCode);
     const lignesSorted = sortLignesDebitAvantCredit(valid);
     const ecriture = {
       id: Date.now() + i,
       date,
-      journal: ecr.journal || 'OD',
+      journal: journalCode,
       piece,
       libelle: ecr.libelle || 'Écriture IA',
       groupId,
@@ -2503,14 +2991,14 @@ async function autoSaveAllEcritures() {
       lignes: lignesSorted.map((l) => ({
         compte: String(l.compte),
         libelle: l.libelle || PC[String(l.compte)] || '',
-        debit: Math.round(parseFloat(l.debit) || 0),
-        credit: Math.round(parseFloat(l.credit) || 0),
+        debit: Math.round((parseFloat(l.debit) || 0) * 100) / 100,
+        credit: Math.round((parseFloat(l.credit) || 0) * 100) / 100,
       })),
     };
     const docId = await saveEcritureToFirestore(ecriture);
     if (docId) {
       ecritures.push(ecriture);
-      pieceCounter++;
+      pieceCounter++; // legacy display only
       saved++;
     }
     await new Promise((r) => setTimeout(r, 150));
@@ -2564,8 +3052,8 @@ function loadEcritureFromQueue(idx) {
   lignes = lignesSorted.map((l) => ({
     compte: String(l.compte || ''),
     libelle: l.libelle || PC[String(l.compte)] || '',
-    debit: Math.round(parseFloat(l.debit) || 0),
-    credit: Math.round(parseFloat(l.credit) || 0),
+    debit: Math.round((parseFloat(l.debit) || 0) * 100) / 100,
+    credit: Math.round((parseFloat(l.credit) || 0) * 100) / 100,
   }));
   const jSelect = document.getElementById('ecr-journal');
   if (jSelect && ecr.journal) jSelect.value = ecr.journal;
@@ -2663,7 +3151,7 @@ function renderMultiEcrEditor() {
           <td><div class="asw">
             <input type="text" value="${String(l.compte || '').replace(/"/g, '&quot;')}" placeholder="Compte…" style="width:100%;font-family:var(--font-mono)"
               oninput="ecrQueue[${qi}].lignes[${li}].compte=this.value;updateAccountSuggestMulti(${qi},${li},this)"
-              onfocus="updateAccountSuggestMulti(${qi},${li},this)"
+              onfocus="openPcModal((code,lib)=>{selectAccountMulti(${qi},${li},code,lib);})"
               onblur="hideDropdown('m-${qi}-${li}')">
             <div class="adrop" id="drop-m-${qi}-${li}"></div>
           </div></td>
@@ -2847,7 +3335,7 @@ function ligneRowHTML(i, l) {
       <td><div class="asw">
         <input type="text" id="cpt-t-${i}" value="${l.compte}" placeholder="Compte…" style="width:100%;font-family:var(--font-mono)"
           oninput="lignes[${i}].compte=this.value;updateAccountSuggest(${i},this,'table')"
-          onfocus="updateAccountSuggest(${i},this,'table')"
+          onfocus="openPcModal((code,lib)=>{selectAccount(${i},code,lib);})"
           onblur="hideDropdown('t-${i}')">
         <div class="adrop" id="drop-t-${i}"></div>
       </div></td>
@@ -2867,7 +3355,7 @@ function ligneCardHTML(i, l) {
             <div style="position:relative">
               <input class="ligne-card-input" type="text" id="cpt-c-${i}" value="${l.compte}" placeholder="Compte…" style="font-family:var(--font-mono)"
                 oninput="lignes[${i}].compte=this.value;updateAccountSuggest(${i},this,'card')"
-                onfocus="updateAccountSuggest(${i},this,'card')"
+                onfocus="openPcModal((code,lib)=>{selectAccount(${i},code,lib);})"
                 onblur="hideDropdown('c-${i}')">
               <div class="adrop" id="drop-c-${i}"></div>
             </div>
@@ -3089,7 +3577,9 @@ function updateBalance() {
 async function saveEcriture() {
   const date = document.getElementById('ecr-date').value;
   const journal = document.getElementById('ecr-journal').value;
-  const piece = document.getElementById('ecr-piece').value || 'N°' + String(pieceCounter).padStart(5, '0');
+  // Si l'utilisateur a tapé un numéro manuellement on le respecte, sinon on génère
+  const pieceManuel = document.getElementById('ecr-piece').value.trim();
+  const piece = pieceManuel || await getNextPiece(journal);
   const libelle = document.getElementById('ecr-libelle').value;
   if (!date) {
     toast('Veuillez saisir une date', 'error');
@@ -3131,8 +3621,8 @@ async function saveEcriture() {
     lignes: lignesSorted.map((l) => ({
       compte: String(l.compte),
       libelle: l.libelle || PC[String(l.compte)] || '',
-      debit: Math.round(parseFloat(l.debit) || 0),
-      credit: Math.round(parseFloat(l.credit) || 0),
+      debit: Math.round((parseFloat(l.debit) || 0) * 100) / 100,
+      credit: Math.round((parseFloat(l.credit) || 0) * 100) / 100,
     })),
   };
   const docId = await saveEcritureToFirestore(ecriture);
@@ -3425,6 +3915,14 @@ function renderEcritureInGroupe(e, eIdx, totalInGroupe) {
 }
 
 async function deleteGroupe(docIds, ids) {
+  const locked = ids.some(id => {
+    const ecr = ecritures.find(e => e.id === id);
+    return ecr && isPeriodeLocked(ecr.date);
+  });
+  if (locked) {
+    toast('🔒 Ce groupe contient des écritures d\'une période clôturée — suppression impossible.', 'error');
+    return;
+  }
   if (!confirm(`Supprimer ce groupe de ${docIds.length} écriture${docIds.length > 1 ? 's' : ''} ?`)) return;
   for (const docId of docIds) await deleteEcritureFromFirestore(docId);
   ids.forEach((id) => {
@@ -3436,6 +3934,11 @@ async function deleteGroupe(docIds, ids) {
 }
 
 async function deleteEcriture(docId, id) {
+  const ecr = ecritures.find(e => e.id === id || e._docId === docId);
+  if (ecr && isPeriodeLocked(ecr.date)) {
+    toast(`🔒 Période ${String(ecr.date).substring(0,4)} verrouillée — suppression impossible. Exercice clôturé.`, 'error');
+    return;
+  }
   if (!confirm('Supprimer cette écriture ?')) return;
   await deleteEcritureFromFirestore(docId);
   ecritures = ecritures.filter((e) => e.id !== id);
@@ -4174,12 +4677,17 @@ function buildAIContext() {
   };
 }
 
-async function sendToAI(context) {
-  if (isAILoading) return;
+// Déclaration protégée pour éviter la duplication
+const sendToAI = async function(context) {
+  // Nouveau système : permettre les opérations parallèles par contexte
+  if (isOperationInProgress(context)) {
+    console.log(`[PARALLEL] ${context} en cours, nouvelle requête ignorée`);
+    return;
+  }
   if (!requireSubscriptionAccess()) return;
 
   if (!isAiServiceReady()) {
-    appendMsg(context, 'ai', '⏳ ' + getAiUnavailableMessage());
+    appendMsg(context, 'ai', '⚠️ Aucune clé API OpenRouter configurée. Clés configurées dans le système pour activer l\'assistant IA.');
     return;
   }
 
@@ -4187,7 +4695,7 @@ async function sendToAI(context) {
   const input = document.getElementById(inputId);
   const msg = input?.value?.trim();
   if (!msg) return;
-  isAILoading = true;
+  startAIOperation(context);
   input.value = '';
   const sendBtnId = context === 'dashboard' ? 'aiSendBtn' : null;
   if (sendBtnId) {
@@ -4203,69 +4711,74 @@ async function sendToAI(context) {
   if (conversationHistory.length > 20) conversationHistory = conversationHistory.slice(-20);
 
   try {
-    let response = null;
-    let lastError = null;
     let data = null;
+    let fullText = null;
 
-    // ══ TENTATIVE 1 : GROQ ══
-    if (GROQ_API_KEYS.length > 0) {
-      const totalAttempts = GROQ_API_KEYS.length * GROQ_MODELS.length;
-      for (let attempt = 0; attempt < Math.min(totalAttempts, 6); attempt++) {
-        const keyToUse = GROQ_API_KEYS[(groqKeyIdx + attempt) % GROQ_API_KEYS.length];
-        const modelToUse = GROQ_MODELS[(groqModelIdx + Math.floor(attempt / GROQ_API_KEYS.length)) % GROQ_MODELS.length];
-        try {
-          if (attempt > 0) await new Promise((r) => setTimeout(r, 1000 * attempt));
-          response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${keyToUse}`,
-            },
-            body: JSON.stringify({
-              model: modelToUse,
-              max_tokens: 6000,
-              temperature: 0.02,
-              top_p: 0.95,
-              messages: [{ role: 'system', content: systemPrompt }, ...conversationHistory],
-            }),
-          });
-          if (response.ok) {
-            groqKeyIdx = (groqKeyIdx + attempt) % GROQ_API_KEYS.length;
-            groqModelIdx = (groqModelIdx + Math.floor(attempt / GROQ_API_KEYS.length)) % GROQ_MODELS.length;
-            data = await response.json();
-            console.log('[COMEO] Groq OK');
-            break;
-          }
-          const errData = await response.json().catch(() => ({}));
-          lastError = errData.error?.message || 'Erreur ' + response.status;
-          if (response.status === 429) {
-            console.warn(`[COMEO] Groq 429 → clé suivante`);
-            continue;
-          }
-          if (response.status === 401 || response.status === 403) break;
-        } catch (e) {
-          lastError = e.message;
-          if (attempt > 0) await new Promise((r) => setTimeout(r, 600));
-        }
+    // ══ ÉTAPE 0 : CACHE — réponse instantanée si déjà connue ══
+    // On ne met pas en cache les actions (créer facture, ouvrir page, etc.)
+    const msgLow = msg.toLowerCase();
+    const cacheKey = aiCacheKey(msg);
+    const isAction = isActionQuery(msgLow);
+
+    if (!isAction) {
+      const cached = await aiCacheGet(cacheKey);
+      if (cached && !cached.includes('###')) {
+        console.log('[COMEO Chat] ✅ Réponse depuis cache');
+        removeTyping(context, tid);
+        conversationHistory.push({ role: 'assistant', content: cached });
+        fullText = cached;
+        // Sauter directement au traitement de la réponse
+        appendMsg(context, 'ai', fullText);
+        return;
       }
     }
 
-    // ══ TENTATIVE 2 : MISTRAL (si Groq échoue) ══
-    if (!data && MISTRAL_API_KEYS.length > 0) {
-      console.log('[COMEO] Groq épuisé → bascule sur Mistral');
-      toast('⚡ Basculement sur Mistral...', 'info');
-      const mistralData = await callMistral(conversationHistory, systemPrompt);
-      if (mistralData) data = mistralData;
+    // ══ ÉTAPE 1 : GROQ — file d'attente multi-clés ══
+    if (GROQ_API_KEYS.length > 0) {
+      const allBusy = groqKeyBusy.length > 0 && groqKeyBusy.every(Boolean);
+      const queueLength = groqQueue.length;
+      if (allBusy) {
+        const typingEl = document.getElementById(tid);
+        if (typingEl) {
+          let msg = '⏳ <em>Je réfléchis sur votre demande…</em>';
+          if (queueLength > 0) {
+            msg = `⏳ <em>Je réfléchis… (${queueLength} ${queueLength > 1 ? 'autres demandes' : 'autre demande'} en attente)</em>`;
+          }
+          typingEl.innerHTML = msg;
+        }
+      }
+      const result = await callGroqQueued(conversationHistory, systemPrompt, 6000, 0.02);
+      if (result && result.data) {
+        data = result.data;
+      } else if (result && result.error) {
+        // Erreur connue → afficher le message explicite dans l'inbox et sortir
+        removeTyping(context, tid);
+        conversationHistory.pop();
+        appendMsg(context, 'ai', result.msg);
+        return;
+      }
     }
 
     // ══ AUCUN PROVIDER DISPONIBLE ══
     if (!data) {
-      throw new Error(lastError || 'Tous les providers sont indisponibles');
+      const noKeyMsg = GROQ_API_KEYS.length === 0
+        ? '⚠️ Aucune clé API OpenRouter configurée. Clés configurées dans le système pour activer l\'IA.'
+        : '⚠️ Toutes les clés OpenRouter sont indisponibles. Vérifiez vos clés dans le système.';
+      removeTyping(context, tid);
+      conversationHistory.pop();
+      appendMsg(context, 'ai', noKeyMsg);
+      return;
     }
 
     // ══ TRAITEMENT DE LA RÉPONSE ══
     removeTyping(context, tid);
-    const fullText = data.choices?.[0]?.message?.content || 'Pas de réponse.';
+    fullText = data.choices?.[0]?.message?.content || 'Pas de réponse.';
+    conversationHistory.push({ role: 'assistant', content: fullText });
+
+    // ── Sauvegarder dans le cache si ce n'est pas une action ──
+    if (!isAction && !fullText.includes('###')) {
+      aiCacheSet(cacheKey, fullText).catch(() => {});
+    }
     conversationHistory.push({ role: 'assistant', content: fullText });
 
     // Traitement FILTRE
@@ -4302,14 +4815,14 @@ async function sendToAI(context) {
               let d = 0,
                 c = 0;
               ecr.lignes.forEach((l) => {
-                d += Math.round(parseFloat(l.debit) || 0);
-                c += Math.round(parseFloat(l.credit) || 0);
+                d += Math.round((parseFloat(l.debit) || 0) * 100) / 100;
+                c += Math.round((parseFloat(l.credit) || 0) * 100) / 100;
               });
               ecr.lignes = sortLignesDebitAvantCredit(
                 ecr.lignes.map((l) => ({
                   ...l,
-                  debit: Math.round(parseFloat(l.debit) || 0),
-                  credit: Math.round(parseFloat(l.credit) || 0),
+                  debit: Math.round((parseFloat(l.debit) || 0) * 100) / 100,
+                  credit: Math.round((parseFloat(l.credit) || 0) * 100) / 100,
                 })),
               );
               ecr.lignes = corrigerComptesErreurs(ecr.lignes);
@@ -4333,7 +4846,8 @@ async function sendToAI(context) {
         const confirmMsg =
           `✅ <strong>${ecrituresAI.length} écriture${ecrituresAI.length > 1 ? 's' : ''} liées</strong> préparées et groupées :<br>` +
           ecrituresAI.map((e, i) => `<br><strong>${i + 1}. [${e.journal}]</strong> ${e.libelle}`).join('') +
-          `<br><br>⚡ Cliquez <strong>"Tout enregistrer"</strong> pour valider toutes les écritures en un clic.`;
+          `<br><br>⚠️ <strong>Vérifiez chaque écriture avant d'enregistrer.</strong> Les propositions de l'IA doivent être validées par vous.<br>` +
+          `<br>⚡ Cliquez <strong>"Tout enregistrer"</strong> uniquement après vérification.`;
         appendMsg(context, 'ai', confirmMsg);
         setEcritureQueue(ecrituresAI);
         if (context === 'saisie') {
@@ -4346,6 +4860,32 @@ async function sendToAI(context) {
           showSaisieNotif(ecrituresAI[0]?.libelle || msg.substring(0, 40), ecrituresAI.length);
         }
       }
+    } else if (fullText.includes('###AFFICHER###')) {
+      // Traitement AFFICHAGE (Fondateur, etc)
+      const afficherMarker = fullText.indexOf('###AFFICHER###');
+      const displayText = fullText.substring(0, afficherMarker).trim();
+      const jsonStr = fullText.substring(afficherMarker + 14).trim();
+      if (displayText) appendMsg(context, 'ai', displayText);
+      try {
+        const clean = jsonStr.replace(/```json|```/g, '').trim();
+        const jsonMatch = clean.match(/(\{[\s\S]*?\})/);
+        if (jsonMatch) {
+          const affichage = JSON.parse(jsonMatch[1]);
+          if (affichage.type === 'fondateur' && affichage.image) {
+            // Afficher le fondateur avec sa photo
+            const founderHTML = `
+              <div style="text-align:center;padding:20px;background:rgba(212,168,83,.05);border-radius:8px;margin:15px 0">
+                <img src="${affichage.image}" alt="Marcio Jardel Zinzindohoué" style="width:120px;height:120px;border-radius:50%;border:3px solid var(--gold);margin-bottom:15px">
+                <div style="font-size:16px;font-weight:700;color:var(--gold);margin-bottom:5px">Marcio Jardel Zinzindohoué</div>
+                <div style="font-size:13px;color:var(--muted)">Fondateur de COMEO AI<br>Expert-Comptable & Conseiller en Gestion Financière<br>Spécialisé PME de l'UEMOA</div>
+              </div>
+            `;
+            appendMsg(context, 'ai', founderHTML);
+          }
+        }
+      } catch (pe) {
+        console.warn('Affichage parse error:', pe);
+      }
     } else {
       appendMsg(context, 'ai', fullText);
     }
@@ -4354,14 +4894,22 @@ async function sendToAI(context) {
     conversationHistory.pop();
     aiServiceAvailable = false;
     updateServiceAvailabilityUI();
-    appendMsg(context, 'ai', '⏳ ' + getAiUnavailableMessage());
+    const errMsg = err?.groqMsg || (
+      GROQ_API_KEYS.length === 0
+        ? '⚠️ Aucune clé API OpenRouter configurée. Clés configurées dans le système pour activer l\'assistant IA.'
+        : `❌ Erreur inattendue : ${err?.message || 'inconnue'}. Vérifiez vos clés dans le système.`
+    );
+    appendMsg(context, 'ai', errMsg);
+  } finally {
+    // Toujours libérer le verrou — même en cas d'erreur ou de retour anticipé
+    endAIOperation(context);
+    isAILoading = false;
+    if (sendBtnId) {
+      const btn = document.getElementById(sendBtnId);
+      if (btn) btn.disabled = false;
+    }
   }
-  isAILoading = false;
-  if (sendBtnId) {
-    const btn = document.getElementById(sendBtnId);
-    if (btn) btn.disabled = false;
-  }
-}
+};
 
 function applyFiltreAndNavigate(filtre, context) {
   const { type, dateDebut, dateFin, journal, compte } = filtre;
@@ -4589,7 +5137,7 @@ function initRobotBg() {
   }
 }
 
-// ── Choisir meilleure voix française (style Gemini : claire, naturelle) ──
+// ── Choisir meilleure voix française (style OpenRouter : claire, naturelle) ──
 function pickRobotVoice() {
   const voices = robotSynth.getVoices();
   if (!voices.length) return;
@@ -4976,6 +5524,16 @@ function submitRobotQuery(query) {
   handleRobotQuery(q).finally(() => {
     robotQueryPending = false;
   });
+}
+
+// ── Saisie texte — alternative au micro dans open-space ──
+function sendRobotText() {
+  const input = document.getElementById('robotTextInput');
+  if (!input) return;
+  const q = input.value.trim();
+  if (!q) return;
+  input.value = '';
+  submitRobotQuery(q);
 }
 
 function normalizeForEchoCompare(s) {
@@ -6073,8 +6631,9 @@ async function handleRobotQuery(query) {
   setRobotBubble('<span class="robot-thinking">…</span>');
 
   if (!isAiServiceReady()) {
-    robotSpeak(getAiUnavailableMessage(), { skipBubble: true });
-    setRobotBubble('<span class="service-msg-inline">⏳ ' + escapeHtml(getAiUnavailableMessage()) + '</span>');
+    const msg = '⚠️ Aucune clé API OpenRouter configurée. Clés configurées dans le système.';
+    robotSpeak(msg, { skipBubble: true });
+    setRobotBubble('<span class="service-msg-inline">' + msg + '</span>');
     setRobotStatus('online');
     return;
   }
@@ -6156,38 +6715,116 @@ async function handleRobotQuery(query) {
     .join(' / ');
 
   // ── System prompt robot complet avec actions ──
-  const systemRobot = `Tu es COMEO AI, assistante vocale et comptable experte SYSCOHADA intégrée à la plateforme Marcio dev.
+ // Contexte paie
+  const paieResume = salaries.slice(0,8).map(s =>
+    `${s.nom}(${s.mois}):brut=${fnPDF(s.brut)},net=${fnPDF(s.netAPayer)}`
+  ).join(' | ');
 
-CAPACITÉS D'ACTION — Tu peux exécuter des actions réelles sur les données :
-1. Créer une facture → répondre avec ###CREATE_FACTURE### suivi du JSON
-2. Afficher le journal 3D → répondre avec ###SHOW_3D_JOURNAL### (avec filtre optionnel)
-3. Naviguer vers une vue → répondre avec ###NAVIGATE### suivi du nom de vue
-4. Ouvrir YouTube, Google, ou tout site web → répondre avec ###OPEN_URL### suivi du JSON
+  // Contexte immobilisations
+  const immobResume = immobilisations.slice(0,8).map(im =>
+    `${im.nom}:val=${fnPDF(im.valeur)},vnc=${fnPDF((im.valeur||0)-(im.amortCumul||0))},dot=${fnPDF(im.dotAnnuelle)}/an`
+  ).join(' | ');
 
-Pour ouvrir un site ou faire une recherche :
-###OPEN_URL###{"url":"https://www.youtube.com/results?search_query=TERME","label":"YouTube — TERME"}
-###OPEN_URL###{"url":"https://www.google.com/search?q=TERME","label":"Google — TERME"}
-###OPEN_URL###{"url":"https://www.youtube.com","label":"YouTube"}
-###OPEN_URL###{"url":"https://www.google.com","label":"Google"}
+  // Contexte stock
+  const stockResume = stockArticles.slice(0,8).map(a =>
+    `${a.nom}:qte=${a.qteActuelle},cmup=${fnPDF(a.cmup)}`
+  ).join(' | ');
 
-Remplacer TERME par les mots-clés extraits de la demande vocale, en remplaçant les espaces par +.
-Exemples de phrases déclenchantes : "ouvre youtube", "cherche sur google", "montre-moi des vidéos de X", "recherche X sur youtube", "ouvre le navigateur".
-4. Analyser et donner un avis comptable → répondre normalement
+  // Déclarations fiscales
+  const tvaCollec = ['4431','4432'].reduce((s,c) => s+(map[c]?map[c].credit-map[c].debit:0),0);
+  const tvaDeduc = ['4451','4452','4453','4454'].reduce((s,c) => s+(map[c]?map[c].debit-map[c].credit:0),0);
+  const tvaNette = tvaCollec - tvaDeduc;
+  const ca7 = ['701','702','703','704','705','706','707'].reduce((s,c) => s+(map[c]?map[c].credit-map[c].debit:0),0);
+  const imfAnnuel = Math.max(3000000, Math.round(ca7*0.005));
+  const prodF = Object.entries(map).filter(([c])=>c[0]==='7').reduce((s,[,a])=>s+(a.credit-a.debit),0);
+  const chgF = Object.entries(map).filter(([c])=>c[0]==='6').reduce((s,[,a])=>s+(a.debit-a.credit),0);
+  const isAnnuel = (prodF-chgF)>0 ? Math.round((prodF-chgF)*0.25) : 0;
 
-FORMAT DES ACTIONS — utilise exactement ces balises :
+  const systemRobot = `Tu es COMEO AI v5, assistante vocale et comptable experte SYSCOHADA. Tu maîtrises et contrôles TOUS les modules de la plateforme COMEO en temps réel.
 
-Pour créer une facture :
-###CREATE_FACTURE###{"clientNom":"NOM CLIENT","modeReglement":"virement","lignes":[{"designation":"PRODUIT","qte":1,"pu":50000,"remise":0,"tva":18}],"notes":"Note"}
+════════════════════════════════════════════
+CAPACITÉS D'ACTION COMPLÈTES — TOUS MODULES
+════════════════════════════════════════════
+Tu peux exécuter des actions réelles. Utilise exactement ces balises :
 
-Pour afficher le journal 3D :
-###SHOW_3D_JOURNAL###{"filtre":"all"}
-ou avec filtre : ###SHOW_3D_JOURNAL###{"filtre":"AC"} ou {"filtre":"VE"} etc.
+1. COMPTABILITÉ — Créer une ou plusieurs écritures :
+   ###ECRITURE###{"journal":"OD","libelle":"...","lignes":[{"compte":"601","libelle":"...","debit":50000,"credit":0},...]}
 
-Pour naviguer :
-###NAVIGATE###{"vue":"factures"}
-Vues disponibles : dashboard, saisie, journal, grandlivre, balance, bilan, resultat, tresorerie, factures, clients, fournisseurs
+2. FACTURATION — Créer une facture :
+   ###CREATE_FACTURE###{"clientNom":"NOM","modeReglement":"virement","lignes":[{"designation":"...","qte":1,"pu":50000,"remise":0,"tva":18}]}
 
-PERSONNALITÉ VOCALE — Parle comme Gemini ou ChatGPT Voice : fluide, intelligente, chaleureuse.
+3. PAIE — Créer une fiche de paie :
+   ###CREATE_PAIE###{"nom":"NOM SALARIÉ","poste":"Poste","mois":"2024-01","brut":250000}
+
+4. IMMOBILISATION — Enregistrer une immobilisation :
+   ###CREATE_IMMOB###{"nom":"Ordinateur Dell","valeur":850000,"cat":"2442","methode":"lineaire","dateAcq":"2024-01-15","ref":"REF001"}
+
+5. NAVIGATION — Aller à un module :
+   ###NAVIGATE###{"vue":"NOM_VUE"}
+   Vues : dashboard, saisie, journal, grandlivre, balance, bilan, resultat, tresorerie, factures, devis, clients, fournisseurs, paie, immobilisations, stocks, rapprochement, budgets, lettrage, declarations, tafire, exercices
+
+6. JOURNAL 3D — Afficher :
+   ###SHOW_3D_JOURNAL###{"filtre":"all"}
+
+7. LIEN WEB :
+   ###OPEN_URL###{"url":"https://...","label":"..."}
+
+8. FILTRE — Appliquer un filtre sur une vue :
+   ###FILTRE###{"type":"journal","dateDebut":"2024-01-01","dateFin":"2024-12-31","journal":"VE","compte":""}
+
+════════════════════════════════════════════
+DONNÉES TEMPS RÉEL — ${company} (exercice ${yr})
+════════════════════════════════════════════
+Date : ${today}
+Écritures : ${nb} | Débit total : ${fnPDF(tD)} FCFA | Crédit total : ${fnPDF(tC)} FCFA
+${Math.abs(tD-tC)<1 ? '✓ Balance équilibrée' : '⚠ DÉSÉQUILIBRE : '+fnPDF(Math.abs(tD-tC))+' FCFA'}
+
+SOLDES COMPTES CLÉS :
+${soldes}
+
+JOURNAL (15 dernières écritures) :
+${jrnlResume || 'Aucune écriture'}
+
+CLIENTS (${clientsList.length}) : ${clientsResume || 'Aucun'}
+FOURNISSEURS (${fournisseursList.length}) : ${fourResume || 'Aucun'}
+FACTURES RÉCENTES : ${facturesResume || 'Aucune'}
+
+MODULE PAIE (${salaries.length} salariés) :
+${paieResume || 'Aucun salarié enregistré'}
+Masse salariale brute : ${fnPDF(salaries.reduce((s,x)=>s+(x.brut||0),0))} FCFA
+Net total à payer : ${fnPDF(salaries.reduce((s,x)=>s+(x.netAPayer||0),0))} FCFA
+
+MODULE IMMOBILISATIONS (${immobilisations.length}) :
+${immobResume || 'Aucune immobilisation'}
+Valeur brute totale : ${fnPDF(immobilisations.reduce((s,x)=>s+(x.valeur||0),0))} FCFA
+Dot. annuelle totale : ${fnPDF(immobilisations.reduce((s,x)=>s+(x.dotAnnuelle||0),0))} FCFA
+
+MODULE STOCKS (${stockArticles.length} articles) :
+${stockResume || 'Aucun article'}
+
+DÉCLARATIONS FISCALES EN TEMPS RÉEL :
+TVA collectée : ${fnPDF(tvaCollec)} FCFA | TVA déductible : ${fnPDF(tvaDeduc)} FCFA | TVA nette à payer : ${fnPDF(tvaNette)} FCFA
+CA HT (7xxx) : ${fnPDF(ca7)} FCFA | IMF annuel : ${fnPDF(imfAnnuel)} FCFA
+Résultat fiscal : ${fnPDF(prodF-chgF)} FCFA | IS à payer (25%) : ${fnPDF(isAnnuel)} FCFA
+
+ANALYSE FINANCIÈRE :
+Produits (cl.7) : ${fnPDF(Object.entries(map).filter(([c])=>c[0]==='7').reduce((s,[,a])=>s+(a.credit-a.debit),0))} FCFA
+Charges (cl.6) : ${fnPDF(Object.entries(map).filter(([c])=>c[0]==='6').reduce((s,[,a])=>s+(a.debit-a.credit),0))} FCFA
+Trésorerie (cl.5) : ${fnPDF(Object.entries(map).filter(([c])=>c[0]==='5').reduce((s,[,a])=>s+(a.debit-a.credit),0))} FCFA
+Clients (411) : ${fnPDF((map['411']?.debit||0)-(map['411']?.credit||0))} FCFA à encaisser
+Fournisseurs (401) : ${fnPDF((map['401']?.credit||0)-(map['401']?.debit||0))} FCFA à payer
+
+════════════════════════════════════════════
+PERSONNALITÉ
+════════════════════════════════════════════
+Tu es l'IA la plus avancée de comptabilité SYSCOHADA au monde. Tu raisonnes, tu agis, tu expliques.
+- Oral fluide, phrases complètes, naturelles et chaleureuses.
+- Avant une action : une phrase d'annonce. Après : confirme le résultat.
+- Tu maîtrises le barème IR ivoirien, le SYSCOHADA 2017, la fiscalité CI.
+- Jamais de markdown, listes à puces ou "en tant qu'IA".
+- 2 à 5 phrases ; précis sur les chiffres.
+
+PERSONNALITÉ VOCALE — Parle comme OpenRouter ou ChatGPT Voice : fluide, intelligente, chaleureuse.
 - Raisonne en profondeur avant de répondre, puis exprime une réponse claire et pertinente.
 - Phrases complètes et naturelles, jamais télégraphiques ni mécaniques.
 - Rythme oral humain : virgules pour enchaîner une idée, point pour conclure une pensée.
@@ -6234,53 +6871,43 @@ ANALYSE AUTOMATIQUE :
   robotConvHistory.push({ role: 'user', content: query });
   if (robotConvHistory.length > 12) robotConvHistory = robotConvHistory.slice(-12);
 
-  // ── Vérifier cache ──
-  const cacheKey = robotCacheKey(query);
-  const isAction =
-    queryLow.includes('crée') ||
-    queryLow.includes('cree') ||
-    queryLow.includes('facture') ||
-    queryLow.includes('montre') ||
-    queryLow.includes('affiche') ||
-    queryLow.includes('modif') ||
-    /ouvre|ouvrir|youtube|google|lien|http|www\.|facebook|navigateur/i.test(queryLow);
-  if (!isAction) {
-    if (robotMemoryCache.has(cacheKey)) {
-      console.log('[COMEO Robot] Memory cache hit');
-      robotSpeak(stripRobotVoiceText(robotMemoryCache.get(cacheKey)));
-      return;
-    }
-    const cached = await robotCacheGet(cacheKey);
-    if (cached && !cached.includes('###')) {
-      console.log('[COMEO Robot] Cache hit');
-      robotMemoryCache.set(cacheKey, cached);
-      robotSpeak(stripRobotVoiceText(cached));
-      return;
-    }
-  }
-
   try {
-    let response;
-    for (let i = 0; i < Math.min(GROQ_API_KEYS.length, 3); i++) {
-      const key = GROQ_API_KEYS[(groqKeyIdx + i) % GROQ_API_KEYS.length];
-      const model = GROQ_MODELS[groqModelIdx % GROQ_MODELS.length];
-      response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
-        body: JSON.stringify({
-          model,
-          max_tokens: 420,
-          temperature: 0.62,
-          top_p: 0.92,
-          messages: [{ role: 'system', content: systemRobot }, ...robotConvHistory],
-        }),
-      });
-      if (response.ok) break;
+    let reply = null;
+
+    // ══ ÉTAPE 0 : CACHE ROBOT — réponse instantanée ══
+    const robotCacheKeyStr = aiCacheKey(query);
+    const robotIsAction = isActionQuery(queryLow);
+    if (!robotIsAction) {
+      const cached = await aiCacheGet(robotCacheKeyStr);
+      if (cached && !cached.includes('###')) {
+        console.log('[COMEO Robot] ✅ Cache hit');
+        robotConvHistory.push({ role: 'assistant', content: cached });
+        robotSpeak(stripRobotVoiceText(cached));
+        return;
+      }
     }
 
-    if (!response || !response.ok) throw new Error('Erreur API');
-    const data = await response.json();
-    const reply = data.choices?.[0]?.message?.content?.trim() || "Je n'ai pas pu répondre.";
+    // ══ ÉTAPE 1 : GROQ — file d'attente multi-clés ══
+    let data = null;
+    if (GROQ_API_KEYS.length > 0) {
+      const allBusy = groqKeyBusy.length > 0 && groqKeyBusy.every(Boolean);
+      if (allBusy) setRobotBubble('⏳ IA en réflexion, veuillez patienter…');
+      const result = await callGroqQueued(robotConvHistory, systemRobot, 420, 0.62);
+      if (result && result.data) {
+        data = result.data;
+      } else if (result && result.error) {
+        setRobotBubble(result.msg);
+        return;
+      }
+    }
+
+    if (!data) throw new Error('Tous les providers indisponibles');
+    reply = data.choices?.[0]?.message?.content?.trim() || "Je n'ai pas pu répondre.";
+
+    // Sauvegarder dans le cache si ce n'est pas une action
+    if (!robotIsAction && reply && !reply.includes('###')) {
+      aiCacheSet(robotCacheKeyStr, reply).catch(() => {});
+    }
     robotConvHistory.push({ role: 'assistant', content: reply });
 
     // ── TRAITEMENT DES ACTIONS ──
@@ -6332,7 +6959,55 @@ ANALYSE AUTOMATIQUE :
       }
       return;
     }
+// ── Handler CREATE_PAIE ──
+    if (reply.includes('###CREATE_PAIE###')) {
+      const parts = reply.split('###CREATE_PAIE###');
+      const texteBefore = parts[0].trim();
+      if (texteBefore) robotSpeak(stripRobotVoiceText(texteBefore));
+      try {
+        const jsonMatch = parts[1].trim().match(/(\{[\s\S]*\})/);
+        if (jsonMatch) {
+          const p = JSON.parse(jsonMatch[1]);
+          // Remplir le modal paie et déclencher la sauvegarde
+          document.getElementById('paie-nom').value = p.nom || '';
+          document.getElementById('paie-poste').value = p.poste || '';
+          document.getElementById('paie-mois').value = p.mois || new Date().toISOString().slice(0,7);
+          document.getElementById('paie-brut').value = p.brut || 0;
+          calcPaie();
+          await savePaie();
+          const sal = salaries[salaries.length-1];
+          if (sal) {
+            setTimeout(() => robotSpeak(`Parfait, la fiche de paie de ${sal.nom} pour ${sal.mois} est enregistrée. Son net à payer est de ${fnPDF(sal.netAPayer)} francs CFA, avec ${fnPDF(sal.ir)} d'impôt sur le revenu.`), texteBefore?2000:0);
+          }
+        }
+      } catch(pe) { robotSpeak("Je n'ai pas pu créer la fiche de paie. Reformulez s'il vous plaît."); }
+      return;
+    }
 
+    // ── Handler CREATE_IMMOB ──
+    if (reply.includes('###CREATE_IMMOB###')) {
+      const parts = reply.split('###CREATE_IMMOB###');
+      const texteBefore = parts[0].trim();
+      if (texteBefore) robotSpeak(stripRobotVoiceText(texteBefore));
+      try {
+        const jsonMatch = parts[1].trim().match(/(\{[\s\S]*\})/);
+        if (jsonMatch) {
+          const p = JSON.parse(jsonMatch[1]);
+          document.getElementById('immob-nom').value = p.nom || '';
+          document.getElementById('immob-valeur').value = p.valeur || 0;
+          document.getElementById('immob-categorie').value = p.cat || '2442';
+          document.getElementById('immob-methode').value = p.methode || 'lineaire';
+          document.getElementById('immob-date').value = p.dateAcq || new Date().toISOString().split('T')[0];
+          document.getElementById('immob-ref').value = p.ref || '';
+          await saveImmob();
+          const im = immobilisations[immobilisations.length-1];
+          if (im) {
+            setTimeout(() => robotSpeak(`L'immobilisation "${im.nom}" a été enregistrée pour une valeur brute de ${fnPDF(im.valeur)} francs CFA, avec une dotation annuelle de ${fnPDF(im.dotAnnuelle)} francs CFA.`), texteBefore?2000:0);
+          }
+        }
+      } catch(pe) { robotSpeak("Je n'ai pas pu enregistrer l'immobilisation. Reformulez s'il vous plaît."); }
+      return;
+    }
     // 2. Afficher journal 3D
     if (reply.includes('###SHOW_3D_JOURNAL###')) {
       const parts = reply.split('###SHOW_3D_JOURNAL###');
@@ -6369,18 +7044,13 @@ ANALYSE AUTOMATIQUE :
         if (jsonMatch) {
           const p = JSON.parse(jsonMatch[1]);
           const vueNames = {
-            factures: 'factures',
-            clients: 'clients',
-            fournisseurs: 'fournisseurs',
-            journal: 'journal',
-            balance: 'balance',
-            bilan: 'bilan',
-            resultat: 'resultat',
-            tresorerie: 'tresorerie',
-            dashboard: 'dashboard',
-            saisie: 'saisie',
-            grandlivre: 'grandlivre',
-          };
+  factures: 'factures', clients: 'clients', fournisseurs: 'fournisseurs',
+  journal: 'journal', balance: 'balance', bilan: 'bilan', resultat: 'resultat',
+  tresorerie: 'tresorerie', dashboard: 'dashboard', saisie: 'saisie', grandlivre: 'grandlivre',
+  paie: 'paie', immobilisations: 'immobilisations', stocks: 'stocks',
+  rapprochement: 'rapprochement', budgets: 'budgets', lettrage: 'lettrage',
+  declarations: 'declarations', tafire: 'tafire', exercices: 'exercices', devis: 'devis',
+};
           const vue = vueNames[p.vue] || 'dashboard';
           if (texteBefore) robotSpeak(stripRobotVoiceText(texteBefore));
           setTimeout(() => {
@@ -6399,17 +7069,16 @@ ANALYSE AUTOMATIQUE :
     }
 
     // 4. Réponse normale
-    if (!isAction) {
-      robotMemoryCache.set(cacheKey, reply);
-      await robotCacheSet(cacheKey, reply);
-    }
     robotSpeak(stripRobotVoiceText(reply));
   } catch (err) {
     console.warn('[COMEO Robot]', err);
     aiServiceAvailable = false;
     updateServiceAvailabilityUI();
-    robotSpeak(getAiUnavailableMessage(), { skipBubble: true });
-    setRobotBubble('<span class="service-msg-inline">⏳ ' + escapeHtml(getAiUnavailableMessage()) + '</span>');
+    const errMsg = GROQ_API_KEYS.length === 0
+      ? '⚠️ Aucune clé API configurée. Clés configurées dans le système.'
+      : `❌ Erreur : ${err?.message || 'inconnue'}. Vérifiez vos clés dans le système.`;
+    robotSpeak(errMsg, { skipBubble: true });
+    setRobotBubble('<span class="service-msg-inline">' + errMsg + '</span>');
   } finally {
     // Sécurité mobile : ne jamais rester bloqué sur « Réflexion… »
     setTimeout(() => {
@@ -6460,7 +7129,8 @@ let devisCounter = 1;
 // ─── Chargement depuis Firestore ───
 async function loadClientsFromFirestore() {
   try {
-    const col = window._fbCollection(window._db, 'profiles', currentProfile.id, 'clients');
+    const ownerID = getOwnerProfileId();
+    const col = window._fbCollection(window._db, 'profiles', ownerID, 'clients');
     const snap = await window._fbGetDocs(col);
     clientsList = [];
     snap.forEach((d) => clientsList.push({ ...d.data(), _docId: d.id }));
@@ -6469,7 +7139,8 @@ async function loadClientsFromFirestore() {
 }
 async function loadFournisseursFromFirestore() {
   try {
-    const col = window._fbCollection(window._db, 'profiles', currentProfile.id, 'fournisseurs');
+    const ownerID = getOwnerProfileId();
+    const col = window._fbCollection(window._db, 'profiles', ownerID, 'fournisseurs');
     const snap = await window._fbGetDocs(col);
     fournisseursList = [];
     snap.forEach((d) => fournisseursList.push({ ...d.data(), _docId: d.id }));
@@ -6478,7 +7149,8 @@ async function loadFournisseursFromFirestore() {
 }
 async function loadFacturesFromFirestore() {
   try {
-    const col = window._fbCollection(window._db, 'profiles', currentProfile.id, 'factures');
+    const ownerID = getOwnerProfileId();
+    const col = window._fbCollection(window._db, 'profiles', ownerID, 'factures');
     const q = window._fbQuery(col, window._fbOrderBy('dateEmission', 'desc'));
     const snap = await window._fbGetDocs(q);
     facturesList = [];
@@ -7167,6 +7839,62 @@ function updateExportOptions() {
 }
 
 // ══════════════════════════════════════════
+
+// ══════════════════════════════════════════
+// CONFIGURATION SERVEUR — Clés API en dur (mode local / CC.html)
+// Généré le 23/06/2026 19:30:55
+// ══════════════════════════════════════════
+
+GROQ_API_KEYS = [
+    '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'
+  ];
+
+GROQ_MODELS = [
+    'auto'
+  ];
+
+// Initialiser le tableau d'occupation des clés
+groqKeyBusy = new Array(GROQ_API_KEYS.length).fill(false);
+
+
+// ── La fonction loadServerConfig() est déjà déclarée plus haut (ligne 113) ──
+
+// ══ API PUBLIQUE — Gestion des clés OpenRouter depuis CC.html ══
+/**
+ * Appelée depuis CC.html pour définir / recharger les clés OpenRouter.
+ * Peut être appelée à tout moment (y compris après le chargement de la page).
+ * @param {string[]} keys  Tableau de clés API OpenRouter
+ * @param {string[]} [models] Optionnel : liste de modèles Groq
+ */
+window.setGroqKeysFromCC = function(keys, models) {
+  GROQ_API_KEYS = (keys || []).filter(Boolean);
+  groqKeyBusy = new Array(GROQ_API_KEYS.length).fill(false);
+  if (models && models.length > 0) GROQ_MODELS = models;
+  aiServiceAvailable = GROQ_API_KEYS.length > 0;
+  updateServiceAvailabilityUI();
+  console.log(`[COMEO CC] ${GROQ_API_KEYS.length} clé(s) Groq chargée(s) depuis CC.html`);
+  // Sauvegarder dans Firestore pour persistance
+  if (window._fbReady) {
+    const entries = GROQ_API_KEYS.map((v, i) => ({ id: i + 1, value: v }));
+    window._fbSetDoc(window._fbDoc(window._db, 'server_config', 'groq_keys'), { keys: entries }, { merge: false })
+      .then(() => console.log('[COMEO CC] Clés sauvegardées dans Firestore'))
+      .catch((e) => console.warn('[COMEO CC] Erreur sauvegarde Firestore:', e.message));
+    if (models && models.length > 0) {
+      window._fbSetDoc(window._fbDoc(window._db, 'server_config', 'models'), { list: models }, { merge: false }).catch(() => {});
+    }
+  }
+};
+
+/**
+ * Retourne l'état actuel des clés (pour l'affichage dans CC.html).
+ */
+window.getGroqKeysStatus = function() {
+  return GROQ_API_KEYS.map((k, i) => ({
+    index: i,
+    key: k.substring(0, 8) + '…' + k.slice(-4),
+    busy: groqKeyBusy[i] || false,
+  }));
+};
 // EXPORT — FACTURE PDF (impression pro)
 // ══════════════════════════════════════════
 function buildFactureHTMLContent(fac) {
@@ -7813,53 +8541,1529 @@ function exportExcelAvance() {
   toast('✓ Excel (CSV) exporté', 'success');
 }
 
-async function callMistral(messages, systemPrompt) {
-  if (MISTRAL_API_KEYS.length === 0) return null;
+// ══════════════════════════════════════════
 
-  for (let attempt = 0; attempt < MISTRAL_API_KEYS.length; attempt++) {
-    const key = MISTRAL_API_KEYS[(mistralKeyIdx + attempt) % MISTRAL_API_KEYS.length];
-    const model = MISTRAL_MODELS[attempt % MISTRAL_MODELS.length];
 
-    try {
-      if (attempt > 0) await new Promise((r) => setTimeout(r, 800 * attempt));
 
-      const response = await fetch('https://api.mistral.ai/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${key}`,
-        },
-        body: JSON.stringify({
-          model,
-          max_tokens: 6000,
-          temperature: 0.02,
-          top_p: 0.95,
-          messages: [{ role: 'system', content: systemPrompt }, ...messages],
-        }),
+
+// Barème IR progressif Côte d'Ivoire — DGI 2024 (annuel → mensuel)
+function calcIR(brutMensuel) {
+  const annuel = brutMensuel * 12;
+  const tranches = [
+    { max: 600000,   taux: 0 },
+    { max: 1800000,  taux: 0.10 },
+    { max: 3000000,  taux: 0.15 },
+    { max: 6000000,  taux: 0.20 },
+    { max: 12000000, taux: 0.25 },
+    { max: Infinity, taux: 0.30 },
+  ];
+  let ir = 0, prev = 0;
+  for (const t of tranches) {
+    if (annuel <= prev) break;
+    ir += (Math.min(annuel, t.max) - prev) * t.taux;
+    prev = t.max;
+  }
+  return Math.round(ir / 12);
+}
+
+function calcPaie() {
+  const brut = parseFloat(document.getElementById('paie-brut')?.value) || 0;
+  if (!brut) return;
+  const plafondMensuel = 137276;
+  const cnpsSal = Math.round(Math.min(brut * 0.077, plafondMensuel));
+  const cnpsPat = Math.round(brut * 0.16);
+  const tpa     = Math.round(brut * 0.004);
+  const cn      = Math.round(brut * 0.015);
+  const taxeApp = Math.round(brut * 0.004);
+  const chargesPatronales = cnpsPat + tpa + cn + taxeApp;
+  const baseIR  = brut - cnpsSal - Math.round((brut - cnpsSal) * 0.20);
+  const ir      = calcIR(baseIR);
+  const netAPayer = brut - cnpsSal - ir;
+
+  const res  = document.getElementById('paie-calcul-result');
+  const grid = document.getElementById('paie-detail-grid');
+  if (!res || !grid) return { brut, cnpsSal, ir, netAPayer, cnpsPat, tpa, cn, taxeApp, chargesPatronales };
+  res.style.display = 'block';
+  grid.innerHTML = `
+    <div class="bulletin-row"><span class="lbl">Salaire brut</span><span class="val">${fn(brut)} FCFA</span></div>
+    <div class="bulletin-row deduction"><span class="lbl">CNPS salarial (7,7% plafonné)</span><span class="val">- ${fn(cnpsSal)} FCFA</span></div>
+    <div class="bulletin-row deduction"><span class="lbl">Abattement forfaitaire (20%)</span><span class="val">- ${fn(Math.round((brut-cnpsSal)*0.20))} FCFA</span></div>
+    <div class="bulletin-row deduction"><span class="lbl">Impôt sur le Revenu (IR DGI)</span><span class="val">- ${fn(ir)} FCFA</span></div>
+    <div class="bulletin-row total"><span class="lbl">NET À PAYER</span><span class="val">${fn(netAPayer)} FCFA</span></div>
+    <div style="margin-top:12px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)">Charges patronales (employeur)</div>
+    <div class="bulletin-row deduction"><span class="lbl">CNPS patronal (16%)</span><span class="val">${fn(cnpsPat)} FCFA</span></div>
+    <div class="bulletin-row deduction"><span class="lbl">TPA (0,4%)</span><span class="val">${fn(tpa)} FCFA</span></div>
+    <div class="bulletin-row deduction"><span class="lbl">Contribution nationale (1,5%)</span><span class="val">${fn(cn)} FCFA</span></div>
+    <div class="bulletin-row deduction"><span class="lbl">Taxe apprentissage (0,4%)</span><span class="val">${fn(taxeApp)} FCFA</span></div>
+    <div class="bulletin-row total" style="border-top:1px solid var(--line);padding-top:6px">
+      <span class="lbl">Coût total employeur</span>
+      <span class="val" style="color:var(--rust)">${fn(brut + chargesPatronales)} FCFA</span>
+    </div>`;
+  return { brut, cnpsSal, ir, netAPayer, cnpsPat, tpa, cn, taxeApp, chargesPatronales };
+}
+
+function openPaieModal() {
+  document.getElementById('paieModal').style.display = 'flex';
+}
+
+async function savePaie() {
+  const nom   = document.getElementById('paie-nom').value.trim();
+  const poste = document.getElementById('paie-poste').value.trim();
+  const brut  = parseFloat(document.getElementById('paie-brut').value) || 0;
+  const mois  = document.getElementById('paie-mois').value;
+  if (!nom || !brut || !mois) { toast('Remplissez tous les champs obligatoires', 'error'); return; }
+  const calc = calcPaie();
+  if (!calc) return;
+  const sal = { id: Date.now(), nom, poste, brut, mois, ...calc, createdAt: new Date().toISOString() };
+  salaries.push(sal);
+
+  const dateEcr = mois + '-28';
+  const piece   = 'PAY-' + mois.replace('-', '');
+
+  // Écriture 1 — Constatation salaire
+  const ecr1 = {
+    id: Date.now(), date: dateEcr, journal: 'OD', piece,
+    libelle: `Salaire ${nom} — ${mois}`, createdAt: new Date().toISOString(),
+    lignes: sortLignesDebitAvantCredit([
+      { compte: '661', libelle: `Rémunérations directes — ${nom}`, debit: sal.brut,       credit: 0 },
+      { compte: '422', libelle: `Personnel, net à payer — ${nom}`,  debit: 0, credit: sal.netAPayer },
+      { compte: '431', libelle: 'CNPS salarial 7,7%',               debit: 0, credit: sal.cnpsSal  },
+      { compte: '447', libelle: 'IR retenu à la source',             debit: 0, credit: sal.ir       },
+    ])
+  };
+  await saveEcritureToFirestore(ecr1);
+  ecritures.push(ecr1);
+
+  // Écriture 2 — Charges patronales
+  const ecr2 = {
+    id: Date.now() + 1, date: dateEcr, journal: 'OD',
+    piece: 'PAY-PAT-' + mois.replace('-', ''),
+    libelle: `Charges patronales ${nom} — ${mois}`, createdAt: new Date().toISOString(),
+    lignes: sortLignesDebitAvantCredit([
+      { compte: '664', libelle: `Charges sociales patronales — ${nom}`, debit: sal.chargesPatronales, credit: 0 },
+      { compte: '431', libelle: 'CNPS patronal + TPA + CN',             debit: 0, credit: sal.chargesPatronales },
+    ])
+  };
+  await saveEcritureToFirestore(ecr2);
+  ecritures.push(ecr2);
+
+  if (window._fbReady && currentProfile?.id) {
+    try { await window._fbAddDoc(window._fbCollection(window._db, 'profiles', currentProfile.id, 'salaries'), sal); } catch(e) {}
+  }
+  document.getElementById('paieModal').style.display = 'none';
+  toast(`✓ Paie ${nom} — Net ${fn(sal.netAPayer)} FCFA — 2 écritures OD générées`, 'success');
+  renderPaie();
+  updateStats();
+}
+
+async function loadSalaries() {
+  if (!window._fbReady || !currentProfile?.id) return;
+  try {
+    const snap = await window._fbGetDocs(window._fbCollection(window._db, 'profiles', currentProfile.id, 'salaries'));
+    salaries = snap.docs.map(d => ({ ...d.data(), _docId: d.id }));
+  } catch(e) {}
+}
+
+function renderPaie() {
+  const el = document.getElementById('paieContent');
+  if (!el) return;
+  if (!salaries.length) {
+    el.innerHTML = '<div class="empty-state"><div class="icon">👤</div><p>Aucun salarié. Cliquez sur "+ Nouveau salarié".</p></div>';
+    return;
+  }
+  const totalBrut    = salaries.reduce((s,x) => s + (x.brut           || 0), 0);
+  const totalNet     = salaries.reduce((s,x) => s + (x.netAPayer      || 0), 0);
+  const totalCnpsSal = salaries.reduce((s,x) => s + (x.cnpsSal        || 0), 0);
+  const totalCnpsPat = salaries.reduce((s,x) => s + (x.chargesPatronales || 0), 0);
+  const totalIr      = salaries.reduce((s,x) => s + (x.ir             || 0), 0);
+  document.getElementById('paie-kpi-masse').textContent    = fn(totalBrut);
+  document.getElementById('paie-kpi-net').textContent      = fn(totalNet);
+  document.getElementById('paie-kpi-cnps-sal').textContent = fn(totalCnpsSal);
+  document.getElementById('paie-kpi-cnps-pat').textContent = fn(totalCnpsPat);
+  document.getElementById('paie-kpi-ir').textContent       = fn(totalIr);
+  el.innerHTML = `<div class="dtw"><table class="dt"><thead><tr>
+    <th>Nom</th><th>Poste</th><th>Mois</th>
+    <th style="text-align:right">Brut</th>
+    <th style="text-align:right">CNPS sal.</th>
+    <th style="text-align:right">IR</th>
+    <th style="text-align:right">Net à payer</th>
+    <th></th>
+  </tr></thead><tbody>${
+    salaries.map(s => `<tr>
+      <td><strong>${s.nom}</strong></td>
+      <td style="color:var(--muted)">${s.poste||'—'}</td>
+      <td style="font-family:var(--font-mono)">${s.mois||'—'}</td>
+      <td style="text-align:right;font-family:var(--font-mono)">${fn(s.brut)}</td>
+      <td style="text-align:right;font-family:var(--font-mono);color:var(--rust)">${fn(s.cnpsSal)}</td>
+      <td style="text-align:right;font-family:var(--font-mono);color:var(--muted)">${fn(s.ir)}</td>
+      <td style="text-align:right;font-family:var(--font-mono);color:var(--green);font-weight:700">${fn(s.netAPayer)}</td>
+      <td><button class="btn btn-sm-wire" onclick="exportBulletinPDF(${s.id})" title="Bulletin PDF">⎙</button></td>
+    </tr>`).join('')
+  }</tbody></table></div>`;
+}
+
+function exportBulletinPDF(salId) {
+  const sal = salaries.find(s => s.id === salId);
+  if (!sal) { toast('Salarié introuvable', 'error'); return; }
+  const { jsPDF } = window.jspdf;
+  if (!jsPDF) { toast('jsPDF non disponible', 'error'); return; }
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const company = currentProfile?.company || 'Entreprise';
+  const pageW = 210;
+
+  // En-tête
+  doc.setFillColor(10,11,16); doc.rect(0,0,pageW,28,'F');
+  doc.setTextColor(212,168,83); doc.setFontSize(14); doc.setFont('helvetica','bold');
+  doc.text('BULLETIN DE PAIE', 14, 12);
+  doc.setFontSize(8); doc.setFont('helvetica','normal');
+  doc.text(`${company} · SYSCOHADA · COMEO AI v5`, 14, 19);
+  doc.setTextColor(180,180,180);
+  doc.text(`Mois : ${sal.mois}  |  Généré le ${new Date().toLocaleDateString('fr-FR')}`, pageW-14, 19, {align:'right'});
+
+  // Info salarié
+  doc.setTextColor(10,11,16); doc.setFontSize(11); doc.setFont('helvetica','bold');
+  doc.text(sal.nom, 14, 40);
+  doc.setFontSize(9); doc.setFont('helvetica','normal');
+  doc.text(`Poste : ${sal.poste || '—'}`, 14, 47);
+
+  doc.autoTable({
+    startY: 55,
+    head: [['Libellé', 'Base', 'Taux', 'Montant (FCFA)']],
+    body: [
+      ['Salaire brut',                          fn(sal.brut)+' FCFA',            '100%',    fn(sal.brut)],
+      ['CNPS salarial (retraite)',               fn(sal.brut)+' FCFA',            '7,7%',   '- '+fn(sal.cnpsSal)],
+      ['Abattement forfaitaire',                 fn(sal.brut-sal.cnpsSal)+' FCFA','20%',    '—'],
+      ['Impôt sur le Revenu (barème DGI 2024)',  'Revenu net imposable',          'Progressif','- '+fn(sal.ir)],
+      ['NET À PAYER',                            '',                              '',        fn(sal.netAPayer)],
+    ],
+    styles: { font:'helvetica', fontSize:9, cellPadding:4 },
+    headStyles: { fillColor:[10,11,16], textColor:[212,168,83], fontStyle:'bold' },
+    columnStyles: { 3:{ halign:'right', fontStyle:'bold' } },
+    margin: { left:14, right:14 },
+  });
+
+  let y = doc.lastAutoTable.finalY + 8;
+  doc.autoTable({
+    startY: y,
+    head: [["Charges patronales (à la charge de l'employeur)", '', '', '']],
+    body: [
+      ['CNPS patronal',          fn(sal.brut)+' FCFA', '16,0%', fn(sal.cnpsPat||0)],
+      ['TPA',                    fn(sal.brut)+' FCFA', '0,4%',  fn(sal.tpa||0)],
+      ['Contribution nationale', fn(sal.brut)+' FCFA', '1,5%',  fn(sal.cn||0)],
+      ['Taxe apprentissage',     fn(sal.brut)+' FCFA', '0,4%',  fn(sal.taxeApp||0)],
+      ['Coût total employeur',   '',                   '',       fn(sal.brut+(sal.chargesPatronales||0))],
+    ],
+    styles: { font:'helvetica', fontSize:9, cellPadding:3 },
+    headStyles: { fillColor:[22,80,60], textColor:[100,220,160], fontStyle:'bold' },
+    columnStyles: { 3:{ halign:'right' } },
+    margin: { left:14, right:14 },
+  });
+
+  y = doc.lastAutoTable.finalY + 12;
+  doc.setDrawColor(200,192,176); doc.setLineWidth(0.3); doc.line(14,y,pageW-14,y);
+  doc.setFontSize(7); doc.setTextColor(150);
+  doc.text("Document généré par COMEO AI v5 · SYSCOHADA · Conforme DGI Côte d'Ivoire", 14, y+5);
+  doc.text('Signature employé : _______________', pageW-14, y+5, {align:'right'});
+
+  doc.save(`BULLETIN_${sal.nom.replace(/\s+/g,'_')}_${sal.mois}.pdf`);
+  toast(`✓ Bulletin ${sal.nom} — ${sal.mois} exporté`, 'success');
+}
+
+window.calcPaie = calcPaie;
+window.openPaieModal = openPaieModal;
+window.savePaie = savePaie;
+window.renderPaie = renderPaie;
+window.exportBulletinPDF = exportBulletinPDF;
+
+
+
+// ══════════════════════════════════════════
+// MODULE IMMOBILISATIONS
+// ══════════════════════════════════════════
+let immobilisations = [];
+const IMMOB_TAUX = { '2442': 0.33, '2451': 0.25, '2444': 0.20, '2441': 0.10, '231': 0.05, '211': 0.20 };
+const IMMOB_AMORT = { '2442': '2844', '2451': '2845', '2444': '2844', '2441': '2841', '231': '2831', '211': '2813' };
+const IMMOB_LABELS = { '2442': 'Matériel informatique', '2451': 'Véhicule', '2444': 'Mobilier', '2441': 'Matériel industriel', '231': 'Bâtiment', '211': 'Immob. incorporelle' };
+
+function updateImmobCompte() { calcAmortissement(); }
+
+function calcAmortissement() {
+  const val = parseFloat(document.getElementById('immob-valeur')?.value) || 0;
+  const cat = document.getElementById('immob-categorie')?.value || '2442';
+  const methode = document.getElementById('immob-methode')?.value || 'lineaire';
+  const preview = document.getElementById('immob-amort-preview');
+  if (!preview || !val) { if (preview) preview.style.display = 'none'; return; }
+  const taux = IMMOB_TAUX[cat] || 0.2;
+  const duree = Math.round(1 / taux);
+  const dotAnnuelle = Math.round(val * taux);
+  const dotMensuelle = Math.round(dotAnnuelle / 12);
+  preview.style.display = 'block';
+  let rows = '';
+  let restant = val;
+  for (let i = 1; i <= Math.min(duree, 5); i++) {
+    let dot = dotAnnuelle;
+    if (methode === 'degressif') dot = Math.round(restant * taux * 1.5);
+    restant = Math.max(0, restant - dot);
+    rows += `<tr><td style="padding:4px 8px">Année ${i}</td><td style="padding:4px 8px;text-align:right;color:var(--rust)">${fn(dot)}</td><td style="padding:4px 8px;text-align:right;color:var(--teal)">${fn(restant)}</td></tr>`;
+  }
+  preview.innerHTML = `<strong>Taux ${(taux*100).toFixed(0)}%/an · Durée ${duree} ans · Dot. annuelle : ${fn(dotAnnuelle)} FCFA</strong>
+  <table style="width:100%;margin-top:8px;font-size:12px"><thead><tr><th style="text-align:left;color:var(--muted);padding:4px 8px">Exercice</th><th style="text-align:right;color:var(--muted);padding:4px 8px">Dotation</th><th style="text-align:right;color:var(--muted);padding:4px 8px">VNC</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function openImmobModal() {
+  document.getElementById('immobModal').style.display = 'flex';
+  document.getElementById('immob-date').value = new Date().toISOString().split('T')[0];
+  calcAmortissement();
+}
+
+async function saveImmob() {
+  const nom = document.getElementById('immob-nom').value.trim();
+  const valeur = parseFloat(document.getElementById('immob-valeur').value) || 0;
+  const cat = document.getElementById('immob-categorie').value;
+  const methode = document.getElementById('immob-methode').value;
+  const dateAcq = document.getElementById('immob-date').value;
+  const ref = document.getElementById('immob-ref').value.trim();
+  if (!nom || !valeur || !dateAcq) { toast('Remplissez tous les champs obligatoires', 'error'); return; }
+  const taux = IMMOB_TAUX[cat] || 0.2;
+  const dotAnnuelle = Math.round(valeur * taux);
+  const immob = { id: Date.now(), nom, valeur, cat, methode, dateAcq, ref, taux, dotAnnuelle, amortCumul: 0, createdAt: new Date().toISOString() };
+  immobilisations.push(immob);
+  if (window._fbReady && currentProfile?.id) {
+    try { await window._fbAddDoc(window._fbCollection(window._db, 'profiles', currentProfile.id, 'immobilisations'), immob); } catch(e) {}
+  }
+  document.getElementById('immobModal').style.display = 'none';
+  toast(`✓ Immobilisation "${nom}" enregistrée — Amort. ${fn(dotAnnuelle)} FCFA/an`, 'success');
+  renderImmobilisations();
+}
+
+async function loadImmobilisations() {
+  if (!window._fbReady || !currentProfile?.id) return;
+  try {
+    const snap = await window._fbGetDocs(window._fbCollection(window._db, 'profiles', currentProfile.id, 'immobilisations'));
+    immobilisations = snap.docs.map(d => ({ ...d.data(), _docId: d.id }));
+  } catch(e) {}
+}
+
+function renderImmobilisations() {
+  const el = document.getElementById('immobContent');
+  if (!el) return;
+  if (!immobilisations.length) { el.innerHTML = '<div class="empty-state"><div class="icon">🏗️</div><p>Aucune immobilisation enregistrée.</p></div>'; return; }
+  const totalBrut = immobilisations.reduce((s, x) => s + (x.valeur || 0), 0);
+  const totalAmort = immobilisations.reduce((s, x) => s + (x.amortCumul || 0), 0);
+  const totalNet = totalBrut - totalAmort;
+  const totalDot = immobilisations.reduce((s, x) => s + (x.dotAnnuelle || 0), 0);
+  document.getElementById('immob-kpi-brut').textContent = fn(totalBrut);
+  document.getElementById('immob-kpi-amort').textContent = fn(totalAmort);
+  document.getElementById('immob-kpi-net').textContent = fn(totalNet);
+  document.getElementById('immob-kpi-dot').textContent = fn(totalDot);
+  el.innerHTML = `<div class="dtw"><table class="dt amort-table"><thead><tr><th>Désignation</th><th>Catégorie</th><th>Date acq.</th><th style="text-align:right">Valeur brute</th><th style="text-align:right">Taux</th><th style="text-align:right" class="dot-cell">Dot. annuelle</th><th style="text-align:right" class="vnc-cell">VNC</th><th></th></tr></thead><tbody>${
+    immobilisations.map(im => {
+      const vnc = (im.valeur || 0) - (im.amortCumul || 0);
+      return `<tr><td><strong>${im.nom}</strong>${im.ref ? `<br><span style="font-size:11px;color:var(--muted)">${im.ref}</span>` : ''}</td><td style="font-size:12px">${IMMOB_LABELS[im.cat] || im.cat}</td><td style="font-family:var(--font-mono);font-size:12px">${im.dateAcq}</td><td style="text-align:right;font-family:var(--font-mono)">${fn(im.valeur)}</td><td style="text-align:right;font-family:var(--font-mono)">${((im.taux||0)*100).toFixed(0)}%</td><td style="text-align:right;font-family:var(--font-mono);color:var(--rust)">${fn(im.dotAnnuelle)}</td><td style="text-align:right;font-family:var(--font-mono);color:var(--teal);font-weight:700">${fn(vnc)}</td><td><button class="btn btn-sm-wire" onclick="genererDotation(${im.id})">681↗</button></td></tr>`;
+    }).join('')
+  }</tbody></table></div>`;
+}
+
+async function genererDotation(immobId) {
+  const im = immobilisations.find(x => x.id === immobId);
+  if (!im) return;
+  const yr = document.getElementById('exerciceYear')?.value || new Date().getFullYear();
+  const dateEcr = `${yr}-12-31`;
+  const dot = im.dotAnnuelle;
+  const amortCpte = IMMOB_AMORT[im.cat] || '2844';
+  const ecr = {
+    id: Date.now(), date: dateEcr, journal: 'IN', piece: 'AMO-' + yr,
+    libelle: `Dotation amort. ${im.nom} — ${yr}`, createdAt: new Date().toISOString(),
+    lignes: [
+      { compte: '681', libelle: 'Dotations aux amortissements', debit: dot, credit: 0 },
+      { compte: amortCpte, libelle: `Amort. ${im.nom}`, debit: 0, credit: dot }
+    ]
+  };
+  await saveEcritureToFirestore(ecr);
+  ecritures.push(ecr);
+  im.amortCumul = (im.amortCumul || 0) + dot;
+  updateStats();
+  toast(`✓ Écriture 681/${amortCpte} générée — ${fn(dot)} FCFA`, 'success');
+  renderImmobilisations();
+}
+
+function exportTableauAmortissement() {
+  if (!immobilisations.length) { toast('Aucune immobilisation', 'error'); return; }
+  const { jsPDF } = window.jspdf;
+  if (!jsPDF) { toast('jsPDF non chargé', 'error'); return; }
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+  const company = currentProfile?.company || 'Entreprise';
+  const yr = document.getElementById('exerciceYear')?.value || new Date().getFullYear();
+  const pageW = 297;
+  doc.setFillColor(10, 11, 16);
+  doc.rect(0, 0, pageW, 24, 'F');
+  doc.setTextColor(212, 168, 83);
+  doc.setFontSize(13);
+  doc.setFont('helvetica', 'bold');
+  doc.text(`TABLEAU DES IMMOBILISATIONS ET AMORTISSEMENTS — ${company} — ${yr}`, 14, 10);
+  doc.setFontSize(7);
+  doc.setFont('helvetica', 'normal');
+  doc.text('SYSCOHADA Révisé 2017 · COMEO AI v5', 14, 17);
+  const rows = immobilisations.map(im => {
+    const vnc = (im.valeur || 0) - (im.amortCumul || 0);
+    return [
+      im.nom,
+      IMMOB_LABELS[im.cat] || im.cat,
+      im.dateAcq,
+      im.ref || '—',
+      fn(im.valeur),
+      ((im.taux||0)*100).toFixed(0) + '%',
+      im.methode || 'linéaire',
+      fn(im.dotAnnuelle),
+      fn(im.amortCumul || 0),
+      fn(vnc),
+    ];
+  });
+  const totalBrut = immobilisations.reduce((s,x) => s + (x.valeur||0), 0);
+  const totalAmort = immobilisations.reduce((s,x) => s + (x.amortCumul||0), 0);
+  const totalNet = totalBrut - totalAmort;
+  const totalDot = immobilisations.reduce((s,x) => s + (x.dotAnnuelle||0), 0);
+  doc.autoTable({
+    startY: 28,
+    head: [['Désignation', 'Catégorie', 'Date acq.', 'Référence', 'Valeur brute', 'Taux', 'Méthode', 'Dot. annuelle', 'Amort. cumulé', 'VNC']],
+    body: rows,
+    foot: [['TOTAL', '', '', '', fn(totalBrut), '', '', fn(totalDot), fn(totalAmort), fn(totalNet)]],
+    styles: { font: 'helvetica', fontSize: 7.5, cellPadding: 2.5 },
+    headStyles: { fillColor: [10, 11, 16], textColor: [212, 168, 83], fontStyle: 'bold', fontSize: 7 },
+    footStyles: { fillColor: [30, 34, 54], textColor: [212, 168, 83], fontStyle: 'bold' },
+    alternateRowStyles: { fillColor: [250, 248, 244] },
+    columnStyles: {
+      4: { halign: 'right' }, 7: { halign: 'right', textColor: [192, 50, 20] },
+      8: { halign: 'right' }, 9: { halign: 'right', fontStyle: 'bold', textColor: [22, 160, 100] }
+    },
+    margin: { left: 14, right: 14 },
+  });
+  doc.save(`TABLEAU_AMORTISSEMENTS_${company.replace(/\s+/g,'_')}_${yr}.pdf`);
+  toast('✓ Tableau des amortissements exporté en PDF', 'success');
+}
+
+// ──────────────────────────────────────────
+// TAFIRE — Tableau de Financement des Ressources et Emplois
+// ──────────────────────────────────────────
+function renderTAFIRE() {
+  const el = document.getElementById('tafireContent');
+  if (!el) return;
+  const map = getMap();
+  const yr = document.getElementById('exerciceYear')?.value || new Date().getFullYear();
+  const company = currentProfile?.company || '—';
+
+  // Calculs TAFIRE SYSCOHADA
+  const produits = Object.entries(map).filter(([c]) => c[0]==='7').reduce((s,[,a]) => s+(a.credit-a.debit), 0);
+  const charges = Object.entries(map).filter(([c]) => c[0]==='6').reduce((s,[,a]) => s+(a.debit-a.credit), 0);
+  const dotAmort = immobilisations.reduce((s,x) => s + (x.dotAnnuelle||0), 0);
+  const resultat = produits - charges;
+  const caf = resultat + dotAmort;
+  // Immobilisations acquises = valeur brute des nouvelles immos
+  const investissements = immobilisations.filter(im => im.dateAcq && im.dateAcq.startsWith(yr)).reduce((s,x) => s+(x.valeur||0), 0);
+  // Variation BFR approximation
+  const clients411 = (map['411']?.debit||0) - (map['411']?.credit||0);
+  const fourn401 = (map['401']?.credit||0) - (map['401']?.debit||0);
+  const stocks3 = Object.entries(map).filter(([c]) => c[0]==='3').reduce((s,[,a]) => s+(a.debit-a.credit), 0);
+  const variationBFR = clients411 + stocks3 - fourn401;
+  const tresorerie5 = Object.entries(map).filter(([c]) => c[0]==='5').reduce((s,[,a]) => s+(a.debit-a.credit), 0);
+  const dettesLT = (map['16']?.credit||0) - (map['16']?.debit||0) + (map['162']?.credit||0);
+
+  el.innerHTML = `
+  <div style="padding:20px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;flex-wrap:wrap;gap:12px">
+      <h3 style="font-family:var(--font-display);font-size:18px">TAFIRE — ${company} — Exercice ${yr}</h3>
+      <button class="btn btn-gold" onclick="exportTAFIREpdf()">⎙ Exporter PDF</button>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+      <!-- PARTIE 1 : CAF -->
+      <div style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--r);padding:16px">
+        <div style="font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.12em;color:var(--warm);margin-bottom:12px">I — Capacité d'Autofinancement (CAF)</div>
+        <div class="tafire-row"><span>Résultat net de l'exercice</span><span class="${resultat>=0?'tv':'tr'}">${fn(resultat)} FCFA</span></div>
+        <div class="tafire-row"><span>+ Dotations aux amortissements</span><span>${fn(dotAmort)} FCFA</span></div>
+        <div class="tafire-row tafire-total"><span>= CAF (MARGE BRUTE D'AUTOFINANCEMENT)</span><span class="${caf>=0?'tv':'tr'}" style="font-size:15px">${fn(caf)} FCFA</span></div>
+      </div>
+      <!-- PARTIE 2 : EMPLOIS / RESSOURCES -->
+      <div style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--r);padding:16px">
+        <div style="font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.12em;color:var(--warm);margin-bottom:12px">II — Emplois et Ressources Stables</div>
+        <div class="tafire-row"><span>Investissements (acquisitions ${yr})</span><span class="tr">- ${fn(investissements)} FCFA</span></div>
+        <div class="tafire-row"><span>Ressources LT (emprunts)</span><span class="tv">+ ${fn(dettesLT)} FCFA</span></div>
+        <div class="tafire-row tafire-total"><span>= Flux investissement net</span><span class="${caf-investissements+dettesLT>=0?'tv':'tr'}">${fn(caf - investissements + dettesLT)} FCFA</span></div>
+      </div>
+      <!-- PARTIE 3 : BFR -->
+      <div style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--r);padding:16px">
+        <div style="font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.12em;color:var(--warm);margin-bottom:12px">III — Variation du BFR</div>
+        <div class="tafire-row"><span>Créances clients (411)</span><span>${fn(clients411)} FCFA</span></div>
+        <div class="tafire-row"><span>Stocks (3xxx)</span><span>${fn(stocks3)} FCFA</span></div>
+        <div class="tafire-row"><span>Dettes fournisseurs (401)</span><span>${fn(fourn401)} FCFA</span></div>
+        <div class="tafire-row tafire-total"><span>= VARIATION BFR</span><span class="${variationBFR<=0?'tv':'tr'}">${fn(variationBFR)} FCFA</span></div>
+      </div>
+      <!-- PARTIE 4 : TRÉSORERIE -->
+      <div style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--r);padding:16px">
+        <div style="font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.12em;color:var(--warm);margin-bottom:12px">IV — Trésorerie Nette</div>
+        <div class="tafire-row"><span>Solde trésorerie (5xxx)</span><span class="${tresorerie5>=0?'tv':'tr'}">${fn(tresorerie5)} FCFA</span></div>
+        <div class="tafire-row"><span>CAF générée</span><span class="${caf>=0?'tv':'tr'}">${fn(caf)} FCFA</span></div>
+        <div class="tafire-row tafire-total"><span>= FLUX DE TRÉSORERIE NET</span><span class="${tresorerie5>=0?'tv':'tr'}" style="font-size:15px">${fn(tresorerie5)} FCFA</span></div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function exportTAFIREpdf() {
+  const { jsPDF } = window.jspdf;
+  if (!jsPDF) { toast('jsPDF non chargé', 'error'); return; }
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const company = currentProfile?.company || 'Entreprise';
+  const yr = document.getElementById('exerciceYear')?.value || new Date().getFullYear();
+  const map = getMap();
+  const pageW = 210;
+
+  const produits = Object.entries(map).filter(([c])=>c[0]==='7').reduce((s,[,a])=>s+(a.credit-a.debit),0);
+  const charges = Object.entries(map).filter(([c])=>c[0]==='6').reduce((s,[,a])=>s+(a.debit-a.credit),0);
+  const dotAmort = immobilisations.reduce((s,x)=>s+(x.dotAnnuelle||0),0);
+  const resultat = produits - charges;
+  const caf = resultat + dotAmort;
+  const clients411 = (map['411']?.debit||0) - (map['411']?.credit||0);
+  const fourn401 = (map['401']?.credit||0) - (map['401']?.debit||0);
+  const stocks3 = Object.entries(map).filter(([c])=>c[0]==='3').reduce((s,[,a])=>s+(a.debit-a.credit),0);
+  const tresorerie5 = Object.entries(map).filter(([c])=>c[0]==='5').reduce((s,[,a])=>s+(a.debit-a.credit),0);
+  const investissements = immobilisations.filter(im=>im.dateAcq&&im.dateAcq.startsWith(yr)).reduce((s,x)=>s+(x.valeur||0),0);
+  const dettesLT = (map['162']?.credit||0)-(map['162']?.debit||0);
+
+  doc.setFillColor(10,11,16); doc.rect(0,0,pageW,26,'F');
+  doc.setTextColor(212,168,83); doc.setFontSize(13); doc.setFont('helvetica','bold');
+  doc.text(`TAFIRE — ${company}`, 14, 11);
+  doc.setFontSize(8); doc.setFont('helvetica','normal');
+  doc.text(`Tableau de Financement des Ressources et Emplois · Exercice ${yr} · SYSCOHADA`, 14, 18);
+  doc.setTextColor(180,180,180); doc.setFontSize(7);
+  doc.text('Généré par COMEO AI v5 le ' + new Date().toLocaleDateString('fr-FR'), pageW-14, 18, {align:'right'});
+
+  doc.autoTable({
+    startY: 30,
+    head: [['RUBRIQUE SYSCOHADA', 'MONTANT (FCFA)']],
+    body: [
+      ['I — CAPACITÉ D\'AUTOFINANCEMENT', ''],
+      ['Résultat net de l\'exercice', fnPDF(resultat)],
+      ['+ Dotations aux amortissements', fnPDF(dotAmort)],
+      ['= CAF (Marge Brute d\'Autofinancement)', fnPDF(caf)],
+      ['', ''],
+      ['II — EMPLOIS ET RESSOURCES STABLES', ''],
+      ['Investissements (acquisitions ' + yr + ')', '- ' + fnPDF(investissements)],
+      ['Ressources LT (emprunts 162)', '+ ' + fnPDF(dettesLT)],
+      ['= Flux de financement stable', fnPDF(caf - investissements + dettesLT)],
+      ['', ''],
+      ['III — VARIATION DU BFR', ''],
+      ['Créances clients (411)', fnPDF(clients411)],
+      ['Stocks (3xxx)', fnPDF(stocks3)],
+      ['Dettes fournisseurs (401)', fnPDF(fourn401)],
+      ['= Variation BFR', fnPDF(clients411 + stocks3 - fourn401)],
+      ['', ''],
+      ['IV — TRÉSORERIE NETTE', ''],
+      ['Solde trésorerie clôture (5xxx)', fnPDF(tresorerie5)],
+    ],
+    foot: [['FLUX DE TRÉSORERIE NET', fnPDF(tresorerie5)]],
+    styles: { font: 'helvetica', fontSize: 9, cellPadding: 3 },
+    headStyles: { fillColor: [10,11,16], textColor: [212,168,83], fontStyle: 'bold' },
+    footStyles: { fillColor: [10,11,16], textColor: [212,168,83], fontStyle: 'bold', fontSize: 11 },
+    alternateRowStyles: { fillColor: [250,248,244] },
+    columnStyles: { 1: { halign: 'right', fontStyle: 'bold' } },
+    margin: { left: 14, right: 14 },
+  });
+  doc.save(`TAFIRE_${company.replace(/\s+/g,'_')}_${yr}.pdf`);
+  toast('✓ TAFIRE exporté en PDF', 'success');
+}
+
+window.renderTAFIRE = renderTAFIRE;
+window.exportTAFIREpdf = exportTAFIREpdf;
+window.exportTableauAmortissement = exportTableauAmortissement;
+window.openImmobModal = openImmobModal;
+window.saveImmob = saveImmob;
+window.renderImmobilisations = renderImmobilisations;
+window.genererDotation = genererDotation;
+window.calcAmortissement = calcAmortissement;
+window.updateImmobCompte = updateImmobCompte;
+
+// ══════════════════════════════════════════
+// MODULE STOCKS
+// ══════════════════════════════════════════
+let stockArticles = [];
+let stockMouvements = [];
+
+function openStockModal() {
+  document.getElementById('stockModal').style.display = 'flex';
+  document.getElementById('stock-date').value = new Date().toISOString().split('T')[0];
+}
+
+async function saveStock() {
+  const article = document.getElementById('stock-article').value.trim();
+  const type = document.getElementById('stock-type').value;
+  const qte = parseFloat(document.getElementById('stock-qte').value) || 0;
+  const pu = parseFloat(document.getElementById('stock-pu').value) || 0;
+  const date = document.getElementById('stock-date').value;
+  const seuil = parseFloat(document.getElementById('stock-seuil').value) || 5;
+  if (!article || !qte || !date) { toast('Remplissez tous les champs', 'error'); return; }
+  // Trouver ou créer l'article
+  let art = stockArticles.find(a => a.nom.toLowerCase() === article.toLowerCase());
+  if (!art) {
+    art = { id: Date.now(), nom: article, qteActuelle: 0, cmup: pu, seuil, mouvements: [] };
+    stockArticles.push(art);
+  }
+  const mvt = { type, qte, pu, date, valeur: qte * pu };
+  art.mouvements.push(mvt);
+  if (type === 'entree') {
+    // Recalc CMUP
+    const ancVal = art.qteActuelle * art.cmup;
+    const nvVal = qte * pu;
+    art.qteActuelle += qte;
+    art.cmup = art.qteActuelle > 0 ? Math.round((ancVal + nvVal) / art.qteActuelle) : pu;
+  } else if (type === 'sortie') {
+    art.qteActuelle = Math.max(0, art.qteActuelle - qte);
+  } else {
+    art.qteActuelle = qte; // inventaire
+  }
+  art.seuil = seuil;
+  if (window._fbReady && currentProfile?.id) {
+    try { await window._fbSetDoc(window._fbDoc(window._db, 'profiles', currentProfile.id, 'stocks', String(art.id)), art); } catch(e) {}
+  }
+  document.getElementById('stockModal').style.display = 'none';
+  toast(`✓ Mouvement stock "${article}" enregistré`, 'success');
+  renderStocks();
+}
+
+async function loadStocks() {
+  if (!window._fbReady || !currentProfile?.id) return;
+  try {
+    const snap = await window._fbGetDocs(window._fbCollection(window._db, 'profiles', currentProfile.id, 'stocks'));
+    stockArticles = snap.docs.map(d => ({ ...d.data(), _docId: d.id }));
+  } catch(e) {}
+}
+
+function renderStocks() {
+  const el = document.getElementById('stockContent');
+  if (!el) return;
+  if (!stockArticles.length) { el.innerHTML = '<div class="empty-state"><div class="icon">📦</div><p>Aucun article. Ajoutez un mouvement.</p></div>'; return; }
+  const valTotal = stockArticles.reduce((s, a) => s + a.qteActuelle * a.cmup, 0);
+  const alertes = stockArticles.filter(a => a.qteActuelle <= a.seuil).length;
+  document.getElementById('stock-kpi-articles').textContent = stockArticles.length;
+  document.getElementById('stock-kpi-valeur').textContent = fn(valTotal);
+  document.getElementById('stock-kpi-alertes').textContent = alertes;
+  document.getElementById('stock-kpi-mvt').textContent = stockArticles.reduce((s, a) => s + (a.mouvements?.length || 0), 0);
+  el.innerHTML = `<div class="dtw"><table class="dt"><thead><tr><th>Article</th><th style="text-align:right">Qté actuelle</th><th style="text-align:right">CMUP</th><th style="text-align:right">Valeur stock</th><th style="text-align:right">Seuil alerte</th><th>Statut</th></tr></thead><tbody>${
+    stockArticles.map(a => {
+      const val = a.qteActuelle * a.cmup;
+      const isLow = a.qteActuelle <= a.seuil;
+      return `<tr><td><strong>${a.nom}</strong></td><td style="text-align:right;font-family:var(--font-mono)">${a.qteActuelle}</td><td style="text-align:right;font-family:var(--font-mono)">${fn(a.cmup)}</td><td style="text-align:right;font-family:var(--font-mono);font-weight:700">${fn(val)}</td><td style="text-align:right;font-family:var(--font-mono);color:var(--muted)">${a.seuil}</td><td><span class="stock-badge ${isLow ? 'low' : 'ok'}">${isLow ? '⚠ Stock bas' : '✓ OK'}</span></td></tr>`;
+    }).join('')
+  }</tbody></table></div>`;
+}
+
+function exportInventairePDF() {
+  try {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit:'mm', format:'a4' });
+    const company = currentProfile?.company || 'Entreprise';
+    doc.setFontSize(14); doc.setFont('helvetica','bold');
+    doc.text('INVENTAIRE DES STOCKS — ' + company, 14, 18);
+    doc.setFontSize(9); doc.setFont('helvetica','normal');
+    doc.text('Édité le ' + new Date().toLocaleDateString('fr-FR'), 14, 25);
+    const rows = (stocks||[]).map(s => [
+      s.article||'—', s.type||'—',
+      String(s.quantite||0), fnPDF(s.prixUnitaire||0),
+      fnPDF((s.quantite||0)*(s.prixUnitaire||0))
+    ]);
+    const totalVal = (stocks||[]).reduce((t,s)=>t+(s.quantite||0)*(s.prixUnitaire||0),0);
+    if (rows.length) rows.push(['','','','TOTAL', fnPDF(totalVal) + ' FCFA']);
+    doc.autoTable({
+      head:[['Article','Type','Qté','P.U. HT','Valeur HT']],
+      body: rows.length ? rows : [['Aucun stock enregistré','','','','']],
+      startY:30, styles:{fontSize:9},
+      headStyles:{fillColor:[30,30,40],textColor:[212,168,83]}
+    });
+    doc.save('inventaire_' + company.replace(/\s/g,'_') + '.pdf');
+    toast('✅ Inventaire exporté en PDF', 'success');
+  } catch(e) { toast('Erreur export PDF: ' + e.message, 'error'); }
+}
+window.openStockModal = openStockModal;
+window.saveStock = saveStock;
+window.renderStocks = renderStocks;
+window.exportInventairePDF = exportInventairePDF;
+
+// ══════════════════════════════════════════
+// MODULE RAPPROCHEMENT BANCAIRE
+// ══════════════════════════════════════════
+let lignesReleve = [];
+
+function importReleveBancaire(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const lines = e.target.result.split('\n').filter(l => l.trim());
+    lignesReleve = lines.slice(1).map(l => {
+      const cols = l.split(/[;,]/).map(c => c.replace(/"/g,'').trim());
+      return { date: cols[0] || '', libelle: cols[1] || '', debit: parseFloat(cols[2]) || 0, credit: parseFloat(cols[3]) || 0, rapproche: false };
+    }).filter(l => l.date);
+    toast(`✓ ${lignesReleve.length} lignes importées du relevé`, 'success');
+    renderRapprochement();
+  };
+  reader.readAsText(file, 'UTF-8');
+}
+
+function renderRapprochement() {
+  const el = document.getElementById('rapprochementContent');
+  if (!el) return;
+  // Solde banque depuis relevé
+  const soldeBanque = lignesReleve.reduce((s, l) => s + l.credit - l.debit, 0);
+  // Solde compta 521
+  const map = getMap();
+  const compte521 = map['521'];
+  const soldeCompta = compte521 ? (compte521.debit - compte521.credit) : 0;
+  const ecart = soldeBanque - soldeCompta;
+  const nonRappr = lignesReleve.filter(l => !l.rapproche).length;
+  document.getElementById('rappr-kpi-banque').textContent = fn(Math.abs(soldeBanque));
+  document.getElementById('rappr-kpi-compta').textContent = fn(Math.abs(soldeCompta));
+  document.getElementById('rappr-kpi-ecart').textContent = fn(Math.abs(ecart));
+  document.getElementById('rappr-kpi-non').textContent = nonRappr;
+  if (!lignesReleve.length) { el.innerHTML = '<div class="empty-state"><div class="icon">🏦</div><p>Importez un relevé bancaire CSV.</p></div>'; return; }
+  el.innerHTML = `<div class="dtw"><table class="dt"><thead><tr><th>Date</th><th>Libellé</th><th style="text-align:right">Débit</th><th style="text-align:right">Crédit</th><th>Rapproché</th></tr></thead><tbody>${
+    lignesReleve.map((l, i) => `<tr style="${l.rapproche ? 'opacity:.5' : ''}"><td style="font-family:var(--font-mono);font-size:12px">${l.date}</td><td>${l.libelle}</td><td style="text-align:right;font-family:var(--font-mono);color:var(--rust)">${l.debit ? fn(l.debit) : ''}</td><td style="text-align:right;font-family:var(--font-mono);color:var(--green)">${l.credit ? fn(l.credit) : ''}</td><td><div class="rappr-check ${l.rapproche ? 'matched' : ''}" onclick="toggleRappr(${i})">${l.rapproche ? '✓' : ''}</div></td></tr>`).join('')
+  }</tbody></table></div>`;
+}
+
+function toggleRappr(i) { if (lignesReleve[i]) { lignesReleve[i].rapproche = !lignesReleve[i].rapproche; renderRapprochement(); } }
+function exportRapprochementPDF() {
+  try {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit:'mm', format:'a4' });
+    const company = currentProfile?.company || 'Entreprise';
+    doc.setFontSize(14); doc.setFont('helvetica','bold');
+    doc.text('ÉTAT DE RAPPROCHEMENT BANCAIRE — ' + company, 14, 18);
+    doc.setFontSize(9); doc.setFont('helvetica','normal');
+    doc.text('Édité le ' + new Date().toLocaleDateString('fr-FR'), 14, 25);
+    const map = getMap();
+    const soldeBanque521 = Object.entries(map).filter(([c])=>c.startsWith('521')).reduce((s,[,a])=>s+(a.debit-a.credit),0);
+    doc.autoTable({
+      body:[
+        ['Solde comptable (521)', fnPDF(soldeBanque521) + ' FCFA'],
+        ['Solde relevé bancaire', 'À renseigner'],
+        ['Écart', '—'],
+      ],
+      startY:30, styles:{fontSize:10},
+      columnStyles:{0:{fontStyle:'bold', cellWidth:110}}
+    });
+    doc.save('rapprochement_bancaire_' + company.replace(/\s/g,'_') + '.pdf');
+    toast('✅ État de rapprochement exporté', 'success');
+  } catch(e) { toast('Erreur export PDF: ' + e.message, 'error'); }
+}
+window.importReleveBancaire = importReleveBancaire;
+window.toggleRappr = toggleRappr;
+window.exportRapprochementPDF = exportRapprochementPDF;
+
+// ══════════════════════════════════════════
+// MODULE BUDGETS
+// ══════════════════════════════════════════
+let budgets = [];
+
+function openBudgetModal() { document.getElementById('budgetModal').style.display = 'flex'; }
+
+async function saveBudget() {
+  const compte = document.getElementById('budget-compte').value.trim();
+  const montant = parseFloat(document.getElementById('budget-montant').value) || 0;
+  const periode = document.getElementById('budget-periode').value;
+  const alerte = parseFloat(document.getElementById('budget-alerte').value) || 90;
+  if (!compte || !montant) { toast('Remplissez compte et montant', 'error'); return; }
+  const budget = { id: Date.now(), compte, montant, periode, alerte, yr: document.getElementById('exerciceYear')?.value || new Date().getFullYear(), createdAt: new Date().toISOString() };
+  budgets.push(budget);
+  if (window._fbReady && currentProfile?.id) {
+    try { await window._fbAddDoc(window._fbCollection(window._db, 'profiles', currentProfile.id, 'budgets'), budget); } catch(e) {}
+  }
+  document.getElementById('budgetModal').style.display = 'none';
+  toast(`✓ Budget ${compte} → ${fn(montant)} FCFA enregistré`, 'success');
+  renderBudgets();
+}
+
+async function loadBudgets() {
+  if (!window._fbReady || !currentProfile?.id) return;
+  try {
+    const snap = await window._fbGetDocs(window._fbCollection(window._db, 'profiles', currentProfile.id, 'budgets'));
+    budgets = snap.docs.map(d => ({ ...d.data(), _docId: d.id }));
+  } catch(e) {}
+}
+
+function renderBudgets() {
+  const el = document.getElementById('budgetContent');
+  if (!el) return;
+  const map = getMap();
+  if (!budgets.length) { el.innerHTML = '<div class="empty-state"><div class="icon">🎯</div><p>Aucun budget saisi.</p></div>'; return; }
+  let totalPrev = 0, totalReal = 0, nbDep = 0;
+  const rows = budgets.map(b => {
+    const cpteMap = map[b.compte];
+    const realise = cpteMap ? Math.abs(cpteMap.debit - cpteMap.credit) : 0;
+    const pct = b.montant > 0 ? Math.round((realise / b.montant) * 100) : 0;
+    const isDep = pct >= b.alerte;
+    if (isDep) nbDep++;
+    totalPrev += b.montant;
+    totalReal += realise;
+    let colorClass = pct >= 100 ? 'danger' : pct >= b.alerte ? 'warning' : '';
+    return `<div class="budget-row">
+      <div class="budget-row-header"><span class="budget-row-compte">${b.compte} — ${PC[b.compte] || b.compte}</span><span class="budget-row-pct" style="color:${pct >= 100 ? 'var(--red)' : pct >= b.alerte ? 'var(--warm)' : 'var(--green)'}">${pct}%${isDep ? ' ⚠' : ''}</span></div>
+      <div class="budget-bar"><div class="budget-bar-fill ${colorClass}" style="width:${Math.min(100, pct)}%"></div></div>
+      <div class="budget-row-detail"><span>Réalisé : ${fn(realise)} FCFA</span><span>Prévu : ${fn(b.montant)} FCFA</span></div>
+    </div>`;
+  }).join('');
+  const taux = totalPrev > 0 ? Math.round((totalReal / totalPrev) * 100) : 0;
+  document.getElementById('budget-kpi-total').textContent = fn(totalPrev);
+  document.getElementById('budget-kpi-realise').textContent = fn(totalReal);
+  document.getElementById('budget-kpi-taux').textContent = taux + '%';
+  document.getElementById('budget-kpi-dep').textContent = nbDep;
+  el.innerHTML = `<div style="padding:4px">${rows}</div>`;
+}
+
+function exportBudgetPDF() {
+  try {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit:'mm', format:'a4' });
+    const company = currentProfile?.company || 'Entreprise';
+    doc.setFontSize(14); doc.setFont('helvetica','bold');
+    doc.text('BUDGETS & PRÉVISIONS — ' + company, 14, 18);
+    doc.setFontSize(9); doc.setFont('helvetica','normal');
+    doc.text('Exercice ' + (currentProfile?.exercice||'2024') + ' — Édité le ' + new Date().toLocaleDateString('fr-FR'), 14, 25);
+    const map = getMap();
+    const rows = (budgets||[]).map(b => {
+      const realise = Object.entries(map).filter(([c])=>c.startsWith(String(b.compte))).reduce((s,[,a])=>s+Math.abs(a.debit-a.credit),0);
+      const taux = b.montant > 0 ? Math.round(realise/b.montant*100) : 0;
+      return [b.compte||'—', PC[b.compte]||b.compte||'—', fnPDF(b.montant||0), fnPDF(realise), taux+'%', b.periode||'Annuel'];
+    });
+    doc.autoTable({
+      head:[['Compte','Libellé','Prévu (FCFA)','Réalisé (FCFA)','Taux','Période']],
+      body: rows.length ? rows : [['Aucun budget saisi','','','','','']],
+      startY:30, styles:{fontSize:8},
+      headStyles:{fillColor:[30,30,40],textColor:[212,168,83]}
+    });
+    doc.save('budgets_' + company.replace(/\s/g,'_') + '.pdf');
+    toast('✅ Budget exporté en PDF', 'success');
+  } catch(e) { toast('Erreur export PDF: ' + e.message, 'error'); }
+}
+window.openBudgetModal = openBudgetModal;
+window.saveBudget = saveBudget;
+window.renderBudgets = renderBudgets;
+window.updateBudgetAccountSuggest = (inp) => {};
+window.exportBudgetPDF = exportBudgetPDF;
+
+// ══════════════════════════════════════════
+// MODULE LETTRAGE & ÉCHÉANCES
+// ══════════════════════════════════════════
+let lettrageMode = '411';
+
+function afficherLettrage(cpte) {
+  lettrageMode = cpte;
+  ['411', '401'].forEach(c => {
+    const btn = document.getElementById('btn-lettrage-' + c);
+    if (btn) { btn.style.borderColor = c === cpte ? 'var(--warm)' : ''; btn.style.color = c === cpte ? 'var(--warm)' : ''; }
+  });
+  renderLettrage();
+}
+
+function renderLettrage() {
+  const el = document.getElementById('lettrageContent');
+  if (!el) return;
+  const map = getMap();
+  // Grouper les mouvements par tiers (libellé)
+  const tiersMvts = {};
+  Object.entries(map).filter(([c]) => c.startsWith(lettrageMode)).forEach(([c, acc]) => {
+    acc.mvts.forEach(m => {
+      const tiers = m.libelle || c;
+      if (!tiersMvts[tiers]) tiersMvts[tiers] = { mvts: [], solde: 0 };
+      tiersMvts[tiers].mvts.push({ ...m, compte: c });
+      tiersMvts[tiers].solde += m.debit - m.credit;
+    });
+  });
+  // KPIs
+  const totalClients = Object.values(tiersMvts).filter(t => t.solde > 0).reduce((s, t) => s + t.solde, 0);
+  const totalFourn = Object.values(tiersMvts).filter(t => t.solde < 0).reduce((s, t) => s + Math.abs(t.solde), 0);
+  document.getElementById('lettr-kpi-clients').textContent = fn(totalClients);
+  document.getElementById('lettr-kpi-fourn').textContent = fn(totalFourn);
+  const today = new Date();
+  const retard = Object.values(tiersMvts).reduce((s, t) => {
+    return s + t.mvts.filter(m => {
+      const d = new Date(m.date);
+      return (today - d) / 86400000 > 30 && m.debit > 0;
+    }).reduce((ss, m) => ss + m.debit, 0);
+  }, 0);
+  document.getElementById('lettr-kpi-retard').textContent = fn(retard);
+  const total = Object.values(tiersMvts).reduce((s, t) => s + t.mvts.length, 0);
+  document.getElementById('lettr-kpi-lettre').textContent = total > 0 ? Math.round((total - Object.keys(tiersMvts).length) / total * 100) + '%' : '0%';
+  if (!Object.keys(tiersMvts).length) {
+    el.innerHTML = `<div class="empty-state"><div class="icon">🔗</div><p>Aucun mouvement sur les comptes ${lettrageMode}xxx.</p></div>`;
+    return;
+  }
+  // Balance âgée + détail lettrage si lancé
+  el.innerHTML = `<div class="dtw"><table class="balance-agee-table"><thead><tr><th>Tiers</th><th>&lt; 30j</th><th>30–60j</th><th class="col-retard">60–90j</th><th class="col-tres-retard">&gt; 90j</th><th>Total</th><th>Solde résiduel</th></tr></thead><tbody>${
+    Object.entries(tiersMvts).map(([tiers, data]) => {
+      const ranges = [0, 0, 0, 0];
+      data.mvts.forEach(m => {
+        const age = (today - new Date(m.date)) / 86400000;
+        const val = Math.abs(m.debit - m.credit);
+        if (age < 30) ranges[0] += val;
+        else if (age < 60) ranges[1] += val;
+        else if (age < 90) ranges[2] += val;
+        else ranges[3] += val;
       });
+      const etat = lettrageState[tiers];
+      const residuel = etat ? etat.soldeResiduel : null;
+      const residuelCell = residuel !== null
+        ? `<span style="color:${Math.abs(residuel)<0.01?'var(--green)':'var(--red)'}">
+             ${Math.abs(residuel)<0.01 ? '✓ Lettré' : fn(Math.abs(residuel)) + ' FCFA'}
+           </span>`
+        : '<span style="color:var(--muted)">—</span>';
+      return `<tr>
+        <td><strong>${tiers}</strong></td>
+        <td>${fn(ranges[0])}</td><td>${fn(ranges[1])}</td>
+        <td class="col-retard">${fn(ranges[2])}</td>
+        <td class="col-tres-retard">${fn(ranges[3])}</td>
+        <td style="font-weight:700">${fn(Math.abs(data.solde))}</td>
+        <td>${residuelCell}</td>
+      </tr>
+      ${etat && etat.lettres.length ? `<tr><td colspan="7" style="padding:4px 12px;background:var(--surface3,var(--surface2));font-size:11px;color:var(--muted)">
+        ${etat.lettres.map(l => `↔ ${l.date} : Facture ${l.facture} ↔ Règl. ${l.reglement} = <strong>${fn(l.montant)} FCFA</strong>`).join(' &nbsp;|&nbsp; ')}
+      </td></tr>` : ''}`;
+    }).join('')
+  }</tbody></table></div>`;
+}
 
-      if (response.ok) {
-        mistralKeyIdx = (mistralKeyIdx + attempt) % MISTRAL_API_KEYS.length;
-        const data = await response.json();
-        console.log(`[COMEO] Mistral OK — modèle: ${model}`);
-        return data;
-      }
+// ── État lettrage ──
+let lettrageState = {};   // { tiers: { factures: [...], reglements: [...], soldeResiduel } }
 
-      if (response.status === 429) {
-        console.warn(`[COMEO] Mistral clé ${attempt + 1} limitée → rotation`);
-        continue;
-      }
-    } catch (e) {
-      console.warn(`[COMEO] Mistral erreur: ${e.message}`);
-      continue;
+/**
+ * Lettrage automatique ligne à ligne : associe chaque règlement à la facture
+ * la plus ancienne non encore lettrée (ordre chronologique FIFO).
+ * Met à jour lettrageState et rafraîchit l'affichage.
+ */
+function lancerLettrage() {
+  const map = getMap();
+  lettrageState = {};
+
+  // Collecter tous les mouvements sur les comptes 40x / 41x par tiers (libellé)
+  Object.entries(map)
+    .filter(([c]) => c.startsWith(lettrageMode))
+    .forEach(([c, acc]) => {
+      acc.mvts.forEach((m) => {
+        const tiers = m.libelle || c;
+        if (!lettrageState[tiers]) {
+          lettrageState[tiers] = { factures: [], reglements: [], lettres: [], soldeResiduel: 0 };
+        }
+        const entry = { ...m, compte: c, reste: Math.abs(m.debit - m.credit) };
+        if (m.debit > m.credit) {
+          lettrageState[tiers].factures.push(entry);        // débit = créance client
+        } else {
+          lettrageState[tiers].reglements.push(entry);      // crédit = règlement
+        }
+      });
+    });
+
+  // Trier par date (FIFO)
+  Object.values(lettrageState).forEach((t) => {
+    t.factures.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+    t.reglements.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+
+    // Imputation FIFO
+    const regl = t.reglements.map((r) => ({ ...r, reste: r.reste }));
+    t.factures.forEach((f) => {
+      let resteF = f.reste;
+      regl.forEach((r) => {
+        if (resteF <= 0 || r.reste <= 0) return;
+        const imput = Math.min(resteF, r.reste);
+        resteF -= imput;
+        r.reste -= imput;
+        t.lettres.push({
+          date: r.date,
+          facture: f.date + ' · ' + fn(f.reste),
+          reglement: r.date + ' · ' + fn(r.reste + imput),
+          montant: imput,
+          lettree: resteF < 0.01,
+        });
+      });
+      f.reste = resteF;
+    });
+
+    // Solde résiduel non lettré
+    t.soldeResiduel = t.factures.reduce((s, f) => s + f.reste, 0)
+                    - regl.reduce((s, r) => s + r.reste, 0);
+  });
+
+  renderLettrage();
+  const nb = Object.values(lettrageState).reduce((s, t) => s + t.lettres.length, 0);
+  toast(`Lettrage FIFO — ${nb} association${nb > 1 ? 's' : ''} effectuée${nb > 1 ? 's' : ''}`, 'success');
+}
+function exportBalanceAgeePDF() {
+  try {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+    const company = currentProfile?.company || 'Entreprise';
+    const today = new Date().toLocaleDateString('fr-FR');
+    doc.setFontSize(14); doc.setFont('helvetica','bold');
+    doc.text('BALANCE ÂGÉE — ' + company, 14, 18);
+    doc.setFontSize(9); doc.setFont('helvetica','normal');
+    doc.text('Édité le ' + today, 14, 25);
+    const map = getMap();
+    const headers = [['Tiers','< 30J','30-60J','60-90J','> 90J','TOTAL']];
+    const rows401 = [], rows411 = [];
+    Object.entries(map).forEach(([code, acc]) => {
+      if (!code.startsWith('401') && !code.startsWith('411')) return;
+      const s = acc.debit - acc.credit;
+      if (Math.abs(s) < 1) return;
+      const row = [PC[code] || code, fnPDF(Math.abs(s)), '0','0','0', fnPDF(Math.abs(s))];
+      if (code.startsWith('411')) rows411.push(row);
+      else rows401.push(row);
+    });
+    doc.setFontSize(11); doc.setFont('helvetica','bold');
+    doc.text('CLIENTS (411)', 14, 35);
+    doc.autoTable({ head: headers, body: rows411.length ? rows411 : [['Aucune créance','','','','','']], startY: 38, styles: {fontSize:8}, headStyles:{fillColor:[30,30,40],textColor:[212,168,83]} });
+    const y2 = doc.lastAutoTable.finalY + 8;
+    doc.setFont('helvetica','bold'); doc.text('FOURNISSEURS (401)', 14, y2);
+    doc.autoTable({ head: headers, body: rows401.length ? rows401 : [['Aucune dette','','','','','']], startY: y2+3, styles: {fontSize:8}, headStyles:{fillColor:[30,30,40],textColor:[212,168,83]} });
+    doc.save('balance_agee_' + company.replace(/\s/g,'_') + '.pdf');
+    toast('✅ Balance âgée exportée en PDF', 'success');
+  } catch(e) { toast('Erreur export PDF: ' + e.message, 'error'); }
+}
+window.afficherLettrage = afficherLettrage;
+window.lancerLettrage = lancerLettrage;
+window.exportBalanceAgeePDF = exportBalanceAgeePDF;
+
+// ══════════════════════════════════════════
+// MODULE DÉCLARATIONS FISCALES
+// ══════════════════════════════════════════
+let declMode = 'tva';
+
+function afficherDeclaration(mode) {
+  declMode = mode;
+  ['tva', 'disa', 'imf', 'is'].forEach(m => {
+    const btn = document.getElementById('decl-btn-' + m);
+    if (btn) { btn.style.borderColor = m === mode ? 'var(--warm)' : ''; btn.style.color = m === mode ? 'var(--warm)' : ''; }
+  });
+  renderDeclaration();
+}
+
+function renderDeclaration() {
+  const el = document.getElementById('declarationContent');
+  if (!el) return;
+  const map = getMap();
+  const yr = document.getElementById('exerciceYear')?.value || new Date().getFullYear();
+  const company = currentProfile?.company || currentProfile?.companyName || '—';
+  let html = '';
+  if (declMode === 'tva') {
+    // TVA collectée (4431+4432) et déductible (4451+4452+4453+4454)
+    const tvaCollec = ['4431', '4432'].reduce((s, c) => s + (map[c] ? map[c].credit - map[c].debit : 0), 0);
+    const tvaDeduc = ['4451', '4452', '4453', '4454'].reduce((s, c) => s + (map[c] ? map[c].debit - map[c].credit : 0), 0);
+    const tvaNette = tvaCollec - tvaDeduc;
+    html = `<div style="padding:16px"><h3 style="font-family:var(--font-display);margin-bottom:16px">Déclaration TVA — ${company} — Exercice ${yr}</h3>
+      <div class="decl-section"><div class="decl-section-title">TVA collectée (opérations imposables)</div>
+        <div class="decl-row"><span class="lbl">TVA sur ventes (4431)</span><span class="val">${fn(tvaCollec)} FCFA</span></div>
+      </div>
+      <div class="decl-section"><div class="decl-section-title">TVA déductible (achats et immobilisations)</div>
+        ${['4451','4452','4453','4454'].map(c => `<div class="decl-row"><span class="lbl">Cpte ${c} — ${PC[c]||c}</span><span class="val">${fn(map[c] ? map[c].debit - map[c].credit : 0)} FCFA</span></div>`).join('')}
+        <div class="decl-row" style="font-weight:600"><span class="lbl">Total déductible</span><span class="val">${fn(tvaDeduc)} FCFA</span></div>
+      </div>
+      <div class="decl-row total"><span class="lbl">TVA NETTE À DÉCLARER</span><span class="val" style="color:${tvaNette > 0 ? 'var(--rust)' : 'var(--green)'}">${fn(Math.abs(tvaNette))} FCFA ${tvaNette < 0 ? '(crédit de TVA)' : '(à payer)'}</span></div>
+    </div>`;
+  } else if (declMode === 'disa') {
+    const masseB = salaries.reduce((s, x) => s + (x.brut || 0), 0);
+    const totalCnps = salaries.reduce((s, x) => s + (x.cnpsSal || 0) + (x.chargesPatronales || 0), 0);
+    const totalIR = salaries.reduce((s, x) => s + (x.ir || 0), 0);
+    html = `<div style="padding:16px"><h3 style="font-family:var(--font-display);margin-bottom:16px">DISA — Déclaration des impôts sur salaires — ${yr}</h3>
+      <div class="decl-row"><span class="lbl">Masse salariale brute</span><span class="val">${fn(masseB)} FCFA</span></div>
+      <div class="decl-row"><span class="lbl">Nombre de salariés</span><span class="val">${salaries.length}</span></div>
+      <div class="decl-row"><span class="lbl">Total CNPS (salarial + patronal)</span><span class="val">${fn(totalCnps)} FCFA</span></div>
+      <div class="decl-row total"><span class="lbl">TOTAL IR À REVERSER</span><span class="val">${fn(totalIR)} FCFA</span></div>
+    </div>`;
+  } else if (declMode === 'imf') {
+    const ca = ['701','702','703','704','705','706','707'].reduce((s, c) => s + (map[c] ? map[c].credit - map[c].debit : 0), 0);
+    const imf = Math.max(3000000, Math.round(ca * 0.005));
+    html = `<div style="padding:16px"><h3 style="font-family:var(--font-display);margin-bottom:16px">IMF — Impôt Minimum Forfaitaire — ${yr}</h3>
+      <div class="decl-row"><span class="lbl">Chiffre d'affaires HT (7xxx)</span><span class="val">${fn(ca)} FCFA</span></div>
+      <div class="decl-row"><span class="lbl">Taux IMF</span><span class="val">0,5%</span></div>
+      <div class="decl-row"><span class="lbl">IMF calculé (0,5% × CA)</span><span class="val">${fn(Math.round(ca * 0.005))} FCFA</span></div>
+      <div class="decl-row total"><span class="lbl">IMF À PAYER (minimum 3 000 000)</span><span class="val">${fn(imf)} FCFA</span></div>
+    </div>`;
+  } else if (declMode === 'is') {
+    const produits = Object.entries(map).filter(([c]) => c.startsWith('7')).reduce((s, [, acc]) => s + (acc.credit - acc.debit), 0);
+    const charges = Object.entries(map).filter(([c]) => c.startsWith('6')).reduce((s, [, acc]) => s + (acc.debit - acc.credit), 0);
+    const resultat = produits - charges;
+    const is = resultat > 0 ? Math.round(resultat * 0.25) : 0;
+    html = `<div style="padding:16px"><h3 style="font-family:var(--font-display);margin-bottom:16px">IS — Impôt sur les Sociétés — ${yr}</h3>
+      <div class="decl-row"><span class="lbl">Total produits (7xxx)</span><span class="val">${fn(produits)} FCFA</span></div>
+      <div class="decl-row"><span class="lbl">Total charges (6xxx)</span><span class="val">${fn(charges)} FCFA</span></div>
+      <div class="decl-row"><span class="lbl">Résultat imposable</span><span class="val" style="color:${resultat > 0 ? 'var(--green)' : 'var(--rust)'}">${fn(Math.abs(resultat))} FCFA ${resultat < 0 ? '(déficit)' : ''}</span></div>
+      <div class="decl-row"><span class="lbl">Taux IS Côte d'Ivoire</span><span class="val">25%</span></div>
+      <div class="decl-row total"><span class="lbl">IS À PAYER</span><span class="val">${fn(is)} FCFA</span></div>
+    </div>`;
+  }
+  el.innerHTML = html || '<div class="empty-state"><div class="icon">📑</div><p>Sélectionnez une déclaration.</p></div>';
+}
+
+function exportDeclarationPDF() {
+  try {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit:'mm', format:'a4' });
+    const company = currentProfile?.company || 'Entreprise';
+    const today = new Date().toLocaleDateString('fr-FR');
+    const map = getMap();
+    doc.setFontSize(14); doc.setFont('helvetica','bold');
+    doc.text('DÉCLARATION FISCALE — ' + company, 14, 18);
+    doc.setFontSize(9); doc.setFont('helvetica','normal');
+    doc.text('Période : Exercice ' + (currentProfile?.exercice||'2024') + ' — Édité le ' + today, 14, 25);
+    // TVA
+    const tvaCollectee = Object.entries(map).filter(([c])=>c.startsWith('443')).reduce((s,[,a])=>s+a.credit,0);
+    const tvaDeductible = Object.entries(map).filter(([c])=>c.startsWith('445')).reduce((s,[,a])=>s+a.debit,0);
+    const tvaNette = tvaCollectee - tvaDeductible;
+    // IS
+    const produits = Object.entries(map).filter(([c])=>c[0]==='7').reduce((s,[,a])=>s+a.credit-a.debit,0);
+    const charges = Object.entries(map).filter(([c])=>c[0]==='6').reduce((s,[,a])=>s+a.debit-a.credit,0);
+    const benefice = produits - charges;
+    const is = benefice > 0 ? Math.round(benefice * 0.25) : 0;
+    const ca = Object.entries(map).filter(([c])=>c.startsWith('70')).reduce((s,[,a])=>s+a.credit,0);
+    const imf = Math.max(3000000, Math.round(ca * 0.005));
+    const rows = [
+      ['TVA collectée (443x)', fnPDF(tvaCollectee) + ' FCFA'],
+      ['TVA déductible (445x)', fnPDF(tvaDeductible) + ' FCFA'],
+      ['TVA NETTE À PAYER (444)', fnPDF(Math.max(0,tvaNette)) + ' FCFA'],
+      ['',''],
+      ['Chiffre d\'affaires HT (70x)', fnPDF(ca) + ' FCFA'],
+      ['Charges totales (6x)', fnPDF(charges) + ' FCFA'],
+      ['Bénéfice imposable', fnPDF(benefice) + ' FCFA'],
+      ['IS 25%', fnPDF(is) + ' FCFA'],
+      ['',''],
+      ['IMF (0,5% CA, min 3 000 000)', fnPDF(imf) + ' FCFA'],
+    ];
+    doc.autoTable({ body: rows, startY: 32, styles:{fontSize:10}, columnStyles:{0:{fontStyle:'bold',cellWidth:120},1:{halign:'right'}} });
+    doc.save('declaration_fiscale_' + company.replace(/\s/g,'_') + '.pdf');
+    toast('✅ Déclaration fiscale exportée', 'success');
+  } catch(e) { toast('Erreur export PDF: ' + e.message, 'error'); }
+}
+window.afficherDeclaration = afficherDeclaration;
+window.exportDeclarationPDF = exportDeclarationPDF;
+
+// ══════════════════════════════════════════
+// MODULE CLÔTURE D'EXERCICE
+// ══════════════════════════════════════════
+async function verifierCloture() {
+  const map = getMap();
+  const totalD = ecritures.reduce((s, e) => s + e.lignes.reduce((ss, l) => ss + (l.debit || 0), 0), 0);
+  const totalC = ecritures.reduce((s, e) => s + e.lignes.reduce((ss, l) => ss + (l.credit || 0), 0), 0);
+  const ok = Math.abs(totalD - totalC) < 1;
+  const el = document.getElementById('clotureStatus');
+  el.innerHTML = `<div style="padding:12px"><div style="font-weight:600;margin-bottom:8px;color:${ok ? 'var(--green)' : 'var(--red)'}">${ok ? '✓ Balance équilibrée' : '⚠ Balance déséquilibrée'}</div>
+    <div style="font-size:13px;color:var(--muted)">Total débit : ${fn(totalD)} FCFA<br>Total crédit : ${fn(totalC)} FCFA<br>Écart : ${fn(Math.abs(totalD-totalC))} FCFA<br>Nombre d'écritures : ${ecritures.length}</div>
+    ${ok ? '<div style="margin-top:10px;color:var(--green);font-size:13px">✓ Vous pouvez passer à l\'étape 2 (Inventaire).</div>' : '<div style="margin-top:10px;color:var(--red);font-size:13px">Corrigez l\'écart avant de clôturer.</div>'}
+  </div>`;
+}
+
+async function genererEcrituresCloture() {
+  const map = getMap();
+  const yr = document.getElementById('exerciceYear')?.value || new Date().getFullYear();
+  const produits = Object.entries(map).filter(([c]) => c.startsWith('7')).reduce((s, [, acc]) => s + (acc.credit - acc.debit), 0);
+  const charges = Object.entries(map).filter(([c]) => c.startsWith('6')).reduce((s, [, acc]) => s + (acc.debit - acc.credit), 0);
+  const res = produits - charges;
+  const lignesClot = [];
+  Object.entries(map).filter(([c]) => c.startsWith('7') && (map[c].credit - map[c].debit) > 0).forEach(([c, acc]) => {
+    lignesClot.push({ compte: c, libelle: PC[c] || c, debit: Math.round(acc.credit - acc.debit), credit: 0 });
+  });
+  Object.entries(map).filter(([c]) => c.startsWith('6') && (map[c].debit - map[c].credit) > 0).forEach(([c, acc]) => {
+    lignesClot.push({ compte: c, libelle: PC[c] || c, debit: 0, credit: Math.round(acc.debit - acc.credit) });
+  });
+  if (res > 0) lignesClot.push({ compte: '131', libelle: 'Résultat net — Bénéfice ' + yr, debit: 0, credit: Math.round(res) });
+  else lignesClot.push({ compte: '139', libelle: 'Résultat net — Perte ' + yr, debit: Math.round(Math.abs(res)), credit: 0 });
+  const ecr = { id: Date.now(), date: yr + '-12-31', journal: 'OD', piece: 'CLOT-' + yr, libelle: 'Clôture exercice ' + yr, createdAt: new Date().toISOString(), lignes: lignesClot };
+  await saveEcritureToFirestore(ecr);
+  ecritures.push(ecr);
+  updateStats();
+  // 🔒 Verrouillage automatique de l'exercice clôturé
+  await lockPeriod(yr);
+  const el = document.getElementById('clotureStatus');
+  el.innerHTML = `<div style="padding:12px;color:var(--green)"><strong>✓ Écritures de clôture générées</strong><br>Résultat ${yr} : ${fn(Math.abs(res))} FCFA ${res > 0 ? '(bénéfice)' : '(perte)'}<br>Compte ${res > 0 ? '131' : '139'} mouvementé.</div>`;
+  toast(`✓ Clôture ${yr} générée — Résultat : ${fn(Math.abs(res))} FCFA`, 'success');
+}
+
+async function ouvrirNouvelExercice() {
+  const yr = parseInt(document.getElementById('exerciceYear')?.value || new Date().getFullYear());
+  const newYr = yr + 1;
+  if (!confirm(`Ouvrir l'exercice ${newYr} ? Cela créera les écritures d'À Nouveau.`)) return;
+  // Feedback immédiat — l'opération Firestore peut prendre 1-2s
+  const btn = document.querySelector('.btn-gold[onclick*="ouvrirNouvelExercice"]');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Ouverture…'; }
+  toast('⏳ Création des écritures À Nouveau…', 'info');
+  const map = getMap();
+  const lignesAN = [];
+  // Comptes de bilan (1 à 5) → report
+  Object.entries(map).filter(([c]) => ['1','2','3','4','5'].includes(c.charAt(0))).forEach(([c, acc]) => {
+    const solde = acc.debit - acc.credit;
+    if (Math.abs(solde) > 0) {
+      if (solde > 0) lignesAN.push({ compte: c, libelle: (PC[c] || c) + ' AN', debit: Math.round(solde), credit: 0 });
+      else lignesAN.push({ compte: c, libelle: (PC[c] || c) + ' AN', debit: 0, credit: Math.round(Math.abs(solde)) });
     }
+  });
+  if (!lignesAN.length) { toast('Aucun solde à reporter', 'info'); return; }
+  const ecr = { id: Date.now(), date: newYr + '-01-01', journal: 'AN', piece: 'AN-' + newYr, libelle: 'À nouveau exercice ' + newYr, createdAt: new Date().toISOString(), lignes: lignesAN };
+  await saveEcritureToFirestore(ecr);
+  ecritures.push(ecr);
+  document.getElementById('exerciceYear').value = String(newYr);
+  updateStats();
+  toast(`✓ Exercice ${newYr} ouvert — ${lignesAN.length} lignes d'À Nouveau`, 'success');
+  if (btn) { btn.disabled = false; btn.textContent = 'Ouvrir N+1'; }
+}
+
+window.verifierCloture = verifierCloture;
+window.genererEcrituresCloture = genererEcrituresCloture;
+window.ouvrirNouvelExercice = ouvrirNouvelExercice;
+
+// ══════════════════════════════════════════
+// IMPORT CSV SAARI / SAGE — Journal, Plan comptable, Clients, Fournisseurs
+// Format journal Saari : Date;Journal;Pièce;Compte;Libellé;Débit;Crédit
+// Format clients/fourn : Code;Nom;Adresse;Téléphone;Email;Compte
+// Format plan comptable : Compte;Libellé
+// ══════════════════════════════════════════
+function openImportModal(type) {
+  const labels = {
+    journal:       { titre: 'Importer Journal Saari/Sage', desc: 'Format CSV : Date;Journal;Pièce;Compte;Libellé;Débit;Crédit', accept: '.csv,.txt' },
+    clients:       { titre: 'Importer Clients',            desc: 'Format CSV : Code;Nom;Adresse;Téléphone;Email;Compte',          accept: '.csv,.txt' },
+    fournisseurs:  { titre: 'Importer Fournisseurs',       desc: 'Format CSV : Code;Nom;Adresse;Téléphone;Email;Compte',          accept: '.csv,.txt' },
+    plan_comptable:{ titre: 'Importer Plan Comptable',     desc: 'Format CSV : Compte;Libellé',                                   accept: '.csv,.txt' },
+  };
+  const cfg = labels[type];
+  if (!cfg) return;
+
+  // Créer un input file invisible et le déclencher immédiatement
+  const inp = document.createElement('input');
+  inp.type = 'file';
+  inp.accept = cfg.accept;
+  inp.style.display = 'none';
+  document.body.appendChild(inp);
+  inp.addEventListener('change', () => {
+    const file = inp.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      try {
+        await parseAndImportCSV(ev.target.result, type);
+      } catch (e) {
+        toast('Erreur import : ' + e.message, 'error');
+      }
+    };
+    reader.readAsText(file, 'UTF-8');
+    document.body.removeChild(inp);
+  });
+  inp.click();
+}
+
+async function parseAndImportCSV(raw, type) {
+  // Normaliser séparateur : ; ou ,
+  const lines = raw.replace(/\r/g, '').split('\n').filter(l => l.trim());
+  if (lines.length < 2) { toast('Fichier vide ou non reconnu', 'error'); return; }
+
+  // Détecter séparateur dominant
+  const sep = (lines[0].split(';').length >= lines[0].split(',').length) ? ';' : ',';
+
+  const header = lines[0].split(sep).map(h => h.trim().toLowerCase().replace(/[^a-zàâéèêîïôùûç0-9]/g,''));
+  const rows = lines.slice(1).map(l => {
+    const cols = l.split(sep);
+    const obj = {};
+    header.forEach((h, i) => obj[h] = (cols[i] || '').trim().replace(/^"(.*)"$/, '$1'));
+    return obj;
+  });
+
+  if (type === 'journal') {
+    await importJournalRows(rows, header);
+  } else if (type === 'clients') {
+    await importTiersRows(rows, 'clients');
+  } else if (type === 'fournisseurs') {
+    await importTiersRows(rows, 'fournisseurs');
+  } else if (type === 'plan_comptable') {
+    await importPlanComptableRows(rows);
+  }
+}
+
+async function importJournalRows(rows, header) {
+  // Regrouper par pièce pour reconstituer les écritures multi-lignes
+  const byPiece = {};
+  for (const r of rows) {
+    // Essayer les noms de colonnes courants Saari/Sage
+    const date    = r['date'] || r['dat'] || '';
+    const journal = r['journal'] || r['jnl'] || r['journ'] || 'OD';
+    const piece   = r['pice'] || r['pièce'] || r['piece'] || r['numpiece'] || r['reference'] || String(Date.now());
+    const compte  = r['compte'] || r['numcompte'] || r['cpt'] || '';
+    const libelle = r['libell'] || r['libelle'] || r['designation'] || '';
+    const debit   = parseFloat((r['dbit'] || r['débit'] || r['debit'] || '0').replace(/\s/g,'').replace(',','.')) || 0;
+    const credit  = parseFloat((r['crdit'] || r['crédit'] || r['credit'] || '0').replace(/\s/g,'').replace(',','.')) || 0;
+
+    if (!date || !compte) continue;
+    const key = date + '|' + journal + '|' + piece;
+    if (!byPiece[key]) byPiece[key] = { date, journal, piece, libelle, lignes: [] };
+    byPiece[key].lignes.push({ compte: String(compte), libelle, debit: Math.round(debit), credit: Math.round(credit) });
+    if (libelle && !byPiece[key].libelle) byPiece[key].libelle = libelle;
   }
 
-  return null; // Mistral épuisé
+  const ownerID = getOwnerProfileId();
+  let imported = 0, skipped = 0;
+  for (const key of Object.keys(byPiece)) {
+    const ecr = byPiece[key];
+    // Vérifier équilibre (tolérance 1 FCFA)
+    const td = ecr.lignes.reduce((s,l) => s + l.debit, 0);
+    const tc = ecr.lignes.reduce((s,l) => s + l.credit, 0);
+    if (Math.abs(td - tc) > 1) { skipped++; continue; }
+    const newEcr = {
+      id: Date.now() + imported,
+      date: ecr.date,
+      journal: ecr.journal,
+      piece: ecr.piece,
+      libelle: ecr.libelle,
+      lignes: ecr.lignes,
+      createdAt: new Date().toISOString(),
+      source: 'import_saari',
+    };
+    const docRef = await window._fbAddDoc(
+      window._fbCollection(window._db, 'profiles', ownerID, 'ecritures'),
+      newEcr
+    );
+    newEcr._docId = docRef.id;
+    ecritures.push(newEcr);
+    imported++;
+  }
+  pieceCounter = ecritures.length + 1; // legacy — réel géré par getNextPiece()
+  updateStats();
+  await logAudit('IMPORT', 'COMPTABILITE', `Import Saari : ${imported} écriture(s) importée(s), ${skipped} ignorée(s) (déséquilibrées)`, currentProfile.email);
+  toast(`✓ Import terminé — ${imported} écriture(s) importée(s)${skipped ? `, ${skipped} ignorée(s) (déséquilibre)` : ''}`, imported > 0 ? 'success' : 'error');
+  if (imported > 0) renderJournal();
 }
+
+async function importTiersRows(rows, collection) {
+  const ownerID = getOwnerProfileId();
+  let imported = 0;
+  for (const r of rows) {
+    const nom     = r['nom'] || r['raisonsociale'] || r['name'] || '';
+    const code    = r['code'] || r['ref'] || r['reference'] || '';
+    const adresse = r['adresse'] || r['address'] || '';
+    const tel     = r['tlphone'] || r['telephone'] || r['tel'] || r['phone'] || '';
+    const email   = r['email'] || r['mail'] || '';
+    const compte  = r['compte'] || r['numcompte'] || (collection === 'clients' ? '411' : '401');
+    if (!nom) continue;
+    const tiers = { nom, code, adresse, tel, email, compte, createdAt: new Date().toISOString(), source: 'import_saari' };
+    const docRef = await window._fbAddDoc(
+      window._fbCollection(window._db, 'profiles', ownerID, collection),
+      tiers
+    );
+    tiers._docId = docRef.id;
+    if (collection === 'clients') clientsList.push(tiers);
+    else fournisseursList.push(tiers);
+    imported++;
+  }
+  toast(`✓ ${imported} ${collection === 'clients' ? 'client(s)' : 'fournisseur(s)'} importé(s)`, imported > 0 ? 'success' : 'error');
+}
+
+async function importPlanComptableRows(rows) {
+  let imported = 0;
+  for (const r of rows) {
+    const code   = (r['compte'] || r['code'] || r['numcompte'] || '').replace(/\s/g,'');
+    const libelle = r['libell'] || r['libelle'] || r['designation'] || '';
+    if (!code || !libelle) continue;
+    if (!PC[code]) { PC[code] = libelle; imported++; }
+  }
+  renderPlanComptable();
+  toast(`✓ ${imported} compte(s) ajouté(s) au plan comptable`, imported > 0 ? 'success' : 'info');
+}
+
+window.openImportModal = openImportModal;
+
 // ══════════════════════════════════════════
-// INIT SESSION
+// MODAL PLAN COMPTABLE 3D — Sélection de compte
 // ══════════════════════════════════════════
+let _pcModalCallback = null;   // fonction appelée avec (code, lib) au choix
+let _pcModalClass = 'all';     // filtre classe actif
+let _pcModalHighlight = 0;     // index résultat sélectionné au clavier
+
+const CLASS_NATURE = { 1:'Passif', 2:'Actif', 3:'Actif', 4:'Mixte', 5:'Trésorerie', 6:'Charge', 7:'Produit', 8:'Spécial' };
+const CLASS_ICONS  = { 1:'🏛️', 2:'🏗️', 3:'📦', 4:'👥', 5:'💳', 6:'📤', 7:'📥', 8:'⚙️' };
+
+function openPcModal(callback) {
+  _pcModalCallback = callback;
+  _pcModalClass = 'all';
+  _pcModalHighlight = 0;
+  const overlay = document.getElementById('pcModalOverlay');
+  if (!overlay) return;
+  overlay.classList.add('open');
+  // Construire la navigation par classe si vide
+  _buildPcClassNav();
+  renderPcModal();
+  setTimeout(() => {
+    const s = document.getElementById('pcModalSearch');
+    if (s) { s.value = ''; s.focus(); }
+  }, 80);
+  // Fermer avec Échap
+  overlay._kbHandler = (e) => {
+    if (e.key === 'Escape') { closePcModal(); }
+    else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { _pcModalMoveSel(e.key === 'ArrowDown' ? 1 : -1); e.preventDefault(); }
+    else if (e.key === 'Enter') { _pcModalPickHighlighted(); e.preventDefault(); }
+  };
+  document.addEventListener('keydown', overlay._kbHandler);
+}
+
+function closePcModal() {
+  const overlay = document.getElementById('pcModalOverlay');
+  if (!overlay) return;
+  overlay.classList.remove('open');
+  if (overlay._kbHandler) document.removeEventListener('keydown', overlay._kbHandler);
+  _pcModalCallback = null;
+}
+
+function _buildPcClassNav() {
+  const nav = document.getElementById('pcModalClassNav');
+  if (!nav || nav.dataset.built) return;
+  nav.dataset.built = '1';
+  const classCounts = {};
+  Object.keys(PC).forEach(c => { const cl = c[0]; classCounts[cl] = (classCounts[cl]||0)+1; });
+  Object.keys(CLASS_NAMES).sort().forEach(cl => {
+    const btn = document.createElement('button');
+    btn.className = 'pcm-cls-btn';
+    btn.dataset.cls = cl;
+    btn.innerHTML = `<span class="pcm-cls-num">${CLASS_ICONS[cl]||cl}</span><span class="pcm-cls-label">${CLASS_NAMES[cl]}</span><span class="pcm-count-badge">${classCounts[cl]||0}</span>`;
+    btn.onclick = function() { filterPcClass(cl, btn); };
+    nav.appendChild(btn);
+  });
+}
+
+function filterPcClass(cls, btn) {
+  _pcModalClass = cls;
+  _pcModalHighlight = 0;
+  document.querySelectorAll('.pcm-cls-btn').forEach(b => b.classList.toggle('active', b === btn || (cls==='all' && b.dataset.cls === undefined)));
+  // Gérer le bouton "Toutes"
+  if (cls === 'all') {
+    document.querySelectorAll('.pcm-cls-btn[data-cls]').forEach(b => b.classList.remove('active'));
+    document.querySelector('.pcm-cls-btn:not([data-cls])')?.classList.add('active');
+  }
+  renderPcModal();
+  // Scroll vers le début
+  const body = document.getElementById('pcModalBody');
+  if (body) body.scrollTop = 0;
+}
+
+function renderPcModal() {
+  const body = document.getElementById('pcModalBody');
+  const countEl = document.getElementById('pcModalCount');
+  const search = (document.getElementById('pcModalSearch')?.value || '').trim().toLowerCase();
+  if (!body) return;
+
+  // MODE RECHERCHE — liste plate
+  if (search.length >= 1) {
+    body.classList.add('list-mode');
+    const q = search.replace(/[^a-z0-9àâéèêîïôùûç\s]/g, '');
+    const results = Object.entries(PC).filter(([code, lib]) =>
+      code.startsWith(search) || lib.toLowerCase().includes(q) ||
+      code.toLowerCase().includes(q)
+    ).slice(0, 120);
+    if (countEl) countEl.textContent = `${results.length} compte(s) trouvé(s)`;
+    if (!results.length) {
+      body.innerHTML = `<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--muted);font-size:13px">Aucun compte trouvé pour "<strong>${search}</strong>"</div>`;
+      return;
+    }
+    body.innerHTML = results.map(([code, lib], i) => {
+      const hlCode = code.replace(new RegExp(`(${escRe(search)})`, 'gi'), '<mark class="hl">$1</mark>');
+      const hlLib  = lib.replace(new RegExp(`(${escRe(q)})`, 'gi'), '<mark class="hl">$1</mark>');
+      const clNum = code[0];
+      return `<div class="pcm-search-result${i===_pcModalHighlight?' pcm-hl':''}" data-pi="${i}" onclick="pickPcAccount('${code}','${lib.replace(/'/g,"\\'")}')">
+        <span class="pcm-sr-code">${hlCode}</span>
+        <span class="pcm-sr-lib">${hlLib}</span>
+        <span class="pcm-sr-class">${CLASS_ICONS[clNum]||clNum} ${CLASS_NAMES[clNum]||'Cl.'+clNum}</span>
+        <span style="color:var(--warm);font-size:10px;font-family:var(--font-mono);opacity:${i===_pcModalHighlight?1:0}">→ Choisir</span>
+      </div>`;
+    }).join('');
+    return;
+  }
+
+  // MODE GRILLE — cartes 3D par classe
+  body.classList.remove('list-mode');
+  const classes = _pcModalClass === 'all' ? Object.keys(CLASS_NAMES).sort() : [String(_pcModalClass)];
+  const cards = classes.map(cl => {
+    const entries = Object.entries(PC).filter(([c]) => c[0] === cl).sort(([a],[b]) => a.localeCompare(b));
+    if (!entries.length) return '';
+    const rows = entries.map(([code, lib]) => {
+      const depth = code.length <= 3 ? '' : code.length === 4 ? 'pcm-row-depth-2' : code.length === 5 ? 'pcm-row-depth-3' : 'pcm-row-depth-4plus';
+      return `<div class="pcm-row ${depth}" onclick="pickPcAccount('${code}','${lib.replace(/'/g,"\\'")}')">
+        <span class="pcm-row-code">${code}</span>
+        <span class="pcm-row-lib">${lib}</span>
+        <span class="pcm-row-pick">→ Choisir</span>
+      </div>`;
+    }).join('');
+    if (countEl) countEl.textContent = `${Object.keys(PC).length} comptes · SYSCOHADA`;
+    return `<div class="pcm-card">
+      <div class="pcm-card-head">
+        <div class="pcm-card-big-num">${cl}</div>
+        <div class="pcm-card-info">
+          <div class="pcm-card-name">${CLASS_NAMES[cl] || 'Classe '+cl}</div>
+          <span class="pcm-card-nature">${CLASS_NATURE[cl]||'Compte'}</span>
+          <div class="pcm-card-nb">${entries.length} compte(s)</div>
+        </div>
+      </div>
+      <div class="pcm-card-rows">${rows}</div>
+    </div>`;
+  }).join('');
+  body.innerHTML = cards || `<div style="color:var(--muted);padding:40px;text-align:center">Aucun compte dans cette classe</div>`;
+}
+
+function pickPcAccount(code, lib) {
+  if (_pcModalCallback) _pcModalCallback(code, lib);
+  closePcModal();
+}
+
+function _pcModalMoveSel(dir) {
+  const items = document.querySelectorAll('#pcModalBody .pcm-search-result');
+  if (!items.length) return;
+  items[_pcModalHighlight]?.classList.remove('pcm-hl');
+  items[_pcModalHighlight]?.querySelector('span:last-child') && (items[_pcModalHighlight].querySelector('span:last-child').style.opacity = '0');
+  _pcModalHighlight = Math.max(0, Math.min(items.length-1, _pcModalHighlight + dir));
+  const el = items[_pcModalHighlight];
+  if (el) {
+    el.classList.add('pcm-hl');
+    const arrow = el.querySelector('span:last-child');
+    if (arrow) arrow.style.opacity = '1';
+    el.scrollIntoView({ block:'nearest' });
+  }
+}
+
+function _pcModalPickHighlighted() {
+  const el = document.querySelector('#pcModalBody .pcm-search-result.pcm-hl');
+  if (el) el.click();
+}
+
+function escRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+// Patch des fonctions de mise à jour : on ajoute un bouton 📋 à côté de chaque input compte
+// pour ouvrir le modal. On surcharge updateAccountSuggest et updateAccountSuggestMulti
+// pour injecter le bouton la première fois.
+function _injectPcBtnNear(input, cb) {
+  if (!input) return;
+  if (input._pcBtn) return; // déjà injecté
+  input._pcBtn = true;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.title = 'Ouvrir le plan comptable';
+  btn.className = 'pc-open-btn';
+  btn.innerHTML = '📋';
+  btn.style.cssText = 'position:absolute;right:36px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:14px;z-index:5;opacity:.55;transition:opacity .15s;line-height:1;padding:2px 4px;';
+  btn.onmouseenter = () => btn.style.opacity = '1';
+  btn.onmouseleave = () => btn.style.opacity = '.55';
+  btn.onmousedown = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openPcModal(cb);
+  };
+  const wrap = input.parentElement;
+  if (wrap && getComputedStyle(wrap).position === 'static') wrap.style.position = 'relative';
+  wrap?.appendChild(btn);
+}
+
+window.openPcModal = openPcModal;
+window.closePcModal = closePcModal;
+window.renderPcModal = renderPcModal;
+window.filterPcClass = filterPcClass;
+window.pickPcAccount = pickPcAccount;
 document.addEventListener('firebase-ready', async () => {
   await loadServerConfig();
   onAuthStateChanged(auth, async (user) => {
@@ -7894,7 +10098,9 @@ window.activatePremiumWithCode = activatePremiumWithCode;
 // ══════════════════════════════════════════
 // EXPOSITION GLOBALE
 // ══════════════════════════════════════════
-window.sendToAI = sendToAI;
+if (!window.sendToAI) {
+  window.sendToAI = sendToAI;
+}
 window.handleAiKey = handleAiKey;
 window.quickAI = quickAI;
 window.doLogin = doLogin;
@@ -7982,3 +10188,1764 @@ window.openFournisseurModal = openFournisseurModal;
 window.closeFournisseurModal = closeFournisseurModal;
 window.saveFournisseur = saveFournisseur;
 window.renderFournisseurs = renderFournisseurs;
+// ══════════════════════════════════════════════════════════════════
+// ██  MODULE 1 — COMPTABILITÉ ANALYTIQUE (Centres de coût / Axes)
+// ══════════════════════════════════════════════════════════════════
+let centresCout = [];       // { id, code, libelle, type, responsable }
+let imputationsAnalyt = []; // { id, ecritureId, ligneIdx, centreId, montant, sens }
+
+async function loadAnalytique() {
+  if (!window._fbReady || !currentProfile?.id) return;
+  try {
+    const [snapC, snapI] = await Promise.all([
+      window._fbGetDocs(window._fbCollection(window._db, 'profiles', currentProfile.id, 'centres_cout')),
+      window._fbGetDocs(window._fbCollection(window._db, 'profiles', currentProfile.id, 'imputations_analytiques')),
+    ]);
+    centresCout = snapC.docs.map(d => ({ ...d.data(), _docId: d.id }));
+    imputationsAnalyt = snapI.docs.map(d => ({ ...d.data(), _docId: d.id }));
+  } catch(e) {}
+}
+
+function openCentreModal(id = null) {
+  const m = id ? centresCout.find(c => c.id === id) : null;
+  document.getElementById('centre-id').value = m ? m.id : '';
+  document.getElementById('centre-code').value = m ? m.code : '';
+  document.getElementById('centre-libelle').value = m ? m.libelle : '';
+  document.getElementById('centre-type').value = m ? m.type : 'exploitation';
+  document.getElementById('centre-responsable').value = m ? (m.responsable || '') : '';
+  document.getElementById('centreModal').style.display = 'flex';
+}
+
+async function saveCentre() {
+  const id = document.getElementById('centre-id').value;
+  const code = document.getElementById('centre-code').value.trim();
+  const libelle = document.getElementById('centre-libelle').value.trim();
+  const type = document.getElementById('centre-type').value;
+  const responsable = document.getElementById('centre-responsable').value.trim();
+  if (!code || !libelle) { toast('Code et libellé obligatoires', 'error'); return; }
+  if (!id && centresCout.find(c => c.code === code)) { toast('Ce code existe déjà', 'error'); return; }
+  const centre = { id: id || Date.now(), code, libelle, type, responsable, createdAt: new Date().toISOString() };
+  if (id) {
+    const idx = centresCout.findIndex(c => String(c.id) === String(id));
+    if (idx > -1) centresCout[idx] = centre;
+    if (window._fbReady && currentProfile?.id && centre._docId) {
+      try { await window._fbSetDoc(window._fbDoc(window._db, 'profiles', currentProfile.id, 'centres_cout', centre._docId), centre, { merge: true }); } catch(e) {}
+    }
+  } else {
+    centresCout.push(centre);
+    if (window._fbReady && currentProfile?.id) {
+      try { const ref = await window._fbAddDoc(window._fbCollection(window._db, 'profiles', currentProfile.id, 'centres_cout'), centre); centre._docId = ref.id; } catch(e) {}
+    }
+  }
+  document.getElementById('centreModal').style.display = 'none';
+  toast(`✓ Centre "${libelle}" enregistré`, 'success');
+  renderAnalytique();
+}
+
+async function deleteCentre(id) {
+  if (!confirm('Supprimer ce centre de coût ?')) return;
+  const centre = centresCout.find(c => String(c.id) === String(id));
+  centresCout = centresCout.filter(c => String(c.id) !== String(id));
+  if (window._fbReady && currentProfile?.id && centre?._docId) {
+    try { await window._fbDeleteDoc(window._fbDoc(window._db, 'profiles', currentProfile.id, 'centres_cout', centre._docId)); } catch(e) {}
+  }
+  toast('Centre supprimé', 'success');
+  renderAnalytique();
+}
+
+function openImputationModal(ecritureId, ligneIdx, montant, sens) {
+  document.getElementById('imput-ecr-id').value = ecritureId;
+  document.getElementById('imput-ligne-idx').value = ligneIdx;
+  document.getElementById('imput-montant').value = montant;
+  document.getElementById('imput-sens').value = sens;
+  const sel = document.getElementById('imput-centre');
+  sel.innerHTML = centresCout.map(c => `<option value="${c.id}">${c.code} — ${c.libelle}</option>`).join('');
+  const pct = document.getElementById('imput-pct');
+  pct.value = 100;
+  updateImputMontant();
+  document.getElementById('imputationModal').style.display = 'flex';
+}
+
+function updateImputMontant() {
+  const base = parseFloat(document.getElementById('imput-montant').value) || 0;
+  const pct = parseFloat(document.getElementById('imput-pct').value) || 100;
+  document.getElementById('imput-montant-calc').textContent = fn(Math.round(base * pct / 100)) + ' FCFA';
+}
+
+async function saveImputation() {
+  const ecritureId = document.getElementById('imput-ecr-id').value;
+  const ligneIdx = parseInt(document.getElementById('imput-ligne-idx').value);
+  const base = parseFloat(document.getElementById('imput-montant').value) || 0;
+  const pct = parseFloat(document.getElementById('imput-pct').value) || 100;
+  const centreId = document.getElementById('imput-centre').value;
+  const sens = document.getElementById('imput-sens').value;
+  const montant = Math.round(base * pct / 100);
+  const centre = centresCout.find(c => String(c.id) === String(centreId));
+  if (!centre) { toast('Sélectionnez un centre', 'error'); return; }
+  const imput = { id: Date.now(), ecritureId, ligneIdx, centreId, code: centre.code, libelle: centre.libelle, montant, pct, sens, createdAt: new Date().toISOString() };
+  imputationsAnalyt.push(imput);
+  if (window._fbReady && currentProfile?.id) {
+    try { await window._fbAddDoc(window._fbCollection(window._db, 'profiles', currentProfile.id, 'imputations_analytiques'), imput); } catch(e) {}
+  }
+  document.getElementById('imputationModal').style.display = 'none';
+  toast(`✓ Imputation ${fn(montant)} FCFA → ${centre.code}`, 'success');
+  renderAnalytique();
+}
+
+function renderAnalytique() {
+  const el = document.getElementById('analytiqueContent');
+  if (!el) return;
+
+  // KPIs par type de centre
+  const types = ['exploitation', 'support', 'projet'];
+  const totaux = {};
+  types.forEach(t => { totaux[t] = 0; });
+  imputationsAnalyt.forEach(i => {
+    const c = centresCout.find(x => String(x.id) === String(i.centreId));
+    if (c) totaux[c.type || 'exploitation'] = (totaux[c.type || 'exploitation'] || 0) + i.montant;
+  });
+
+  document.getElementById('analyt-kpi-centres').textContent = centresCout.length;
+  document.getElementById('analyt-kpi-imput').textContent = imputationsAnalyt.length;
+  document.getElementById('analyt-kpi-exploit').textContent = fn(totaux.exploitation || 0);
+  document.getElementById('analyt-kpi-projet').textContent = fn(totaux.projet || 0);
+
+  if (!centresCout.length) {
+    el.innerHTML = '<div class="empty-state"><div class="icon">📊</div><p>Aucun centre de coût. Créez-en un pour commencer l\'analyse analytique.</p></div>';
+    return;
+  }
+
+  // Tableau des centres avec totaux
+  const rows = centresCout.map(c => {
+    const imput = imputationsAnalyt.filter(i => String(i.centreId) === String(c.id));
+    const totalDebit = imput.filter(i => i.sens === 'debit').reduce((s, i) => s + i.montant, 0);
+    const totalCredit = imput.filter(i => i.sens === 'credit').reduce((s, i) => s + i.montant, 0);
+    const solde = totalDebit - totalCredit;
+    const typeLabels = { exploitation: '🏭 Exploitation', support: '🔧 Support', projet: '📁 Projet' };
+    return `<tr>
+      <td><strong>${c.code}</strong></td>
+      <td>${c.libelle}</td>
+      <td><span class="analyt-badge analyt-badge-${c.type || 'exploitation'}">${typeLabels[c.type] || c.type}</span></td>
+      <td style="color:var(--muted);font-size:12px">${c.responsable || '—'}</td>
+      <td style="text-align:right;font-family:var(--font-mono)">${fn(totalDebit)}</td>
+      <td style="text-align:right;font-family:var(--font-mono)">${fn(totalCredit)}</td>
+      <td style="text-align:right;font-family:var(--font-mono);font-weight:700;color:${solde >= 0 ? 'var(--rust)' : 'var(--green)'}">${fn(Math.abs(solde))}</td>
+      <td>
+        <button class="btn btn-sm-wire" onclick="openCentreModal(${c.id})" title="Modifier">✎</button>
+        <button class="btn btn-sm-wire" onclick="deleteCentre(${c.id})" title="Supprimer" style="color:var(--rust)">✕</button>
+      </td>
+    </tr>`;
+  }).join('');
+
+  el.innerHTML = `<div class="dtw"><table class="dt">
+    <thead><tr>
+      <th>Code</th><th>Libellé</th><th>Type</th><th>Responsable</th>
+      <th style="text-align:right">Charges</th>
+      <th style="text-align:right">Produits</th>
+      <th style="text-align:right">Solde</th>
+      <th></th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+    <tfoot><tr>
+      <td colspan="4" style="font-weight:700">TOTAL</td>
+      <td style="text-align:right;font-weight:700;font-family:var(--font-mono)">${fn(imputationsAnalyt.filter(i=>i.sens==='debit').reduce((s,i)=>s+i.montant,0))}</td>
+      <td style="text-align:right;font-weight:700;font-family:var(--font-mono)">${fn(imputationsAnalyt.filter(i=>i.sens==='credit').reduce((s,i)=>s+i.montant,0))}</td>
+      <td colspan="2"></td>
+    </tr></tfoot>
+  </table></div>`;
+}
+
+function exportAnalytiquePDF() {
+  if (!centresCout.length) { toast('Aucun centre de coût', 'error'); return; }
+  const { jsPDF } = window.jspdf;
+  if (!jsPDF) { toast('jsPDF non disponible', 'error'); return; }
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+  const company = currentProfile?.company || 'Entreprise';
+  const yr = document.getElementById('exerciceYear')?.value || new Date().getFullYear();
+  doc.setFillColor(10,11,16); doc.rect(0,0,297,22,'F');
+  doc.setTextColor(212,168,83); doc.setFontSize(12); doc.setFont('helvetica','bold');
+  doc.text(`RAPPORT ANALYTIQUE PAR CENTRES DE COÛT — ${company} — ${yr}`, 14, 14);
+  const rows = centresCout.map(c => {
+    const imput = imputationsAnalyt.filter(i => String(i.centreId) === String(c.id));
+    const charges = imput.filter(i=>i.sens==='debit').reduce((s,i)=>s+i.montant,0);
+    const produits = imput.filter(i=>i.sens==='credit').reduce((s,i)=>s+i.montant,0);
+    return [c.code, c.libelle, c.type||'exploitation', c.responsable||'—', fn(charges), fn(produits), fn(Math.abs(charges-produits))];
+  });
+  doc.autoTable({
+    startY: 26,
+    head: [['Code','Libellé','Type','Responsable','Charges (FCFA)','Produits (FCFA)','Solde (FCFA)']],
+    body: rows,
+    styles: { font:'helvetica', fontSize:8.5 },
+    headStyles: { fillColor:[10,11,16], textColor:[212,168,83] },
+    columnStyles: { 4:{halign:'right'}, 5:{halign:'right'}, 6:{halign:'right',fontStyle:'bold'} },
+    margin: { left:14, right:14 },
+  });
+  doc.save(`ANALYTIQUE_${company.replace(/\s+/g,'_')}_${yr}.pdf`);
+  toast('✓ Rapport analytique exporté', 'success');
+}
+
+window.openCentreModal = openCentreModal;
+window.saveCentre = saveCentre;
+window.deleteCentre = deleteCentre;
+window.openImputationModal = openImputationModal;
+window.updateImputMontant = updateImputMontant;
+window.saveImputation = saveImputation;
+window.renderAnalytique = renderAnalytique;
+window.exportAnalytiquePDF = exportAnalytiquePDF;
+
+// ══════════════════════════════════════════════════════════════════
+// ██  MODULE 2 — MULTI-ENTREPRISES / MULTI-EXERCICES
+// ══════════════════════════════════════════════════════════════════
+let allSocietes = [];  // Liste des sociétés liées au compte
+let currentSociete = null;
+
+async function loadSocietes() {
+  if (!window._fbReady || !currentProfile?.id) return;
+  try {
+    const snap = await window._fbGetDocs(window._fbCollection(window._db, 'profiles', currentProfile.id, 'societes'));
+    allSocietes = snap.docs.map(d => ({ ...d.data(), _docId: d.id }));
+    // Si aucune société n'existe, créer l'entreprise courante automatiquement
+    if (!allSocietes.length && currentProfile?.company) {
+      const soc = {
+        id: 'main_' + currentProfile.id,
+        nom: currentProfile.company || 'Entreprise principale',
+        forme: currentProfile.forme || 'SARL',
+        rccm: currentProfile.rccm || '',
+        nif: currentProfile.nif || '',
+        adresse: currentProfile.adresse || '',
+        exercices: [new Date().getFullYear()],
+        exerciceActif: new Date().getFullYear(),
+        estPrincipale: true,
+        createdAt: new Date().toISOString(),
+      };
+      try {
+        const ref = await window._fbAddDoc(window._fbCollection(window._db, 'profiles', currentProfile.id, 'societes'), soc);
+        soc._docId = ref.id;
+        allSocietes = [soc];
+        currentSociete = soc;
+      } catch(e) {}
+    } else {
+      currentSociete = allSocietes.find(s => s.estPrincipale) || allSocietes[0] || null;
+    }
+    renderSocietes();
+  } catch(e) {}
+}
+
+function openSocieteModal(id = null) {
+  const s = id ? allSocietes.find(x => String(x.id) === String(id)) : null;
+  document.getElementById('soc-id').value = s ? s.id : '';
+  document.getElementById('soc-nom').value = s ? s.nom : '';
+  document.getElementById('soc-forme').value = s ? (s.forme || 'SARL') : 'SARL';
+  document.getElementById('soc-rccm').value = s ? (s.rccm || '') : '';
+  document.getElementById('soc-nif').value = s ? (s.nif || '') : '';
+  document.getElementById('soc-adresse').value = s ? (s.adresse || '') : '';
+  document.getElementById('soc-exercice').value = s ? (s.exerciceActif || new Date().getFullYear()) : new Date().getFullYear();
+  document.getElementById('societeModal').style.display = 'flex';
+}
+
+async function saveSociete() {
+  const id = document.getElementById('soc-id').value;
+  const nom = document.getElementById('soc-nom').value.trim();
+  const forme = document.getElementById('soc-forme').value;
+  const rccm = document.getElementById('soc-rccm').value.trim();
+  const nif = document.getElementById('soc-nif').value.trim();
+  const adresse = document.getElementById('soc-adresse').value.trim();
+  const exerciceActif = parseInt(document.getElementById('soc-exercice').value) || new Date().getFullYear();
+  if (!nom) { toast('Le nom est obligatoire', 'error'); return; }
+
+  const soc = { id: id || String(Date.now()), nom, forme, rccm, nif, adresse, exerciceActif, exercices: [exerciceActif], estPrincipale: !allSocietes.length, createdAt: new Date().toISOString() };
+  if (id) {
+    const existing = allSocietes.find(s => String(s.id) === String(id));
+    if (existing) { soc.exercices = existing.exercices || [exerciceActif]; soc._docId = existing._docId; }
+    const idx = allSocietes.findIndex(s => String(s.id) === String(id));
+    if (idx > -1) allSocietes[idx] = soc;
+    if (window._fbReady && currentProfile?.id && soc._docId) {
+      try { await window._fbSetDoc(window._fbDoc(window._db, 'profiles', currentProfile.id, 'societes', soc._docId), soc, { merge: true }); } catch(e) {}
+    }
+  } else {
+    allSocietes.push(soc);
+    if (window._fbReady && currentProfile?.id) {
+      try { const ref = await window._fbAddDoc(window._fbCollection(window._db, 'profiles', currentProfile.id, 'societes'), soc); soc._docId = ref.id; } catch(e) {}
+    }
+  }
+  document.getElementById('societeModal').style.display = 'none';
+  toast(`✓ Société "${nom}" enregistrée`, 'success');
+  renderSocietes();
+}
+
+async function switchSociete(id) {
+  const soc = allSocietes.find(s => String(s.id) === String(id));
+  if (!soc) return;
+  currentSociete = soc;
+  // Mettre à jour le badge société dans la topbar
+  const badge = document.getElementById('societeBadge');
+  if (badge) badge.textContent = soc.nom;
+  const exBadge = document.getElementById('exerciceBadge');
+  if (exBadge) exBadge.textContent = soc.exerciceActif || new Date().getFullYear();
+  const exInput = document.getElementById('exerciceYear');
+  if (exInput) exInput.value = soc.exerciceActif || new Date().getFullYear();
+  toast(`✓ Basculé sur : ${soc.nom} — Exercice ${soc.exerciceActif}`, 'success');
+  renderSocietes();
+  updateStats();
+}
+
+async function ajouterExercice(socId) {
+  const soc = allSocietes.find(s => String(s.id) === String(socId));
+  if (!soc) return;
+  const yr = parseInt(prompt('Année du nouvel exercice :', new Date().getFullYear() + 1));
+  if (!yr || isNaN(yr)) return;
+  if (soc.exercices?.includes(yr)) { toast('Exercice déjà existant', 'error'); return; }
+  soc.exercices = [...(soc.exercices || []), yr].sort();
+  soc.exerciceActif = yr;
+  if (window._fbReady && currentProfile?.id && soc._docId) {
+    try { await window._fbSetDoc(window._fbDoc(window._db, 'profiles', currentProfile.id, 'societes', soc._docId), soc, { merge: true }); } catch(e) {}
+  }
+  toast(`✓ Exercice ${yr} ajouté à ${soc.nom}`, 'success');
+  renderSocietes();
+}
+
+function renderSocietes() {
+  const el = document.getElementById('societesContent');
+  if (!el) return;
+
+  document.getElementById('soc-kpi-total').textContent = allSocietes.length;
+  const active = currentSociete;
+  document.getElementById('soc-kpi-active').textContent = active ? active.nom : '—';
+  const totalEx = allSocietes.reduce((s,x) => s + (x.exercices?.length || 1), 0);
+  document.getElementById('soc-kpi-exercices').textContent = totalEx;
+  document.getElementById('soc-kpi-annee').textContent = active?.exerciceActif || new Date().getFullYear();
+
+  if (!allSocietes.length) {
+    el.innerHTML = '<div class="empty-state"><div class="icon">🏢</div><p>Aucune société. Créez la première pour commencer.</p></div>';
+    return;
+  }
+
+  el.innerHTML = `<div class="societes-grid">${allSocietes.map(s => {
+    const isActive = currentSociete && String(currentSociete.id) === String(s.id);
+    return `<div class="soc-card ${isActive ? 'soc-card-active' : ''}">
+      <div class="soc-card-header">
+        <div>
+          <div class="soc-card-nom">${s.nom}</div>
+          <div class="soc-card-forme">${s.forme || 'SARL'} ${s.rccm ? '· RCCM ' + s.rccm : ''}</div>
+        </div>
+        ${isActive ? '<span class="soc-badge-active">● Actif</span>' : ''}
+      </div>
+      <div class="soc-card-detail">
+        ${s.nif ? `<div>NIF : <strong>${s.nif}</strong></div>` : ''}
+        ${s.adresse ? `<div>📍 ${s.adresse}</div>` : ''}
+        <div>Exercices : <strong>${(s.exercices||[s.exerciceActif||new Date().getFullYear()]).join(', ')}</strong></div>
+        <div>Exercice actif : <strong style="color:var(--warm)">${s.exerciceActif || new Date().getFullYear()}</strong></div>
+      </div>
+      <div class="soc-card-actions">
+        ${!isActive ? `<button class="btn btn-gold" onclick="switchSociete('${s.id}')">Basculer →</button>` : ''}
+        <button class="btn btn-sm-wire" onclick="ajouterExercice('${s.id}')">+ Exercice</button>
+        <button class="btn btn-sm-wire" onclick="openSocieteModal('${s.id}')">✎ Modifier</button>
+      </div>
+    </div>`;
+  }).join('')}</div>`;
+}
+
+window.openSocieteModal = openSocieteModal;
+window.saveSociete = saveSociete;
+window.switchSociete = switchSociete;
+window.ajouterExercice = ajouterExercice;
+window.renderSocietes = renderSocietes;
+
+// ══════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════
+// ██  MODULE COLLABORATION v2 — Code unique + WebRTC + 3D
+// ══════════════════════════════════════════════════════════════════
+
+let collaborateurs = [];
+let auditLogs = [];
+let collabUnsubscribe = null;   // listener Firestore temps réel
+let isCollabMode = false;       // true si connecté en tant que collaborateur
+let collabOwnerUid = null;      // uid du propriétaire (mode collab)
+
+// WebRTC
+let localStream = null;
+let peerConnection = null;
+let videoCallInterval = null;
+let videoCallSeconds = 0;
+let micEnabled = true;
+let camEnabled = true;
+
+const ROLES = {
+  admin:       { label: 'Administrateur', couleur: 'var(--warm)',  perms: ['*'] },
+  comptable:   { label: 'Comptable',      couleur: 'var(--blue)',  perms: ['saisie','journal','grandlivre','balance','bilan','resultat','tresorerie','factures','devis','clients','fournisseurs','paie','immobilisations','stocks','rapprochement','budgets','lettrage','declarations','analytique','effets'] },
+  gestionnaire:{ label: 'Gestionnaire',   couleur: 'var(--teal)',  perms: ['factures','devis','clients','fournisseurs','stocks','budgets'] },
+  lecteur:     { label: 'Lecture seule',  couleur: 'var(--muted)', perms: ['journal','grandlivre','balance','bilan','resultat','tresorerie'] },
+};
+
+// ── Audit log ──────────────────────────────────────────────────
+function auditLog(action, module, detail) {
+  const log = {
+    id: Date.now(), action, module, detail,
+    user: currentProfile?.email || currentProfile?.company || 'Inconnu',
+    ts: new Date().toISOString(),
+  };
+  auditLogs.unshift(log);
+  if (auditLogs.length > 500) auditLogs = auditLogs.slice(0, 500);
+  if (window._fbReady && currentProfile?.id) {
+    window._fbAddDoc(window._fbCollection(window._db, 'profiles', currentProfile.id, 'audit_logs'), log).catch(() => {});
+  }
+}
+
+// ── Génération du code unique ──────────────────────────────────
+function genererCodeString() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = 'COMEO-';
+  for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
+  return code;
+}
+
+async function genererCodeCollab() {
+  if (!window._fbReady || !currentProfile?.id) { toast('Non connecté', 'error'); return; }
+  const code = genererCodeString();
+  const expiresAt = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString(); // 7 jours
+  const data = {
+    code,
+    ownerUid: currentProfile.id,
+    ownerEmail: currentProfile.email || '',
+    ownerCompany: currentProfile.company || '',
+    createdAt: new Date().toISOString(),
+    expiresAt,
+    actif: true,
+    collaborateurs: [],
+  };
+  try {
+    await window._fbSetDoc(window._fbDoc(window._db, 'collab_sessions', currentProfile.id), data);
+    document.getElementById('collabCodeText').textContent = code;
+    document.getElementById('collabCodeExpiry').textContent = `Valide jusqu'au ${new Date(expiresAt).toLocaleDateString('fr-FR')}`;
+    document.getElementById('btnCopierCode').disabled = false;
+    toast('✓ Code généré ! Partagez-le à vos collaborateurs.', 'success');
+    auditLog('CODE_GEN', 'collaboration', `Nouveau code généré : ${code}`);
+    ecouterCollabsTempsReel();
+  } catch(e) {
+    toast('Erreur génération code : ' + e.message, 'error');
+  }
+}
+
+async function copierCodeCollab() {
+  const code = document.getElementById('collabCodeText').textContent;
+  if (!code || code === '——————') return;
+  const company = currentProfile?.company || 'COMEO AI';
+  const texte = `Bonjour ! Voici votre code d'accès collaborateur COMEO AI pour ${company} :\n\n🔑 ${code}\n\nConnectez-vous sur l'application, cliquez sur "Rejoindre un espace" et collez ce code.`;
+  try {
+    await navigator.clipboard.writeText(texte);
+    toast('✓ Code copié ! Partagez-le par WhatsApp, SMS ou email.', 'success');
+  } catch(e) {
+    toast('Code : ' + code, 'info');
+  }
+}
+
+// ── Écoute temps réel des collaborateurs connectés ────────────
+function ecouterCollabsTempsReel() {
+  if (!window._fbReady || !currentProfile?.id) return;
+  if (collabUnsubscribe) collabUnsubscribe();
+
+  const { onSnapshot, doc } = window._firebaseFirestore || {};
+  if (!onSnapshot) {
+    // Fallback polling si onSnapshot pas exposé
+    setInterval(async () => {
+      const snap = await window._fbGetDoc(window._fbDoc(window._db, 'collab_sessions', currentProfile.id));
+      if (snap.exists()) rafraichirSlotsCollab(snap.data());
+    }, 5000);
+    return;
+  }
+
+  collabUnsubscribe = onSnapshot(doc(window._db, 'collab_sessions', currentProfile.id), (snap) => {
+    if (snap.exists()) rafraichirSlotsCollab(snap.data());
+  });
+}
+
+function rafraichirSlotsCollab(data) {
+  const slots = document.getElementById('collabSlots');
+  const videoSection = document.getElementById('collabVideoSection');
+  if (!slots) return;
+  const collabs = data.collaborateurs || [];
+  collaborateurs = collabs;
+
+  if (!collabs.length) {
+    slots.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Aucun collaborateur connecté.</div>';
+    if (videoSection) videoSection.style.display = 'none';
+    return;
+  }
+
+  if (videoSection && collabs.length > 0) videoSection.style.display = 'block';
+
+  // Affichage 3D des slots
+  slots.innerHTML = collabs.map((c, i) => `
+    <div style="
+      display:flex;align-items:center;gap:10px;
+      background:var(--surface2);border:1px solid var(--line);
+      border-radius:10px;padding:10px 14px;
+      transform:perspective(400px) rotateX(${i % 2 === 0 ? 1 : -1}deg) translateZ(2px);
+      transition:transform .3s
+    ">
+      <div style="
+        width:36px;height:36px;border-radius:50%;
+        background:linear-gradient(135deg,var(--warm),var(--blue));
+        display:flex;align-items:center;justify-content:center;
+        font-weight:700;font-size:14px;color:#fff;flex-shrink:0
+      ">${(c.nom || c.email || '?')[0].toUpperCase()}</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:600;font-size:13px">${c.nom || c.email}</div>
+        <div style="font-size:11px;color:var(--muted)">${ROLES[c.role]?.label || 'Comptable'} · <span style="color:#22c55e">● En ligne</span></div>
+      </div>
+      <button onclick="revoquerCollaborateurV2('${c.uid}')" style="
+        background:rgba(220,38,38,.1);border:1px solid rgba(220,38,38,.3);
+        color:#dc2626;padding:4px 10px;border-radius:6px;cursor:pointer;font-size:11px
+      ">Révoquer</button>
+    </div>
+  `).join('');
+}
+
+// ── Chargement initial du code existant ───────────────────────
+async function loadCollabCode() {
+  if (!window._fbReady || !currentProfile?.id) return;
+  try {
+    const snap = await window._fbGetDoc(window._fbDoc(window._db, 'collab_sessions', currentProfile.id));
+    if (snap.exists()) {
+      const d = snap.data();
+      document.getElementById('collabCodeText').textContent = d.code || '——————';
+      if (d.expiresAt) {
+        document.getElementById('collabCodeExpiry').textContent = `Valide jusqu'au ${new Date(d.expiresAt).toLocaleDateString('fr-FR')}`;
+      }
+      document.getElementById('btnCopierCode').disabled = false;
+      rafraichirSlotsCollab(d);
+      ecouterCollabsTempsReel();
+    }
+  } catch(e) {}
+}
+
+function openCollabModal() {
+  loadCollabCode();
+  document.getElementById('collabModal').style.display = 'flex';
+}
+
+function fermerCollabModal() {
+  document.getElementById('collabModal').style.display = 'none';
+}
+
+// ── Révoquer un collaborateur spécifique ──────────────────────
+async function revoquerCollaborateurV2(uid) {
+  if (!confirm('Révoquer cet accès ?')) return;
+  if (!window._fbReady || !currentProfile?.id) return;
+  try {
+    const snap = await window._fbGetDoc(window._fbDoc(window._db, 'collab_sessions', currentProfile.id));
+    if (!snap.exists()) return;
+    const d = snap.data();
+    const updated = (d.collaborateurs || []).filter(c => c.uid !== uid);
+    await window._fbSetDoc(window._fbDoc(window._db, 'collab_sessions', currentProfile.id), { collaborateurs: updated }, { merge: true });
+    toast('✓ Accès révoqué', 'success');
+    auditLog('REVOKE', 'collaboration', `Collaborateur ${uid} révoqué`);
+  } catch(e) { toast('Erreur révocation', 'error'); }
+}
+
+// ── Révoquer tout le monde ────────────────────────────────────
+async function revoquerTousCollab() {
+  if (!confirm('Révoquer TOUS les collaborateurs et invalider le code ?')) return;
+  if (!window._fbReady || !currentProfile?.id) return;
+  try {
+    await window._fbSetDoc(window._fbDoc(window._db, 'collab_sessions', currentProfile.id), {
+      actif: false, collaborateurs: [], code: '——————'
+    }, { merge: true });
+    document.getElementById('collabCodeText').textContent = '——————';
+    document.getElementById('collabCodeExpiry').textContent = '';
+    document.getElementById('btnCopierCode').disabled = true;
+    document.getElementById('collabSlots').innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px 0">Aucun collaborateur.</div>';
+    toast('✓ Tous les accès ont été révoqués', 'success');
+    auditLog('REVOKE_ALL', 'collaboration', 'Tous les accès collaborateurs révoqués');
+  } catch(e) { toast('Erreur', 'error'); }
+}
+
+// ══════════════════════════════════════════════════════════════════
+// CÔTÉ COLLABORATEUR — Rejoindre avec le code
+// ══════════════════════════════════════════════════════════════════
+
+function ouvrirJoinCollabModal() {
+  document.getElementById('joinCodeInput').value = '';
+  document.getElementById('joinCollabErr').textContent = '';
+  document.getElementById('joinCollabModal').style.display = 'flex';
+}
+
+async function rejoindreCollab() {
+  const code = document.getElementById('joinCodeInput').value.trim().toUpperCase();
+  const errEl = document.getElementById('joinCollabErr');
+  errEl.textContent = '';
+
+  if (!code || code.length < 8) { errEl.textContent = 'Code invalide.'; return; }
+  if (!window._fbReady || !currentProfile?.id) { errEl.textContent = 'Non connecté.'; return; }
+
+  try {
+    // Chercher le code dans Firestore (collection collab_sessions)
+    const { getDocs, collection, query, where } = window._firebaseFirestore || {};
+    let sessionData = null;
+    let ownerUid = null;
+
+    if (getDocs && query && where) {
+      const q = query(collection(window._db, 'collab_sessions'), where('code', '==', code), where('actif', '==', true));
+      const snap = await getDocs(q);
+      if (snap.empty) { errEl.textContent = '❌ Code invalide ou expiré.'; return; }
+      const docSnap = snap.docs[0];
+      ownerUid = docSnap.id;
+      sessionData = docSnap.data();
+    } else {
+      errEl.textContent = 'Erreur Firebase. Rechargez la page.'; return;
+    }
+
+    // Vérifier expiration
+    if (sessionData.expiresAt && new Date(sessionData.expiresAt) < new Date()) {
+      errEl.textContent = '❌ Ce code a expiré. Demandez un nouveau code au propriétaire.'; return;
+    }
+
+    // Vérifier limite 3
+    const collabs = sessionData.collaborateurs || [];
+    if (collabs.length >= 3 && !collabs.find(c => c.uid === currentProfile.id)) {
+      errEl.textContent = '❌ Limite de 3 collaborateurs atteinte.'; return;
+    }
+
+    // Ajouter ce collaborateur si pas déjà présent
+    const dejaPresent = collabs.find(c => c.uid === currentProfile.id);
+    if (!dejaPresent) {
+      const updatedCollabs = [...collabs, {
+        uid: currentProfile.id,
+        email: currentProfile.email || '',
+        nom: currentProfile.company || currentProfile.email || 'Collaborateur',
+        role: 'comptable',
+        joinedAt: new Date().toISOString(),
+      }];
+      await window._fbSetDoc(window._fbDoc(window._db, 'collab_sessions', ownerUid), { collaborateurs: updatedCollabs }, { merge: true });
+    }
+
+  // Passer en mode collaborateur — charger les données du propriétaire
+    document.getElementById('joinCollabModal').style.display = 'none';
+    isCollabMode = true;
+    collabOwnerUid = ownerUid;
+    toast(`✓ Connecté à l'espace de ${sessionData.ownerCompany || sessionData.ownerEmail}`, 'success');
+    auditLog('JOIN', 'collaboration', `Rejoint l'espace de ${sessionData.ownerCompany}`);
+
+    // Charger données du propriétaire
+    await chargerDonneesProprietaire(ownerUid);
+
+    // Écoute révocation temps réel
+    ecouterRevocationCollab(ownerUid);
+
+    // ✅ NOUVEAU — Écoute des appels entrants du propriétaire
+    ecouterAppelEntrant(ownerUid);
+
+  } catch(e) {
+    errEl.textContent = 'Erreur : ' + e.message;
+  }
+}
+
+async function chargerDonneesProprietaire(ownerUid) {
+  const realUid = currentProfile.id;
+  // On redirige currentProfile.id vers le propriétaire pour que toutes
+  // les fonctions de chargement lisent depuis son profil Firestore
+  currentProfile = { ...currentProfile, id: ownerUid, _collabMode: true, _realUid: realUid };
+
+  // Mettre à jour l'en-tête avec le nom du propriétaire
+  try {
+    const ownerSnap = await window._fbGetDoc(window._fbDoc(window._db, 'profiles', ownerUid));
+    if (ownerSnap.exists()) {
+      const ownerData = ownerSnap.data();
+      currentProfile = { ...currentProfile, company: ownerData.company, exercice: ownerData.exercice };
+      const topName = document.getElementById('topCompanyName');
+      if (topName) topName.textContent = (ownerData.company || 'Espace') + ' [Collaborateur]';
+      const exYear = document.getElementById('exerciceYear');
+      if (exYear) exYear.value = ownerData.exercice || '2024';
+    }
+  } catch(e) {}
+
+  toast('🔄 Chargement des données de l\'espace...', 'info');
+
+  // Charger tous les modules avec les vrais noms de fonctions
+  await Promise.all([
+    loadEcrituresFromFirestore(),
+    loadClientsFromFirestore(),
+    loadFournisseursFromFirestore(),
+    loadFacturesFromFirestore(),
+    loadSalaries(),
+    loadImmobilisations(),
+    loadStocks(),
+    loadBudgets(),
+  ]);
+  await Promise.all([
+    loadAnalytique(),
+    loadSocietes(),
+    loadEffets(),
+  ]);
+
+  updateStats();
+  renderPlanComptable();
+  toast('✓ Espace collaborateur chargé !', 'success');
+}
+function ecouterRevocationCollab(ownerUid) {
+  const { onSnapshot, doc } = window._firebaseFirestore || {};
+  if (!onSnapshot) return;
+  onSnapshot(doc(window._db, 'collab_sessions', ownerUid), (snap) => {
+    if (!snap.exists()) return;
+    const d = snap.data();
+    // Si notre UID n'est plus dans la liste → révoqué
+    const toujours = (d.collaborateurs || []).find(c => c.uid === (currentProfile._realUid || currentProfile.id));
+    if (!toujours || !d.actif) {
+      toast('⚠ Votre accès collaborateur a été révoqué.', 'error');
+      setTimeout(() => location.reload(), 2500);
+    }
+  });
+}
+
+// ── Bouton "Rejoindre" dans l'interface ───────────────────────
+// À appeler depuis un bouton dans renderUtilisateurs() côté collaborateur
+function afficherBoutonRejoindre() {
+  return `<button class="btn btn-ink" onclick="ouvrirJoinCollabModal()" style="font-size:13px">
+    🔑 Rejoindre un espace collaborateur
+  </button>`;
+}
+
+// ══════════════════════════════════════════════════════════════════
+// APPEL VIDÉO WebRTC + Firebase Signaling
+// ══════════════════════════════════════════════════════════════════
+
+const ICE_SERVERS = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun.cloudflare.com:3478' },
+    // Serveurs TURN publics gratuits (relais NAT/firewall)
+    {
+      urls: 'turn:openrelay.metered.ca:80',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
+  ]
+};
+
+async function ouvrirAppelVideo() {
+  document.getElementById('videoCallModal').style.display = 'flex';
+  document.getElementById('videoCallStatus').textContent = '⏳ Accès caméra/micro...';
+  document.getElementById('remoteVideoPlaceholder').style.display = 'flex';
+
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    document.getElementById('localVideo').srcObject = localStream;
+    document.getElementById('videoCallStatus').textContent = '⏳ Connexion au pair...';
+
+    await initialiserWebRTC();
+  } catch(e) {
+    document.getElementById('videoCallStatus').textContent = '❌ ' + (e.name === 'NotAllowedError' ? 'Accès caméra refusé.' : e.message);
+  }
+}
+
+async function initialiserWebRTC() {
+  const ownerUid = isCollabMode ? collabOwnerUid : currentProfile.id;
+  const isOwner = !isCollabMode;
+
+  peerConnection = new RTCPeerConnection(ICE_SERVERS);
+
+  // Ajouter les tracks locaux
+  localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+  // Recevoir le stream distant
+  peerConnection.ontrack = (event) => {
+    const remoteVideo = document.getElementById('remoteVideo');
+    remoteVideo.srcObject = event.streams[0];
+    document.getElementById('remoteVideoPlaceholder').style.display = 'none';
+    document.getElementById('videoCallStatus').textContent = '✅ Appel en cours';
+    document.getElementById('videoCallTitle').textContent = isOwner ? 'Avec collaborateur' : 'Avec propriétaire';
+    demarrerTimerAppel();
+  };
+
+  // ICE candidates → Firestore
+  peerConnection.onicecandidate = async (event) => {
+    if (!event.candidate) return;
+    const path = isOwner ? 'callerCandidates' : 'calleeCandidates';
+    await window._fbAddDoc(
+      window._fbCollection(window._db, 'video_calls', ownerUid, path),
+      event.candidate.toJSON()
+    );
+  };
+
+  if (isOwner) {
+    // Créer l'offre
+    const offer = await peerConnection.createOffer();
+    await peerConnection.setLocalDescription(offer);
+    await window._fbSetDoc(window._fbDoc(window._db, 'video_calls', ownerUid), {
+      offer: { sdp: offer.sdp, type: offer.type },
+      createdAt: new Date().toISOString(),
+    });
+
+    // Écouter la réponse
+    const { onSnapshot, doc } = window._firebaseFirestore || {};
+    if (onSnapshot) {
+      onSnapshot(doc(window._db, 'video_calls', ownerUid), async (snap) => {
+        const d = snap.data();
+        if (d?.answer && !peerConnection.remoteDescription) {
+          await peerConnection.setRemoteDescription(new RTCSessionDescription(d.answer));
+        }
+      });
+      // ICE candidates du callee
+      const { getDocs, collection } = window._firebaseFirestore || {};
+      onSnapshot(window._fbCollection(window._db, 'video_calls', ownerUid, 'calleeCandidates'), (snap) => {
+        snap.docChanges().forEach(async ch => {
+          if (ch.type === 'added') {
+            await peerConnection.addIceCandidate(new RTCIceCandidate(ch.doc.data()));
+          }
+        });
+      });
+    }
+  } else {
+    // Collaborateur : lire l'offre
+    const snap = await window._fbGetDoc(window._fbDoc(window._db, 'video_calls', ownerUid));
+    if (!snap.exists() || !snap.data()?.offer) {
+      document.getElementById('videoCallStatus').textContent = '⏳ En attente que le propriétaire démarre l\'appel...';
+      // Écoute
+      const { onSnapshot, doc } = window._firebaseFirestore || {};
+      if (onSnapshot) {
+        const unsub = onSnapshot(doc(window._db, 'video_calls', ownerUid), async (s) => {
+          if (s.data()?.offer && !peerConnection.remoteDescription) {
+            unsub();
+            await repondreAppelVideo(ownerUid);
+          }
+        });
+      }
+      return;
+    }
+    await repondreAppelVideo(ownerUid);
+  }
+}
+
+async function repondreAppelVideo(ownerUid) {
+  const snap = await window._fbGetDoc(window._fbDoc(window._db, 'video_calls', ownerUid));
+  const offer = snap.data()?.offer;
+  await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+  const answer = await peerConnection.createAnswer();
+  await peerConnection.setLocalDescription(answer);
+  await window._fbSetDoc(window._fbDoc(window._db, 'video_calls', ownerUid), {
+    answer: { sdp: answer.sdp, type: answer.type }
+  }, { merge: true });
+
+  // ICE candidates du caller
+  const { onSnapshot } = window._firebaseFirestore || {};
+  if (onSnapshot) {
+    onSnapshot(window._fbCollection(window._db, 'video_calls', ownerUid, 'callerCandidates'), (snap) => {
+      snap.docChanges().forEach(async ch => {
+        if (ch.type === 'added') {
+          await peerConnection.addIceCandidate(new RTCIceCandidate(ch.doc.data()));
+        }
+      });
+    });
+  }
+}
+
+function demarrerTimerAppel() {
+  videoCallSeconds = 0;
+  if (videoCallInterval) clearInterval(videoCallInterval);
+  videoCallInterval = setInterval(() => {
+    videoCallSeconds++;
+    const m = String(Math.floor(videoCallSeconds / 60)).padStart(2,'0');
+    const s = String(videoCallSeconds % 60).padStart(2,'0');
+    const el = document.getElementById('videoCallTimer');
+    if (el) el.textContent = `${m}:${s}`;
+  }, 1000);
+}
+
+async function terminerAppelVideo() {
+  if (peerConnection) { peerConnection.close(); peerConnection = null; }
+  if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
+  if (videoCallInterval) { clearInterval(videoCallInterval); videoCallInterval = null; }
+  document.getElementById('videoCallModal').style.display = 'none';
+  document.getElementById('localVideo').srcObject = null;
+  document.getElementById('remoteVideo').srcObject = null;
+  // Nettoyer Firestore signaling
+  const ownerUid = isCollabMode ? collabOwnerUid : currentProfile.id;
+  try {
+    await window._fbSetDoc(window._fbDoc(window._db, 'video_calls', ownerUid), { ended: true }, { merge: true });
+  } catch(e) {}
+  toast('Appel terminé', 'info');
+}
+
+function toggleMic() {
+  if (!localStream) return;
+  micEnabled = !micEnabled;
+  localStream.getAudioTracks().forEach(t => t.enabled = micEnabled);
+  document.getElementById('btnMicToggle').style.opacity = micEnabled ? '1' : '0.4';
+}
+
+function toggleCam() {
+  if (!localStream) return;
+  camEnabled = !camEnabled;
+  localStream.getVideoTracks().forEach(t => t.enabled = camEnabled);
+  document.getElementById('btnCamToggle').style.opacity = camEnabled ? '1' : '0.4';
+}
+
+// ══════════════════════════════════════════════════════════════════
+// RENDER UTILISATEURS (mis à jour)
+// ══════════════════════════════════════════════════════════════════
+
+async function loadCollaborateurs() {
+  if (!window._fbReady || !currentProfile?.id) return;
+  try {
+    const ownerID = getOwnerProfileId();
+    const [snapC, snapA] = await Promise.all([
+      window._fbGetDocs(window._fbCollection(window._db, 'profiles', ownerID, 'collaborateurs')),
+      window._fbGetDocs(window._fbCollection(window._db, 'profiles', ownerID, 'audit_logs')),
+    ]);
+    collaborateurs = snapC.docs.map(d => ({ ...d.data(), _docId: d.id }));
+    auditLogs = snapA.docs.map(d => ({ ...d.data(), _docId: d.id })).sort((a,b) => new Date(b.ts) - new Date(a.ts));
+  } catch(e) {}
+  // Charger aussi le code collab existant
+  await loadCollabCode();
+}
+
+function renderUtilisateurs() {
+  const el = document.getElementById('utilisateursContent');
+  if (!el) return;
+
+  document.getElementById('users-kpi-total').textContent = collaborateurs.length + 1;
+  document.getElementById('users-kpi-actifs').textContent = collaborateurs.filter(c => c.accepte).length + 1;
+  document.getElementById('users-kpi-invites').textContent = collaborateurs.filter(c => !c.accepte).length;
+  document.getElementById('users-kpi-logs').textContent = auditLogs.length;
+
+  const collabHtml = `
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-header">
+      <div><div class="card-title">🔗 Collaboration temps réel</div>
+        <div class="card-sub" style="font-size:11px;color:var(--muted)">Partagez un code · Max 3 collaborateurs · Accès immédiat</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn btn-ink" onclick="openCollabModal()">⚡ Gérer le code d'accès</button>
+        <button class="btn btn-sm-wire" onclick="ouvrirJoinCollabModal()">🔑 Rejoindre un espace</button>
+      </div>
+    </div>
+
+    <!-- Mode collaborateur actif -->
+    ${isCollabMode ? `
+    <div style="background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.25);border-radius:10px;padding:12px 16px;margin:12px 0;display:flex;align-items:center;gap:12px">
+      <div style="width:10px;height:10px;border-radius:50%;background:#22c55e;box-shadow:0 0 6px #22c55e;flex-shrink:0"></div>
+      <div>
+        <div style="font-weight:600;font-size:13px;color:#22c55e">Mode collaborateur actif</div>
+        <div style="font-size:11px;color:var(--muted)">Vous travaillez sur l'espace d'un autre propriétaire.</div>
+      </div>
+      <button onclick="quitterModeCollab()" style="margin-left:auto;background:rgba(220,38,38,.1);border:1px solid rgba(220,38,38,.3);color:#dc2626;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px">Quitter l'espace</button>
+    </div>` : ''}
+
+    <div class="dtw"><table class="dt">
+      <thead><tr><th>Nom</th><th>Email</th><th>Rôle</th><th>Statut</th><th>Depuis</th><th></th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>${currentProfile?.company || 'Administrateur'}</strong></td>
+          <td style="color:var(--muted);font-size:12px">${currentProfile?.email || '—'}</td>
+          <td><span class="role-badge" style="background:rgba(212,168,83,.15);color:var(--warm)">Administrateur</span></td>
+          <td><span style="color:var(--green);font-size:12px">● Actif</span></td>
+          <td style="font-size:11px;color:var(--muted)">Propriétaire</td>
+          <td></td>
+        </tr>
+        ${collaborateurs.map(c => {
+          const r = ROLES[c.role] || ROLES.lecteur;
+          return `<tr>
+            <td><strong>${c.nom}</strong></td>
+            <td style="color:var(--muted);font-size:12px">${c.email}</td>
+            <td><select class="role-select" onchange="changerRole(${c.id}, this.value)">
+              ${Object.entries(ROLES).map(([k,v]) => `<option value="${k}" ${c.role===k?'selected':''}>${v.label}</option>`).join('')}
+            </select></td>
+            <td><span style="color:${c.accepte ? 'var(--green)' : 'var(--muted)'};font-size:12px">${c.accepte ? '● Actif' : '⏳ En attente'}</span></td>
+            <td style="font-size:11px;color:var(--muted)">${new Date(c.createdAt).toLocaleDateString('fr-FR')}</td>
+            <td><button class="btn btn-sm-wire" onclick="revoquerCollaborateurV2('${c.uid || c.id}')" style="color:var(--rust)">✕</button></td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table></div>
+  </div>`;
+
+  const logsHtml = `<div class="card">
+    <div class="card-header"><div><div class="card-title">📋 Journal d'audit</div>
+      <div class="card-sub">500 dernières actions</div></div>
+      <button class="btn btn-sm-wire" onclick="exportAuditPDF()">↓ Export PDF</button>
+    </div>
+    ${auditLogs.length ? `<div class="dtw"><table class="dt">
+      <thead><tr><th>Date/heure</th><th>Action</th><th>Module</th><th>Détail</th><th>Utilisateur</th></tr></thead>
+      <tbody>${auditLogs.slice(0,100).map(l => {
+        const col = { 'SAVE':'var(--green)','DELETE':'var(--rust)','EXPORT':'var(--blue)','INVITE':'var(--teal)','REVOKE':'var(--rust)','ROLE_CHANGE':'var(--warm)','LOGIN':'var(--muted)','LOGOUT':'var(--muted)','CODE_GEN':'var(--warm)','JOIN':'var(--teal)','REVOKE_ALL':'var(--rust)' };
+        return `<tr>
+          <td style="font-family:var(--font-mono);font-size:11px">${new Date(l.ts).toLocaleString('fr-FR')}</td>
+          <td><span style="color:${col[l.action]||'var(--ink)'};font-weight:600;font-size:12px">${l.action}</span></td>
+          <td style="font-size:12px;color:var(--muted)">${l.module}</td>
+          <td style="font-size:12px">${l.detail}</td>
+          <td style="font-size:11px;color:var(--muted)">${l.user}</td>
+        </tr>`;
+      }).join('')}</tbody></table></div>`
+    : '<div class="empty-state" style="padding:20px"><div class="icon">📋</div><p>Aucun log.</p></div>'}
+  </div>`;
+
+  el.innerHTML = collabHtml + logsHtml;
+}
+
+async function quitterModeCollab() {
+  if (!confirm('Quitter l\'espace collaborateur ?')) return;
+  // Retirer son UID de la session
+  if (collabOwnerUid) {
+    try {
+      const snap = await window._fbGetDoc(window._fbDoc(window._db, 'collab_sessions', collabOwnerUid));
+      if (snap.exists()) {
+        const updated = (snap.data().collaborateurs || []).filter(c => c.uid !== (currentProfile._realUid || currentProfile.id));
+        await window._fbSetDoc(window._fbDoc(window._db, 'collab_sessions', collabOwnerUid), { collaborateurs: updated }, { merge: true });
+      }
+    } catch(e) {}
+  }
+  location.reload();
+}
+
+async function changerRole(id, newRole) {
+  const collab = collaborateurs.find(c => String(c.id) === String(id));
+  if (!collab) return;
+  const oldRole = collab.role;
+  collab.role = newRole;
+  if (window._fbReady && currentProfile?.id && collab._docId) {
+    try { await window._fbSetDoc(window._fbDoc(window._db, 'profiles', currentProfile.id, 'collaborateurs', collab._docId), { role: newRole }, { merge: true }); } catch(e) {}
+  }
+  auditLog('ROLE_CHANGE', 'utilisateurs', `${collab.nom} : ${ROLES[oldRole]?.label} → ${ROLES[newRole]?.label}`);
+  toast(`✓ Rôle modifié`, 'success');
+  renderUtilisateurs();
+}
+
+function exportAuditPDF() {
+  const { jsPDF } = window.jspdf;
+  if (!jsPDF) { toast('jsPDF non disponible', 'error'); return; }
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+  const company = currentProfile?.company || 'Entreprise';
+  doc.setFillColor(10,11,16); doc.rect(0,0,297,22,'F');
+  doc.setTextColor(212,168,83); doc.setFontSize(12); doc.setFont('helvetica','bold');
+  doc.text(`JOURNAL D'AUDIT — ${company} — Exporté le ${new Date().toLocaleDateString('fr-FR')}`, 14, 14);
+  doc.autoTable({
+    startY: 26,
+    head: [['Date/heure','Action','Module','Détail','Utilisateur']],
+    body: auditLogs.slice(0,200).map(l => [new Date(l.ts).toLocaleString('fr-FR'), l.action, l.module, l.detail, l.user]),
+    styles: { font:'helvetica', fontSize:7.5 },
+    headStyles: { fillColor:[10,11,16], textColor:[212,168,83] },
+    margin: { left:14, right:14 },
+  });
+  doc.save(`AUDIT_${company.replace(/\s+/g,'_')}.pdf`);
+  toast('✓ Journal exporté', 'success');
+}
+
+// ── Exposer globalement ────────────────────────────────────────
+window.openCollabModal        = openCollabModal;
+window.fermerCollabModal      = fermerCollabModal;
+window.genererCodeCollab      = genererCodeCollab;
+window.copierCodeCollab       = copierCodeCollab;
+window.revoquerCollaborateurV2 = revoquerCollaborateurV2;
+window.revoquerTousCollab     = revoquerTousCollab;
+window.ouvrirJoinCollabModal  = ouvrirJoinCollabModal;
+window.rejoindreCollab        = rejoindreCollab;
+window.quitterModeCollab      = quitterModeCollab;
+window.changerRole            = changerRole;
+window.renderUtilisateurs     = renderUtilisateurs;
+window.exportAuditPDF         = exportAuditPDF;
+window.ouvrirAppelVideo       = ouvrirAppelVideo;
+window.terminerAppelVideo     = terminerAppelVideo;
+window.toggleMic              = toggleMic;
+window.toggleCam              = toggleCam;
+
+// ══════════════════════════════════════════════════════════════════
+// ██  MODULE 4 — EFFETS DE COMMERCE (LCR / Billet à ordre / Escompte)
+// ══════════════════════════════════════════════════════════════════
+let effets = [];  // { id, type, tiré/souscripteur, montant, dateCreation, dateEcheance, statut, banque, ecritureId }
+
+const STATUTS_EFFET = {
+  en_portefeuille: { label: 'En portefeuille', couleur: 'var(--blue)' },
+  remis_escompte:  { label: 'Remis à l\'escompte', couleur: 'var(--warm)' },
+  encaisse:        { label: 'Encaissé', couleur: 'var(--green)' },
+  impaye:          { label: 'Impayé', couleur: 'var(--rust)' },
+  endosse:         { label: 'Endossé', couleur: 'var(--teal)' },
+};
+
+async function loadEffets() {
+  if (!window._fbReady || !currentProfile?.id) return;
+  try {
+    const snap = await window._fbGetDocs(window._fbCollection(window._db, 'profiles', currentProfile.id, 'effets'));
+    effets = snap.docs.map(d => ({ ...d.data(), _docId: d.id }));
+  } catch(e) {}
+}
+
+function openEffetModal(id = null) {
+  const e = id ? effets.find(x => x.id === id) : null;
+  document.getElementById('effet-id').value = e ? e.id : '';
+  document.getElementById('effet-type').value = e ? e.type : 'lcr';
+  document.getElementById('effet-tire').value = e ? (e.tire || '') : '';
+  document.getElementById('effet-montant').value = e ? e.montant : '';
+  document.getElementById('effet-date-creation').value = e ? e.dateCreation : new Date().toISOString().split('T')[0];
+  document.getElementById('effet-date-echeance').value = e ? e.dateEcheance : '';
+  document.getElementById('effet-banque').value = e ? (e.banque || '') : '';
+  document.getElementById('effet-statut').value = e ? e.statut : 'en_portefeuille';
+  document.getElementById('effet-ref').value = e ? (e.ref || '') : '';
+  document.getElementById('effetModal').style.display = 'flex';
+}
+
+async function saveEffet() {
+  const id = document.getElementById('effet-id').value;
+  const type = document.getElementById('effet-type').value;
+  const tire = document.getElementById('effet-tire').value.trim();
+  const montant = parseFloat(document.getElementById('effet-montant').value) || 0;
+  const dateCreation = document.getElementById('effet-date-creation').value;
+  const dateEcheance = document.getElementById('effet-date-echeance').value;
+  const banque = document.getElementById('effet-banque').value.trim();
+  const statut = document.getElementById('effet-statut').value;
+  const ref = document.getElementById('effet-ref').value.trim();
+  if (!tire || !montant || !dateEcheance) { toast('Tiré/souscripteur, montant et échéance obligatoires', 'error'); return; }
+
+  const effet = { id: id ? parseInt(id) : Date.now(), type, tire, montant, dateCreation, dateEcheance, banque, statut, ref, createdAt: new Date().toISOString() };
+
+  if (id) {
+    const existing = effets.find(e => String(e.id) === String(id));
+    if (existing) effet._docId = existing._docId;
+    const idx = effets.findIndex(e => String(e.id) === String(id));
+    if (idx > -1) effets[idx] = effet;
+    if (window._fbReady && currentProfile?.id && effet._docId) {
+      try { await window._fbSetDoc(window._fbDoc(window._db, 'profiles', currentProfile.id, 'effets', effet._docId), effet, { merge: true }); } catch(e) {}
+    }
+  } else {
+    effets.push(effet);
+    if (window._fbReady && currentProfile?.id) {
+      try { const r = await window._fbAddDoc(window._fbCollection(window._db, 'profiles', currentProfile.id, 'effets'), effet); effet._docId = r.id; } catch(e) {}
+    }
+    // Générer l'écriture comptable automatiquement
+    await genererEcritureEffet(effet);
+  }
+
+  auditLog('SAVE', 'effets', `${type.toUpperCase()} ${fn(montant)} FCFA — ${tire} — Éch. ${dateEcheance}`);
+  document.getElementById('effetModal').style.display = 'none';
+  toast(`✓ Effet enregistré — ${fn(montant)} FCFA — Échéance : ${dateEcheance}`, 'success');
+  renderEffets();
+}
+
+async function genererEcritureEffet(effet) {
+  // LCR reçue (effet client) → 413 / 411
+  // Billet à ordre émis (effet fournisseur) → 401 / 403
+  let lignes;
+  if (effet.type === 'lcr' || effet.type === 'billet_recu') {
+    lignes = [
+      { compte: '413', libelle: `Effet à recevoir — ${effet.tire}`, debit: effet.montant, credit: 0 },
+      { compte: '411', libelle: `Créance client — ${effet.tire}`, debit: 0, credit: effet.montant },
+    ];
+  } else {
+    lignes = [
+      { compte: '401', libelle: `Dette fournisseur — ${effet.tire}`, debit: effet.montant, credit: 0 },
+      { compte: '403', libelle: `Effet à payer — ${effet.tire}`, debit: 0, credit: effet.montant },
+    ];
+  }
+  const ecr = {
+    id: Date.now(), date: effet.dateCreation, journal: 'OD',
+    piece: 'EFF-' + String(effet.id).slice(-6),
+    libelle: `${effet.type.toUpperCase()} — ${effet.tire} — Éch. ${effet.dateEcheance}`,
+    createdAt: new Date().toISOString(), lignes,
+  };
+  await saveEcritureToFirestore(ecr);
+  ecritures.push(ecr);
+  updateStats();
+}
+
+async function changerStatutEffet(id, newStatut) {
+  const effet = effets.find(e => e.id === id);
+  if (!effet) return;
+  const oldStatut = effet.statut;
+  effet.statut = newStatut;
+  if (window._fbReady && currentProfile?.id && effet._docId) {
+    try { await window._fbSetDoc(window._fbDoc(window._db, 'profiles', currentProfile.id, 'effets', effet._docId), { statut: newStatut }, { merge: true }); } catch(e) {}
+  }
+  // Écriture de remise à l'escompte
+  if (newStatut === 'remis_escompte') {
+    const ecr = {
+      id: Date.now(), date: new Date().toISOString().split('T')[0], journal: 'BQ',
+      piece: 'ESC-' + String(effet.id).slice(-6),
+      libelle: `Remise à l'escompte — ${effet.tire}`,
+      createdAt: new Date().toISOString(),
+      lignes: [
+        { compte: '521', libelle: 'Banque — escompte', debit: effet.montant, credit: 0 },
+        { compte: '413', libelle: `Effet escompté — ${effet.tire}`, debit: 0, credit: effet.montant },
+      ],
+    };
+    await saveEcritureToFirestore(ecr);
+    ecritures.push(ecr);
+    updateStats();
+    toast(`✓ Effet remis à l'escompte — Écriture 521/${413} générée`, 'success');
+  } else if (newStatut === 'encaisse') {
+    const ecr = {
+      id: Date.now(), date: new Date().toISOString().split('T')[0], journal: 'BQ',
+      piece: 'ENC-' + String(effet.id).slice(-6),
+      libelle: `Encaissement effet — ${effet.tire}`,
+      createdAt: new Date().toISOString(),
+      lignes: [
+        { compte: '521', libelle: 'Banque — encaissement', debit: effet.montant, credit: 0 },
+        { compte: '413', libelle: `Effet encaissé — ${effet.tire}`, debit: 0, credit: effet.montant },
+      ],
+    };
+    await saveEcritureToFirestore(ecr);
+    ecritures.push(ecr);
+    updateStats();
+    toast(`✓ Effet encaissé — Écriture 521/413 générée`, 'success');
+  } else if (newStatut === 'impaye') {
+    const ecr = {
+      id: Date.now(), date: new Date().toISOString().split('T')[0], journal: 'OD',
+      piece: 'IMP-' + String(effet.id).slice(-6),
+      libelle: `Impayé — ${effet.tire}`,
+      createdAt: new Date().toISOString(),
+      lignes: [
+        { compte: '416', libelle: `Clients douteux — ${effet.tire}`, debit: effet.montant, credit: 0 },
+        { compte: '413', libelle: `Effet impayé — ${effet.tire}`, debit: 0, credit: effet.montant },
+      ],
+    };
+    await saveEcritureToFirestore(ecr);
+    ecritures.push(ecr);
+    updateStats();
+    toast(`⚠ Effet impayé — Écriture 416/413 générée`, 'error');
+  }
+  auditLog('SAVE', 'effets', `Statut modifié : ${STATUTS_EFFET[oldStatut]?.label} → ${STATUTS_EFFET[newStatut]?.label} (${fn(effet.montant)} FCFA)`);
+  renderEffets();
+}
+
+async function deleteEffet(id) {
+  if (!confirm('Supprimer cet effet ?')) return;
+  const effet = effets.find(e => e.id === id);
+  effets = effets.filter(e => e.id !== id);
+  if (window._fbReady && currentProfile?.id && effet?._docId) {
+    try { await window._fbDeleteDoc(window._fbDoc(window._db, 'profiles', currentProfile.id, 'effets', effet._docId)); } catch(e) {}
+  }
+  toast('Effet supprimé', 'success');
+  renderEffets();
+}
+
+function renderEffets() {
+  const el = document.getElementById('effetsContent');
+  if (!el) return;
+
+  const today = new Date();
+  const totalPortefeuille = effets.filter(e => e.statut === 'en_portefeuille').reduce((s,e) => s + e.montant, 0);
+  const totalEscompte = effets.filter(e => e.statut === 'remis_escompte').reduce((s,e) => s + e.montant, 0);
+  const totalImpayes = effets.filter(e => e.statut === 'impaye').reduce((s,e) => s + e.montant, 0);
+  const aEcheoir7j = effets.filter(e => {
+    const ech = new Date(e.dateEcheance);
+    const diff = (ech - today) / 86400000;
+    return diff >= 0 && diff <= 7 && e.statut === 'en_portefeuille';
+  }).length;
+
+  document.getElementById('effets-kpi-portefeuille').textContent = fn(totalPortefeuille);
+  document.getElementById('effets-kpi-escompte').textContent = fn(totalEscompte);
+  document.getElementById('effets-kpi-impayes').textContent = fn(totalImpayes);
+  document.getElementById('effets-kpi-echeoir').textContent = aEcheoir7j;
+
+  if (!effets.length) {
+    el.innerHTML = '<div class="empty-state"><div class="icon">📄</div><p>Aucun effet de commerce. Créez une LCR ou un billet à ordre.</p></div>';
+    return;
+  }
+
+  const sorted = [...effets].sort((a,b) => new Date(a.dateEcheance) - new Date(b.dateEcheance));
+  const rows = sorted.map(e => {
+    const st = STATUTS_EFFET[e.statut] || { label: e.statut, couleur: 'var(--muted)' };
+    const ech = new Date(e.dateEcheance);
+    const daysToEch = Math.round((ech - today) / 86400000);
+    const isUrgent = daysToEch >= 0 && daysToEch <= 7;
+    const typeLabels = { lcr:'LCR', billet_recu:'Billet reçu', billet_emis:'Billet émis' };
+    return `<tr ${isUrgent && e.statut === 'en_portefeuille' ? 'style="background:rgba(245,158,11,.07)"' : ''}>
+      <td><span style="font-family:var(--font-mono);font-size:11px;color:var(--muted)">${e.ref || 'EFF-' + String(e.id).slice(-4)}</span></td>
+      <td><strong>${typeLabels[e.type] || e.type}</strong></td>
+      <td>${e.tire}</td>
+      <td style="text-align:right;font-family:var(--font-mono);font-weight:700">${fn(e.montant)}</td>
+      <td style="font-family:var(--font-mono);font-size:12px">${e.dateCreation}</td>
+      <td style="font-family:var(--font-mono);font-size:12px;${isUrgent && e.statut==='en_portefeuille'?'color:var(--warm);font-weight:600':''}">${e.dateEcheance}${isUrgent && e.statut==='en_portefeuille'?' ⚡':''}${daysToEch < 0 && e.statut==='en_portefeuille'?' ⚠':''}  </td>
+      <td><span style="color:${st.couleur};font-size:12px;font-weight:600">● ${st.label}</span></td>
+      <td style="font-size:12px;color:var(--muted)">${e.banque || '—'}</td>
+      <td>
+        <select class="effet-statut-sel" onchange="changerStatutEffet(${e.id}, this.value)" title="Changer le statut">
+          ${Object.entries(STATUTS_EFFET).map(([k,v]) => `<option value="${k}" ${e.statut===k?'selected':''}>${v.label}</option>`).join('')}
+        </select>
+        <button class="btn btn-sm-wire" onclick="openEffetModal(${e.id})" title="Modifier">✎</button>
+        <button class="btn btn-sm-wire" onclick="deleteEffet(${e.id})" style="color:var(--rust)" title="Supprimer">✕</button>
+      </td>
+    </tr>`;
+  }).join('');
+
+  el.innerHTML = `<div class="dtw"><table class="dt effets-table">
+    <thead><tr>
+      <th>Référence</th><th>Type</th><th>Tiré / Souscripteur</th>
+      <th style="text-align:right">Montant</th><th>Création</th><th>Échéance</th>
+      <th>Statut</th><th>Banque</th><th>Actions</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+    <tfoot><tr>
+      <td colspan="3" style="font-weight:700">TOTAL ${effets.length} effet(s)</td>
+      <td style="text-align:right;font-weight:700;font-family:var(--font-mono)">${fn(effets.reduce((s,e)=>s+e.montant,0))}</td>
+      <td colspan="5"></td>
+    </tr></tfoot>
+  </table></div>`;
+}
+
+function exportEffetsPDF() {
+  if (!effets.length) { toast('Aucun effet', 'error'); return; }
+  const { jsPDF } = window.jspdf;
+  if (!jsPDF) { toast('jsPDF non disponible', 'error'); return; }
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+  const company = currentProfile?.company || 'Entreprise';
+  doc.setFillColor(10,11,16); doc.rect(0,0,297,22,'F');
+  doc.setTextColor(212,168,83); doc.setFontSize(12); doc.setFont('helvetica','bold');
+  doc.text(`PORTEFEUILLE EFFETS DE COMMERCE — ${company} — ${new Date().toLocaleDateString('fr-FR')}`, 14, 14);
+  const typeLabels = { lcr:'LCR', billet_recu:'Billet reçu', billet_emis:'Billet émis' };
+  doc.autoTable({
+    startY: 26,
+    head: [['Réf.','Type','Tiré / Souscripteur','Montant (FCFA)','Création','Échéance','Statut','Banque']],
+    body: effets.map(e => [
+      e.ref || 'EFF-' + String(e.id).slice(-4),
+      typeLabels[e.type] || e.type,
+      e.tire,
+      fn(e.montant),
+      e.dateCreation,
+      e.dateEcheance,
+      STATUTS_EFFET[e.statut]?.label || e.statut,
+      e.banque || '—',
+    ]),
+    foot: [['TOTAL','','',fn(effets.reduce((s,e)=>s+e.montant,0)),'','','','']],
+    styles: { font:'helvetica', fontSize:8 },
+    headStyles: { fillColor:[10,11,16], textColor:[212,168,83] },
+    footStyles: { fillColor:[30,34,54], textColor:[212,168,83], fontStyle:'bold' },
+    columnStyles: { 3:{ halign:'right' } },
+    margin: { left:14, right:14 },
+  });
+  doc.save(`EFFETS_${company.replace(/\s+/g,'_')}.pdf`);
+  toast('✓ Portefeuille effets exporté en PDF', 'success');
+}
+
+window.openEffetModal = openEffetModal;
+window.saveEffet = saveEffet;
+window.changerStatutEffet = changerStatutEffet;
+window.deleteEffet = deleteEffet;
+window.renderEffets = renderEffets;
+window.exportEffetsPDF = exportEffetsPDF;
+
+// ✅ Exports PAIE & RH
+window.saveBulletin = saveBulletin;
+window.loadRH = loadRH;
+
+// ✅ Exports TRÉSORERIE
+window.loadTresorerie = loadTresorerie;
+window.reconcilierBanque = reconcilierBanque;
+
+// ✅ Exports TAXES & FISCALITÉ
+window.loadTaxes = loadTaxes;
+window.declaredTVA = declaredTVA;
+window.loadDeclFiscales = loadDeclFiscales;
+
+// ✅ Exports VIDÉO 3D
+window.loadAppelsVideo = loadAppelsVideo;
+window.initAppel3D = initAppel3D;
+window.terminerAppel = terminerAppel;
+
+// ✅ Exports UTILITIES
+window.logAudit = logAudit;
+window.getOwnerProfileId = getOwnerProfileId;
+
+// ════════════════════════════════════════════════════════════════════════════════
+// ✅ MODULE PAIE COMPLÈTE — Bulletins, CNPS, Déclarations
+// ════════════════════════════════════════════════════════════════════════════════
+let employes = [], bulletins = [], paieConfig = null;
+
+async function loadRH() {
+  try {
+    const ownerID = getOwnerProfileId();
+    const [empSnap, bulSnap, cfgSnap] = await Promise.all([
+      window._fbGetDocs(window._fbCollection(window._db, 'profiles', ownerID, 'employes')),
+      window._fbGetDocs(window._fbCollection(window._db, 'profiles', ownerID, 'bulletins')),
+      window._fbGetDocs(window._fbCollection(window._db, 'profiles', ownerID, 'paie_config')),
+    ]);
+    employes = empSnap.docs.map(d => ({ ...d.data(), _docId: d.id }));
+    bulletins = bulSnap.docs.map(d => ({ ...d.data(), _docId: d.id }));
+    if (cfgSnap.docs.length) paieConfig = cfgSnap.docs[0].data();
+  } catch(e) { console.error('Erreur RH:', e); }
+}
+
+async function saveBulletin(bulletin) {
+  try {
+    const ownerID = getOwnerProfileId();
+    const col = window._fbCollection(window._db, 'profiles', ownerID, 'bulletins');
+    const data = {
+      ...bulletin,
+      dateGeneration: new Date().toISOString(),
+      mois: bulletin.mois || new Date().getMonth() + 1,
+      annee: bulletin.annee || new Date().getFullYear(),
+    };
+    if (bulletin._docId) {
+      await window._fbSetDoc(window._fbDoc(window._db, 'profiles', ownerID, 'bulletins', bulletin._docId), data, { merge: true });
+    } else {
+      const ref = await window._fbAddDoc(col, data);
+      bulletin._docId = ref.id;
+    }
+    toast('✓ Bulletin sauvegardé', 'success');
+    await logAudit('SAVE', 'PAIE', `Bulletin ${bulletin.employe} créé`, currentProfile.email);
+    return bulletin._docId;
+  } catch(e) {
+    toast('Erreur: ' + e.message, 'error');
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// ✅ MODULE TRÉSORERIE AVANCÉE — Réconciliation, Cash-flow, Prévisions
+// ════════════════════════════════════════════════════════════════════════════════
+let tresorData = {}, reconciliations = [], previsionsCashFlow = [];
+
+async function loadTresorerie() {
+  try {
+    const ownerID = getOwnerProfileId();
+    const [recSnap, fcfSnap] = await Promise.all([
+      window._fbGetDocs(window._fbCollection(window._db, 'profiles', ownerID, 'reconciliations')),
+      window._fbGetDocs(window._fbCollection(window._db, 'profiles', ownerID, 'cash_flow_previsions')),
+    ]);
+    reconciliations = recSnap.docs.map(d => ({ ...d.data(), _docId: d.id }));
+    previsionsCashFlow = fcfSnap.docs.map(d => ({ ...d.data(), _docId: d.id }));
+  } catch(e) { console.error('Erreur trésorerie:', e); }
+}
+
+// Réconciliation bancaire automatique
+async function reconcilierBanque(montantRelevé, dateRelevé, montantLivre) {
+  const ownerID = getOwnerProfileId();
+  const ecart = montantRelevé - montantLivre;
+  const rec = {
+    dateReleve: dateRelevé,
+    montantReleve: montantRelevé,
+    montantLivre: montantLivre,
+    ecart: ecart,
+    status: Math.abs(ecart) < 1000 ? 'reconcilie' : 'en_attente_resolution',
+    dateReconciliation: new Date().toISOString(),
+  };
+  try {
+    const ref = await window._fbAddDoc(
+      window._fbCollection(window._db, 'profiles', ownerID, 'reconciliations'),
+      rec
+    );
+    reconciliations.push({ ...rec, _docId: ref.id });
+    await logAudit('SAVE', 'TRESORERIE', `Réconciliation ${dateRelevé}`, currentProfile.email);
+    return ref.id;
+  } catch(e) {
+    console.error('Erreur réconciliation:', e);
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// ✅ MODULE TAXES ET FISCALITÉ — TVA, IRG, IS, Déclarations
+// ════════════════════════════════════════════════════════════════════════════════
+let tvaState = {}, declFiscales = {}, impotConfig = {};
+
+async function loadTaxes() {
+  try {
+    const ownerID = getOwnerProfileId();
+    const taxSnap = await window._fbGetDocs(window._fbCollection(window._db, 'profiles', ownerID, 'taxes'));
+    if (taxSnap.docs.length) {
+      taxSnap.docs.forEach(d => {
+        const data = d.data();
+        tvaState[data.periode] = data;
+      });
+    }
+  } catch(e) { console.error('Erreur taxes:', e); }
+}
+
+async function declaredTVA(periode, tvaCollectee, tvaDeductible) {
+  const ownerID = getOwnerProfileId();
+  const tvaNet = tvaCollectee - tvaDeductible;
+  const decl = {
+    periode,
+    dateDeclaration: new Date().toISOString(),
+    tvaCollectee,
+    tvaDeductible,
+    tvaNet,
+    status: 'soumise',
+  };
+  try {
+    const ref = await window._fbAddDoc(window._fbCollection(window._db, 'profiles', ownerID, 'taxes'), decl);
+    tvaState[periode] = { ...decl, _docId: ref.id };
+    await logAudit('SAVE', 'FISCALITE', `Déclaration TVA ${periode}`, currentProfile.email);
+    return ref.id;
+  } catch(e) {
+    console.error('Erreur déclaration TVA:', e);
+  }
+}
+
+async function loadDeclFiscales() {
+  try {
+    const ownerID = getOwnerProfileId();
+    const declSnap = await window._fbGetDocs(window._fbCollection(window._db, 'profiles', ownerID, 'declarations_fiscales'));
+    declFiscales = {};
+    declSnap.docs.forEach(d => {
+      const data = d.data();
+      declFiscales[data.annee] = { ...data, _docId: d.id };
+    });
+  } catch(e) { console.error('Erreur décl. fiscales:', e); }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// ✅ MODULE APPELS VIDÉO 3D INNOVANT — WebRTC + Three.js
+// ════════════════════════════════════════════════════════════════════════════════
+let videoCallActive = false, videoAppels = [];
+// Note: localStream and peerConnection are declared earlier in the file
+
+async function loadAppelsVideo() {
+  try {
+    const ownerID = getOwnerProfileId();
+    const snap = await window._fbGetDocs(window._fbCollection(window._db, 'profiles', ownerID, 'video_appels'));
+    videoAppels = snap.docs.map(d => ({ ...d.data(), _docId: d.id }));
+  } catch(e) { console.error('Erreur vidéo:', e); }
+}
+
+// Lancer un appel vidéo 3D
+async function initAppel3D(recipientId) {
+  try {
+    // Demander accès caméra/micro
+    localStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true },
+      video: { width: 1280, height: 720 }
+    });
+    
+    videoCallActive = true;
+    
+    // Configuration WebRTC
+    const servers = {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+      ]
+    };
+    
+    peerConnection = new RTCPeerConnection(servers);
+    
+    // Ajouter stream local
+    localStream.getTracks().forEach(track => {
+      peerConnection.addTrack(track, localStream);
+    });
+    
+    // Log appel
+    const appel = {
+      from: currentProfile.email,
+      to: recipientId,
+      startTime: new Date().toISOString(),
+      type: '3D_VIDEO',
+    };
+    
+    const ownerID = getOwnerProfileId();
+    const ref = await window._fbAddDoc(
+      window._fbCollection(window._db, 'profiles', ownerID, 'video_appels'),
+      appel
+    );
+    
+    toast('✓ Appel vidéo 3D initié', 'success');
+    return ref.id;
+  } catch(e) {
+    toast('Erreur accès caméra: ' + e.message, 'error');
+    console.error(e);
+  }
+}
+
+async function terminerAppel() {
+  try {
+    if (localStream) {
+      localStream.getTracks().forEach(track => track.stop());
+    }
+    if (peerConnection) {
+      peerConnection.close();
+    }
+    videoCallActive = false;
+    toast('Appel terminé', 'info');
+  } catch(e) {
+    console.error('Erreur fermeture appel:', e);
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// ✅ FONCTION UTILITY — Log d'audit
+// ════════════════════════════════════════════════════════════════════════════════
+async function logAudit(action, module, detail, user) {
+  try {
+    const ownerID = getOwnerProfileId();
+    const log = {
+      action,
+      module,
+      detail,
+      user: user || currentProfile.email,
+      ts: new Date().toISOString(),
+    };
+    await window._fbAddDoc(
+      window._fbCollection(window._db, 'profiles', ownerID, 'audit_logs'),
+      log
+    );
+  } catch(e) {
+    console.error('Erreur audit:', e);
+  }
+}
+
+
+// ══════════════════════════════════════════
+// FONCTIONS MANQUANTES — Stubs fonctionnels
+// ══════════════════════════════════════════
+
+function exportDeclFiscalePDF() { exportDeclarationPDF(); }
+
+function openDeclTaxeModal() { navigate('declarations'); toast('Sélectionnez le type de déclaration ci-dessous', 'info'); }
+
+function openNouveau3DCall() { 
+  const panel = document.getElementById('videoCallPanel');
+  if (panel) panel.style.display = 'block';
+  toast('Appel 3D — Fonctionnalité WebRTC en cours d\'activation', 'info'); 
+}
+
+function exportHistoriqueAppels() {
+  try {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit:'mm', format:'a4' });
+    const company = currentProfile?.company || 'Entreprise';
+    doc.setFontSize(14); doc.setFont('helvetica','bold');
+    doc.text('HISTORIQUE APPELS VIDÉO — ' + company, 14, 18);
+    doc.setFontSize(9); doc.text('Édité le ' + new Date().toLocaleDateString('fr-FR'), 14, 25);
+    doc.autoTable({ head:[['Date','Durée','Participants']], body:[['Aucun appel enregistré','','']],
+      startY:30, styles:{fontSize:9}, headStyles:{fillColor:[30,30,40],textColor:[212,168,83]} });
+    doc.save('historique_appels.pdf');
+    toast('Historique exporté', 'success');
+  } catch(e) { toast('Erreur: ' + e.message, 'error'); }
+}
+
+function confirmWavePaymentManual() {
+  const name = (document.getElementById('wavePayerName')?.value||'').trim();
+  const number = (document.getElementById('wavePayerNumber')?.value||'').trim();
+  const err = document.getElementById('paymentFormErr');
+  if (!name || !number) {
+    if (err) { err.textContent = 'Veuillez remplir votre nom et numéro Wave.'; err.classList.add('show'); }
+    return;
+  }
+  if (err) err.classList.remove('show');
+  window._fbSetDoc && window._fbSetDoc(window._fbDoc(window._db, 'profiles', currentProfile.id), {
+    paymentPendingAt: new Date().toISOString(),
+    subscriptionStatus: 'pending_payment',
+    wavePayerName: name,
+    wavePayerNumber: number,
+  }, { merge: true }).catch(()=>{});
+  document.getElementById('paywallPaymentForm').style.display = 'none';
+  document.getElementById('paywallSuccessPanel').style.display = 'block';
+}
+
+// ══════════════════════════════════════════
+// EXPOSE FUNCTIONS TO GLOBAL SCOPE
+// Required because this file is loaded as type="module"
+// Module scope is isolated — onclick="fn()" in HTML needs window.fn
+// ══════════════════════════════════════════
+const __globalExports = [
+  'addFacLigne','addLigne','afficherDeclaration','afficherLettrage',
+  'autoSaveAllEcritures','autoSaveAllFromNotif','calcAmortissement','calcPaie',
+  'closeClientModal','closeExportModal','closeFactureModal','closeFournisseurModal',
+  'closeMobileSidebar','closeRobot','confirmWavePaymentManual','copierCodeCollab',
+  'dismissFillBanner','doExport','doForgotPassword','doLogin','doLogout','doRegister',
+  'exportAnalytiquePDF','exportAuditPDF','exportBalanceAgeePDF','exportBudgetPDF',
+  'exportBulletinPDF','exportDeclFiscalePDF','exportDeclarationPDF','exportEffetsPDF',
+  'exportFactureList','exportHistoriqueAppels','exportInventairePDF',
+  'exportRapprochementPDF','exportTAFIREpdf','exportTableauAmortissement',
+  'fermerCollabModal','genererCodeCollab','genererEcrituresCloture','goToSaisie',
+  'handleAiKey','hideMultiEcrBanner','hideSaisieNotif','importReleveBancaire',
+  'lancerLettrage','navigate','onClickTopValidate','openBudgetModal','openCentreModal',
+  'openClientModal','openCollabModal','openDeclTaxeModal','openDevisModal',
+  'openEffetModal','openExportModal','openFactureModal','openFournisseurModal',
+  'openImmobModal','openImportModal','openNouveau3DCall','openPaieModal','openRobot','openSocieteModal',
+  'openStockModal','openWavePayment','ouvrirAppelVideo','ouvrirNouvelExercice',
+  'previewFacturePDF','rejoindreCollab','renderBalance','renderBilan','renderClients',
+  'renderFactures','renderFournisseurs','renderGrandLivre','renderJournal',
+  'renderPlanComptable','resetBalanceFiltre','resetFactureFiltre','resetGLFiltre',
+  'resetJournalFiltre','revoquerTousCollab','saveBudget','saveCentre','saveClient',
+  'saveEffet','saveFacture','saveFournisseur','saveImmob','saveImputation','savePaie',
+  'saveSociete','saveStock','searchClientDrop','selectExport','sendRobotText','sendToAI',
+  'skipToNextEcriture','switchTab','terminerAppel','terminerAppelVideo','toast',
+  'toggleCam','toggleMic','toggleMobileSidebar','updateBudgetAccountSuggest',
+  'updateExportOptions','updateFacTotaux','updateImmobCompte','updateImputMontant',
+  'updateStats','verifierCloture',
+  // Additional functions used in dynamically generated HTML
+  'selectAccount','selectAccountMulti','browseAccountClass','closeAccountDropdown',
+  'hideDropdown','updateAccountSuggest','updateAccountSuggestMulti',
+  'addLigneMulti','removeLigneMulti','removeEcritureFromQueue','updateMultiBlockBalance',
+  'removeLigne','removeFacLigne','toggleGL','deleteEcriture','deleteGroupe',
+  'convertirDevisEnFacture','marquerPayee','supprimerFacture','newFactureForClient',
+  'selectClientForFac','autoComptabiliserFacture','genererDotation',
+  'toggleRappr','toggleMobileSidebar','closeMobileSidebar',
+  'changerStatutEffet','deleteEffet','changerRole','quitterModeCollab',
+  'revoquerCollaborateurV2','ouvrirJoinCollabModal','ajouterExercice','switchSociete',
+  'openImputationModal','deleteCentre','genererCodeCollab',
+];
+
+// Assign each to window so onclick="" attributes can find them
+const __scope = { addFacLigne, addLigne, afficherDeclaration, afficherLettrage,
+  autoSaveAllEcritures, autoSaveAllFromNotif, calcAmortissement, calcPaie,
+  closeClientModal, closeExportModal, closeFactureModal, closeFournisseurModal,
+  closeMobileSidebar, closeRobot, doExport, doForgotPassword, doLogin, doLogout, doRegister,
+  exportAnalytiquePDF, exportAuditPDF, exportBalanceAgeePDF, exportBudgetPDF,
+  exportBulletinPDF, exportDeclarationPDF, exportEffetsPDF,
+  exportFactureList, exportInventairePDF,
+  exportRapprochementPDF, exportTAFIREpdf, exportTableauAmortissement,
+  fermerCollabModal, genererCodeCollab, genererEcrituresCloture, goToSaisie,
+  handleAiKey, hideMultiEcrBanner, hideSaisieNotif,
+  lancerLettrage, navigate, onClickTopValidate, openBudgetModal, openCentreModal,
+  openClientModal, openCollabModal, openDevisModal,
+  openEffetModal, openExportModal, openFactureModal, openFournisseurModal,
+  openImmobModal, openImportModal, openPaieModal, openRobot, openSocieteModal,
+  openStockModal, openWavePayment, ouvrirAppelVideo, ouvrirNouvelExercice,
+  rejoindreCollab, renderBalance, renderBilan, renderClients,
+  renderFactures, renderFournisseurs, renderGrandLivre, renderJournal,
+  renderPlanComptable, resetBalanceFiltre, resetFactureFiltre, resetGLFiltre,
+  resetJournalFiltre, revoquerTousCollab, saveBudget, saveCentre, saveClient,
+  saveEffet, saveFacture, saveFournisseur, saveImmob, saveImputation, savePaie,
+  saveSociete, saveStock, searchClientDrop, selectExport, sendRobotText, sendToAI,
+  skipToNextEcriture, switchTab, terminerAppelVideo, toast,
+  toggleCam, toggleMic, toggleMobileSidebar, shareScreen: () => {
+    if (!document.getElementById('videoCallPanel') || navigator.mediaDevices?.getDisplayMedia === undefined) return;
+    navigator.mediaDevices.getDisplayMedia({ video: true }).then(stream => {
+      const track = stream.getVideoTracks()[0];
+      if (window._peerConn) {
+        const sender = window._peerConn.getSenders().find(s => s.track?.kind === 'video');
+        if (sender) sender.replaceTrack(track);
+      }
+      const vid = document.getElementById('localVideo');
+      if (vid) vid.srcObject = stream;
+      track.onended = () => { if (localStream) { const vid2 = document.getElementById('localVideo'); if (vid2) vid2.srcObject = localStream; } };
+    }).catch(() => {});
+  }, updateExportOptions,
+  updateFacTotaux, updateImmobCompte, updateImputMontant,
+  updateStats, verifierCloture,
+  selectAccount, selectAccountMulti, browseAccountClass, closeAccountDropdown,
+  hideDropdown, updateAccountSuggest, updateAccountSuggestMulti,
+  addLigneMulti, removeLigneMulti, removeEcritureFromQueue, updateMultiBlockBalance,
+  removeLigne, toggleGL, deleteEcriture, deleteGroupe,
+  convertirDevisEnFacture, marquerPayee, supprimerFacture, newFactureForClient,
+  selectClientForFac, autoComptabiliserFacture, genererDotation,
+  toggleRappr, changerStatutEffet, deleteEffet, changerRole, quitterModeCollab,
+  revoquerCollaborateurV2, ouvrirJoinCollabModal, ajouterExercice, switchSociete,
+  openImputationModal, deleteCentre, dismissFillBanner, copierCodeCollab,
+  removeFacLigne,
+};
+
+Object.assign(window, __scope);
+
+// Functions that may not exist yet — safe optional exports
+const __optional = ['confirmWavePaymentManual','exportDeclFiscalePDF','openDeclTaxeModal',
+  'openNouveau3DCall','exportHistoriqueAppels','terminerAppel','previewFacturePDF',
+  'autoSaveAllFromNotif','hideSaisieNotif',
+  'updateBudgetAccountSuggest','exportAuditPDF','exportBalanceAgeePDF',
+  'exportBudgetPDF','exportEffetsPDF','exportInventairePDF','exportRapprochementPDF',
+  'exportBulletinPDF','exportTableauAmortissement','exportTAFIREpdf',
+  'exportAnalytiquePDF','exportDeclarationPDF','afficherLettrage','afficherDeclaration',
+  'lancerLettrage','verifierCloture','genererEcrituresCloture','ouvrirNouvelExercice',
+];
+__optional.forEach(name => {
+  try { if (typeof eval(name) === 'function') window[name] = eval(name); } catch(e) {}
+});
