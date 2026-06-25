@@ -225,6 +225,37 @@
   <div class="nav-item" onclick="navigate('tresorerie');closeMobileSidebar()"><span class="nav-icon">◎</span> Trésorerie</div>
 </div>
 <div class="sb-section">
+  <div class="sb-title">Gestion RH</div>
+  <div class="nav-item" onclick="navigate('paie');closeMobileSidebar()"><span class="nav-icon">👤</span> Paie & Salaires</div>
+  <div class="nav-item" onclick="navigate('immobilisations');closeMobileSidebar()"><span class="nav-icon">🏗️</span> Immobilisations</div>
+</div>
+<div class="sb-section">
+  <div class="sb-title">Gestion</div>
+  <div class="nav-item" onclick="navigate('stocks');closeMobileSidebar()"><span class="nav-icon">📦</span> Stocks</div>
+  <div class="nav-item" onclick="navigate('rapprochement');closeMobileSidebar()"><span class="nav-icon">🏦</span> Rapprochement bancaire</div>
+  <div class="nav-item" onclick="navigate('budgets');closeMobileSidebar()"><span class="nav-icon">🎯</span> Budgets</div>
+  <div class="nav-item" onclick="navigate('lettrage');closeMobileSidebar()"><span class="nav-icon">🔗</span> Lettrage / Échéances</div>
+</div>
+<div class="sb-section">
+  <div class="sb-title">Fiscal</div>
+  <div class="nav-item" onclick="navigate('declarations');closeMobileSidebar()"><span class="nav-icon">📑</span> Déclarations fiscales</div>
+  <div class="nav-item" onclick="navigate('exercices');closeMobileSidebar()"><span class="nav-icon">🔄</span> Clôture exercice</div>
+</div>
+<div class="sb-section">
+  <div class="sb-title">Avancé</div>
+  <div class="nav-item" onclick="navigate('analytique');closeMobileSidebar()"><span class="nav-icon">📊</span> Comptabilité analytique</div>
+  <div class="nav-item" onclick="navigate('effets');closeMobileSidebar()"><span class="nav-icon">📄</span> Effets de commerce</div>
+  <div class="nav-item" onclick="navigate('societes');closeMobileSidebar()"><span class="nav-icon">🏢</span> Multi-sociétés</div>
+  <div class="nav-item" onclick="navigate('utilisateurs');closeMobileSidebar()"><span class="nav-icon">👥</span> Utilisateurs & Droits</div>
+</div>
+<div class="sb-section">
+  <div class="sb-title">RH & Paie</div>
+  <div class="nav-item" onclick="navigate('paie');closeMobileSidebar()"><span class="nav-icon">💳</span> Paie & Bulletins</div>
+  <div class="nav-item" onclick="navigate('tresorerie');closeMobileSidebar()"><span class="nav-icon">💰</span> Trésorerie + Réconciliation</div>
+  <div class="nav-item" onclick="navigate('taxes');closeMobileSidebar()"><span class="nav-icon">📋</span> Taxes & Déclarations</div>
+  <div class="nav-item" onclick="navigate('appels');closeMobileSidebar()"><span class="nav-icon">🎥</span> Appels vidéo 3D</div>
+</div>
+<div class="sb-section">
   <div class="sb-title">Référentiel</div>
   <div class="nav-item" onclick="navigate('plancomptable');closeMobileSidebar()"><span class="nav-icon">⊙</span> Plan SYSCOHADA</div>
 </div>
@@ -234,8 +265,10 @@
       <div class="stat-row"><span class="lbl">Total crédit</span><span class="val" id="s-credit">0</span></div>
       <div class="stat-row"><span class="lbl">Équilibre</span><span class="val g" id="s-equil">✓</span></div>
     </div>
-  </div>
+    <div class="nav-item" onclick="navigate('tafire');closeMobileSidebar()"><span class="nav-icon">📊</span> TAFIRE</div>
+  </div><!-- end sidebar -->
 
+  <div class="main">
 <!-- ═══════════════════ FACTURES ═══════════════════ -->
 <div class="view" id="view-factures">
   <div class="ph">
@@ -529,8 +562,6 @@
   </div>
 </div>
 
-  <div class="main">
-
     <!-- DASHBOARD -->
     <div class="view active" id="view-dashboard">
       <div class="ph">
@@ -791,6 +822,370 @@
       <div class="card" id="tresorerieContent"><div class="empty-state"><div class="icon">◎</div><p>Comptes de trésorerie (5xxx)</p></div></div>
     </div>
 
+    <!-- ═══════════════════ PAIE & SALAIRES ═══════════════════ -->
+    <div class="view" id="view-paie">
+      <div class="ph">
+        <div><h1>Paie & Salaires</h1><p>Bulletins de salaire · CNPS · IR · Déclarations sociales</p></div>
+        <div class="ph-actions">
+          <button class="btn btn-sm-wire" onclick="exportBulletinPDF()">↓ Bulletins PDF</button>
+          <button class="btn btn-ink" onclick="openPaieModal()">+ Nouveau salarié</button>
+        </div>
+      </div>
+      <!-- KPIs paie -->
+      <div class="kpi-grid" style="grid-template-columns:repeat(5,1fr);margin-bottom:16px">
+        <div class="kpi"><div class="kpi-label">Masse salariale</div><div class="kpi-value" id="paie-kpi-masse" style="color:var(--warm)">0</div><div class="kpi-sub">FCFA brut</div></div>
+        <div class="kpi"><div class="kpi-label">Net à payer</div><div class="kpi-value" id="paie-kpi-net" style="color:var(--green)">0</div><div class="kpi-sub">FCFA</div></div>
+        <div class="kpi"><div class="kpi-label">CNPS salarial</div><div class="kpi-value" id="paie-kpi-cnps-sal" style="color:var(--rust)">0</div><div class="kpi-sub">7,7%</div></div>
+        <div class="kpi"><div class="kpi-label">CNPS patronal</div><div class="kpi-value" id="paie-kpi-cnps-pat" style="color:var(--rust)">0</div><div class="kpi-sub">16%+TPA+CN</div></div>
+        <div class="kpi"><div class="kpi-label">IR (retenu)</div><div class="kpi-value" id="paie-kpi-ir" style="color:var(--muted)">0</div><div class="kpi-sub">Impôt sur salaire</div></div>
+      </div>
+      <div class="card" id="paieContent">
+        <div class="empty-state"><div class="icon">👤</div><p>Aucun salarié. Cliquez sur "+ Nouveau salarié" pour commencer.</p></div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════ IMMOBILISATIONS ═══════════════════ -->
+    <div class="view" id="view-immobilisations">
+      <div class="ph">
+        <div><h1>Immobilisations</h1><p>Registre · Amortissements linéaires / dégressifs · Cessions</p></div>
+        <div class="ph-actions">
+          <button class="btn btn-sm-wire" onclick="exportTableauAmortissement()">↓ Tableau PDF</button>
+          <button class="btn btn-ink" onclick="openImmobModal()">+ Ajouter immobilisation</button>
+        </div>
+      </div>
+      <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
+        <div class="kpi"><div class="kpi-label">Valeur brute</div><div class="kpi-value" id="immob-kpi-brut" style="color:var(--warm)">0</div><div class="kpi-sub">FCFA total</div></div>
+        <div class="kpi"><div class="kpi-label">Amort. cumulés</div><div class="kpi-value" id="immob-kpi-amort" style="color:var(--rust)">0</div><div class="kpi-sub">FCFA</div></div>
+        <div class="kpi"><div class="kpi-label">Valeur nette</div><div class="kpi-value" id="immob-kpi-net" style="color:var(--green)">0</div><div class="kpi-sub">VNC</div></div>
+        <div class="kpi"><div class="kpi-label">Dot. exercice</div><div class="kpi-value" id="immob-kpi-dot" style="color:var(--blue)">0</div><div class="kpi-sub">681 FCFA</div></div>
+      </div>
+      <div class="card" id="immobContent">
+        <div class="empty-state"><div class="icon">🏗️</div><p>Aucune immobilisation enregistrée.</p></div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════ STOCKS ═══════════════════ -->
+    <div class="view" id="view-stocks">
+      <div class="ph">
+        <div><h1>Gestion des stocks</h1><p>Entrées / Sorties · Valorisation CMUP · Inventaire</p></div>
+        <div class="ph-actions">
+          <button class="btn btn-sm-wire" onclick="exportInventairePDF()">↓ Inventaire PDF</button>
+          <button class="btn btn-ink" onclick="openStockModal()">+ Mouvement de stock</button>
+        </div>
+      </div>
+      <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
+        <div class="kpi"><div class="kpi-label">Articles</div><div class="kpi-value" id="stock-kpi-articles" style="color:var(--warm)">0</div><div class="kpi-sub">références</div></div>
+        <div class="kpi"><div class="kpi-label">Valeur stock</div><div class="kpi-value" id="stock-kpi-valeur" style="color:var(--green)">0</div><div class="kpi-sub">FCFA CMUP</div></div>
+        <div class="kpi"><div class="kpi-label">Alertes stock bas</div><div class="kpi-value" id="stock-kpi-alertes" style="color:var(--rust)">0</div><div class="kpi-sub">sous seuil</div></div>
+        <div class="kpi"><div class="kpi-label">Mouvements (mois)</div><div class="kpi-value" id="stock-kpi-mvt" style="color:var(--blue)">0</div><div class="kpi-sub">entrées+sorties</div></div>
+      </div>
+      <div class="card" id="stockContent">
+        <div class="empty-state"><div class="icon">📦</div><p>Aucun article en stock. Ajoutez un mouvement pour commencer.</p></div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════ RAPPROCHEMENT BANCAIRE ═══════════════════ -->
+    <div class="view" id="view-rapprochement">
+      <div class="ph">
+        <div><h1>Rapprochement bancaire</h1><p>Import relevé · Rapprochement auto avec journal BQ</p></div>
+        <div class="ph-actions">
+          <button class="btn btn-sm-wire" onclick="exportRapprochementPDF()">↓ État PDF</button>
+          <label class="btn btn-ink" style="cursor:pointer">📁 Importer relevé CSV <input type="file" id="releveBancaireInput" accept=".csv" style="display:none" onchange="importReleveBancaire(this)"></label>
+        </div>
+      </div>
+      <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
+        <div class="kpi"><div class="kpi-label">Solde banque</div><div class="kpi-value" id="rappr-kpi-banque" style="color:var(--warm)">0</div><div class="kpi-sub">relevé FCFA</div></div>
+        <div class="kpi"><div class="kpi-label">Solde compta</div><div class="kpi-value" id="rappr-kpi-compta" style="color:var(--green)">0</div><div class="kpi-sub">compte 521</div></div>
+        <div class="kpi"><div class="kpi-label">Écart</div><div class="kpi-value" id="rappr-kpi-ecart" style="color:var(--rust)">0</div><div class="kpi-sub">à justifier</div></div>
+        <div class="kpi"><div class="kpi-label">Non rapprochés</div><div class="kpi-value" id="rappr-kpi-non" style="color:var(--blue)">0</div><div class="kpi-sub">opérations</div></div>
+      </div>
+      <div class="card" id="rapprochementContent">
+        <div class="empty-state"><div class="icon">🏦</div><p>Importez un relevé bancaire CSV pour commencer le rapprochement.</p></div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════ BUDGETS ═══════════════════ -->
+    <div class="view" id="view-budgets">
+      <div class="ph">
+        <div><h1>Budgets & Prévisions</h1><p>Budget annuel par compte · Réalisé vs Prévu · Alertes dépassement</p></div>
+        <div class="ph-actions">
+          <button class="btn btn-sm-wire" onclick="exportBudgetPDF()">↓ Export PDF</button>
+          <button class="btn btn-ink" onclick="openBudgetModal()">+ Saisir budget</button>
+        </div>
+      </div>
+      <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
+        <div class="kpi"><div class="kpi-label">Budget total</div><div class="kpi-value" id="budget-kpi-total" style="color:var(--warm)">0</div><div class="kpi-sub">FCFA prévu</div></div>
+        <div class="kpi"><div class="kpi-label">Réalisé</div><div class="kpi-value" id="budget-kpi-realise" style="color:var(--green)">0</div><div class="kpi-sub">FCFA</div></div>
+        <div class="kpi"><div class="kpi-label">Taux exécution</div><div class="kpi-value" id="budget-kpi-taux" style="color:var(--blue)">0%</div><div class="kpi-sub">global</div></div>
+        <div class="kpi"><div class="kpi-label">Dépassements</div><div class="kpi-value" id="budget-kpi-dep" style="color:var(--rust)">0</div><div class="kpi-sub">comptes</div></div>
+      </div>
+      <div class="card" id="budgetContent">
+        <div class="empty-state"><div class="icon">🎯</div><p>Aucun budget saisi pour cet exercice.</p></div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════ LETTRAGE ═══════════════════ -->
+    <div class="view" id="view-lettrage">
+      <div class="ph">
+        <div><h1>Lettrage & Échéances</h1><p>Comptes 401/411 · Balance âgée · Relances clients</p></div>
+        <div class="ph-actions">
+          <button class="btn btn-sm-wire" onclick="exportBalanceAgeePDF()">↓ Balance âgée PDF</button>
+          <button class="btn btn-ink" onclick="lancerLettrage()">⚡ Lettrage auto</button>
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+        <button class="btn btn-sm-wire" onclick="afficherLettrage('411')" id="btn-lettrage-411" style="border-color:var(--warm);color:var(--warm)">Clients (411)</button>
+        <button class="btn btn-sm-wire" onclick="afficherLettrage('401')" id="btn-lettrage-401">Fournisseurs (401)</button>
+      </div>
+      <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
+        <div class="kpi"><div class="kpi-label">Créances clients</div><div class="kpi-value" id="lettr-kpi-clients" style="color:var(--warm)">0</div><div class="kpi-sub">FCFA total</div></div>
+        <div class="kpi"><div class="kpi-label">Dettes fourn.</div><div class="kpi-value" id="lettr-kpi-fourn" style="color:var(--rust)">0</div><div class="kpi-sub">FCFA total</div></div>
+        <div class="kpi"><div class="kpi-label">En retard (+30j)</div><div class="kpi-value" id="lettr-kpi-retard" style="color:var(--red)">0</div><div class="kpi-sub">FCFA</div></div>
+        <div class="kpi"><div class="kpi-label">Lettré</div><div class="kpi-value" id="lettr-kpi-lettre" style="color:var(--green)">0%</div><div class="kpi-sub">taux</div></div>
+      </div>
+      <div class="card" id="lettrageContent">
+        <div class="empty-state"><div class="icon">🔗</div><p>Sélectionnez Clients (411) ou Fournisseurs (401) pour voir les soldes.</p></div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════ DÉCLARATIONS FISCALES ═══════════════════ -->
+    <div class="view" id="view-declarations">
+      <div class="ph">
+        <div><h1>Déclarations fiscales</h1><p>DGI TVA · DISA · IMF · IS · Formulaires UEMOA</p></div>
+        <div class="ph-actions">
+          <button class="btn btn-sm-wire" onclick="exportDeclarationPDF()">↓ Formulaire PDF</button>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:18px;flex-wrap:wrap">
+        <button class="btn btn-sm-wire" onclick="afficherDeclaration('tva')" id="decl-btn-tva" style="border-color:var(--warm);color:var(--warm)">TVA mensuelle</button>
+        <button class="btn btn-sm-wire" onclick="afficherDeclaration('disa')" id="decl-btn-disa">DISA (salaires)</button>
+        <button class="btn btn-sm-wire" onclick="afficherDeclaration('imf')" id="decl-btn-imf">IMF</button>
+        <button class="btn btn-sm-wire" onclick="afficherDeclaration('is')" id="decl-btn-is">IS (25%)</button>
+      </div>
+      <div class="card" id="declarationContent">
+        <div class="empty-state"><div class="icon">📑</div><p>Sélectionnez une déclaration à générer.</p></div>
+      </div>
+    </div>
+<!-- ═══ VUE TAFIRE ═══ -->
+<div class="view" id="view-tafire">
+  <div class="card">
+    <div class="card-header">
+      <div>
+        <div class="card-title">TAFIRE</div>
+        <div class="card-sub">Tableau de Financement des Ressources et Emplois · SYSCOHADA</div>
+      </div>
+      <button class="btn btn-gold" onclick="exportTAFIREpdf()">⎙ Exporter PDF</button>
+    </div>
+    <div id="tafireContent"><div class="empty-state"><div class="icon">📊</div><p>Chargement du TAFIRE…</p></div></div>
+  </div>
+</div>
+    <!-- ═══════════════════ CLÔTURE D'EXERCICE ═══════════════════ -->
+    <div class="view" id="view-exercices">
+      <div class="ph">
+        <div><h1>Exercices comptables</h1><p>Clôture annuelle · Report à nouveau · Ouverture nouvel exercice</p></div>
+      </div>
+      <div class="card" style="padding:28px">
+        <h3 style="font-family:var(--font-display);font-size:18px;margin-bottom:20px;color:var(--ink)">Procédure de clôture</h3>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px;margin-bottom:24px">
+          <div class="exercice-step" id="cloture-step-1">
+            <div class="exercice-step-num">1</div>
+            <div><strong>Vérification</strong><br><span style="font-size:12px;color:var(--muted)">Balance équilibrée, aucun écart</span></div>
+            <button class="btn btn-sm-wire" onclick="verifierCloture()">Vérifier</button>
+          </div>
+          <div class="exercice-step" id="cloture-step-2">
+            <div class="exercice-step-num">2</div>
+            <div><strong>Inventaire</strong><br><span style="font-size:12px;color:var(--muted)">Amortissements, stocks, provisions</span></div>
+            <button class="btn btn-sm-wire" onclick="navigate('immobilisations')">→ Immob.</button>
+          </div>
+          <div class="exercice-step" id="cloture-step-3">
+            <div class="exercice-step-num">3</div>
+            <div><strong>Clôture comptes</strong><br><span style="font-size:12px;color:var(--muted)">Virement résultat vers 13x</span></div>
+            <button class="btn btn-sm-wire" onclick="genererEcrituresCloture()">Générer écritures</button>
+          </div>
+          <div class="exercice-step" id="cloture-step-4">
+            <div class="exercice-step-num">4</div>
+            <div><strong>Ouverture N+1</strong><br><span style="font-size:12px;color:var(--muted)">Report à nouveau automatique</span></div>
+            <button class="btn btn-gold" onclick="ouvrirNouvelExercice()">Ouvrir N+1</button>
+          </div>
+        </div>
+        <div id="clotureStatus" class="card" style="background:var(--surface2);padding:16px">
+          <div class="empty-state" style="padding:10px"><div class="icon" style="font-size:24px">🔄</div><p style="font-size:13px">Cliquez sur "Vérifier" pour commencer la procédure de clôture.</p></div>
+        </div>
+      </div>
+
+      <!-- ── Section import Saari / Sage ── -->
+      <div class="card" style="padding:28px;margin-top:20px">
+        <h3 style="font-family:var(--font-display);font-size:18px;margin-bottom:6px;color:var(--ink)">📥 Import depuis Saari / Sage</h3>
+        <p style="font-size:13px;color:var(--muted);margin-bottom:20px">Importez vos données existantes au format CSV exporté depuis Saari ou Sage Ligne 100. Les écritures déséquilibrées sont automatiquement ignorées.</p>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px">
+          <div class="exercice-step" style="flex-direction:column;align-items:flex-start;gap:10px">
+            <div style="font-size:22px">📓</div>
+            <div><strong>Journal</strong><br><span style="font-size:11px;color:var(--muted)">Date;Journal;Pièce;Compte;Libellé;Débit;Crédit</span></div>
+            <button class="btn btn-ink" onclick="openImportModal('journal')" style="width:100%">Importer journal</button>
+          </div>
+          <div class="exercice-step" style="flex-direction:column;align-items:flex-start;gap:10px">
+            <div style="font-size:22px">👥</div>
+            <div><strong>Clients</strong><br><span style="font-size:11px;color:var(--muted)">Code;Nom;Adresse;Téléphone;Email;Compte</span></div>
+            <button class="btn btn-ink" onclick="openImportModal('clients')" style="width:100%">Importer clients</button>
+          </div>
+          <div class="exercice-step" style="flex-direction:column;align-items:flex-start;gap:10px">
+            <div style="font-size:22px">🏭</div>
+            <div><strong>Fournisseurs</strong><br><span style="font-size:11px;color:var(--muted)">Code;Nom;Adresse;Téléphone;Email;Compte</span></div>
+            <button class="btn btn-ink" onclick="openImportModal('fournisseurs')" style="width:100%">Importer fournisseurs</button>
+          </div>
+          <div class="exercice-step" style="flex-direction:column;align-items:flex-start;gap:10px">
+            <div style="font-size:22px">📋</div>
+            <div><strong>Plan comptable</strong><br><span style="font-size:11px;color:var(--muted)">Compte;Libellé — complète le plan SYSCOHADA</span></div>
+            <button class="btn btn-ink" onclick="openImportModal('plan_comptable')" style="width:100%">Importer plan comptable</button>
+          </div>
+        </div>
+        <div style="margin-top:14px;padding:10px 14px;background:var(--surface2);border-radius:var(--rs);font-size:12px;color:var(--muted)">
+          💡 Conseil : exportez depuis Saari via <em>Fichier → Exporter → Journal (CSV séparateur point-virgule, UTF-8)</em>. Les écritures d'exercices antérieurs importées dans une période déjà clôturée seront marquées en lecture seule.
+        </div>
+      </div>
+    </div>
+
+
+    <!-- ═══════════════════ ANALYTIQUE ═══════════════════ -->
+    <div class="view" id="view-analytique">
+      <div class="ph">
+        <div><h1>Comptabilité analytique</h1><p>Centres de coût · Axes analytiques · Ventilation par projet</p></div>
+        <div class="ph-actions">
+          <button class="btn btn-sm-wire" onclick="exportAnalytiquePDF()">↓ Rapport PDF</button>
+          <button class="btn btn-ink" onclick="openCentreModal()">+ Nouveau centre</button>
+        </div>
+      </div>
+      <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
+        <div class="kpi"><div class="kpi-label">Centres actifs</div><div class="kpi-value" id="analyt-kpi-centres" style="color:var(--warm)">0</div><div class="kpi-sub">créés</div></div>
+        <div class="kpi"><div class="kpi-label">Imputations</div><div class="kpi-value" id="analyt-kpi-imput" style="color:var(--blue)">0</div><div class="kpi-sub">lignes</div></div>
+        <div class="kpi"><div class="kpi-label">Exploitation</div><div class="kpi-value" id="analyt-kpi-exploit" style="color:var(--rust)">0</div><div class="kpi-sub">FCFA charges</div></div>
+        <div class="kpi"><div class="kpi-label">Projets</div><div class="kpi-value" id="analyt-kpi-projet" style="color:var(--teal)">0</div><div class="kpi-sub">FCFA charges</div></div>
+      </div>
+      <div class="card" id="analytiqueContent">
+        <div class="empty-state"><div class="icon">📊</div><p>Aucun centre de coût. Créez-en un pour commencer.</p></div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════ MULTI-SOCIETES ═══════════════════ -->
+    <div class="view" id="view-societes">
+      <div class="ph">
+        <div><h1>Gestion des sociétés</h1><p>Multi-entreprises · Multi-exercices · Basculement rapide</p></div>
+        <div class="ph-actions">
+          <button class="btn btn-ink" onclick="openSocieteModal()">+ Nouvelle société</button>
+        </div>
+      </div>
+      <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
+        <div class="kpi"><div class="kpi-label">Sociétés</div><div class="kpi-value" id="soc-kpi-total" style="color:var(--warm)">0</div><div class="kpi-sub">enregistrées</div></div>
+        <div class="kpi"><div class="kpi-label">Active</div><div class="kpi-value" id="soc-kpi-active" style="color:var(--green);font-size:13px">—</div><div class="kpi-sub">société</div></div>
+        <div class="kpi"><div class="kpi-label">Exercices</div><div class="kpi-value" id="soc-kpi-exercices" style="color:var(--blue)">0</div><div class="kpi-sub">total</div></div>
+        <div class="kpi"><div class="kpi-label">Année active</div><div class="kpi-value" id="soc-kpi-annee" style="color:var(--warm)">—</div><div class="kpi-sub">exercice</div></div>
+      </div>
+      <div id="societesContent">
+        <div class="empty-state"><div class="icon">🏢</div><p>Chargement des sociétés…</p></div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════ UTILISATEURS & AUDIT ═══════════════════ -->
+    <div class="view" id="view-utilisateurs">
+      <div class="ph">
+        <div><h1>Utilisateurs & Droits</h1><p>Gestion des accès · Rôles · Journal d'audit complet</p></div>
+        <div class="ph-actions">
+          <button class="btn btn-sm-wire" onclick="exportAuditPDF()">↓ Audit PDF</button>
+          <button class="btn btn-ink" onclick="openCollabModal()">+ Inviter collaborateur</button>
+        </div>
+      </div>
+      <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
+        <div class="kpi"><div class="kpi-label">Utilisateurs</div><div class="kpi-value" id="users-kpi-total" style="color:var(--warm)">1</div><div class="kpi-sub">total</div></div>
+        <div class="kpi"><div class="kpi-label">Actifs</div><div class="kpi-value" id="users-kpi-actifs" style="color:var(--green)">1</div><div class="kpi-sub">connectés</div></div>
+        <div class="kpi"><div class="kpi-label">En attente</div><div class="kpi-value" id="users-kpi-invites" style="color:var(--warm)">0</div><div class="kpi-sub">invitations</div></div>
+        <div class="kpi"><div class="kpi-label">Logs audit</div><div class="kpi-value" id="users-kpi-logs" style="color:var(--blue)">0</div><div class="kpi-sub">actions</div></div>
+      </div>
+      <div id="utilisateursContent">
+        <div class="empty-state"><div class="icon">👥</div><p>Chargement de l'équipe…</p></div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════ TAXES & DÉCLARATIONS FISCALES ═══════════════════ -->
+    <div class="view" id="view-taxes">
+      <div class="ph">
+        <div><h1>Taxes & Déclarations</h1><p>TVA · IRG · IS · Déclarations mensuelles/annuelles</p></div>
+        <div class="ph-actions">
+          <button class="btn btn-sm-wire" onclick="exportDeclFiscalePDF()">↓ Décl. PDF</button>
+          <button class="btn btn-ink" onclick="openDeclTaxeModal()">+ Déclarer TVA</button>
+        </div>
+      </div>
+      <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
+        <div class="kpi"><div class="kpi-label">TVA collectée</div><div class="kpi-value" id="tax-kpi-tva-coll" style="color:var(--warm)">0</div><div class="kpi-sub">FCFA</div></div>
+        <div class="kpi"><div class="kpi-label">TVA déductible</div><div class="kpi-value" id="tax-kpi-tva-deduct" style="color:var(--blue)">0</div><div class="kpi-sub">FCFA</div></div>
+        <div class="kpi"><div class="kpi-label">TVA nette</div><div class="kpi-value" id="tax-kpi-tva-net" style="color:var(--rust)">0</div><div class="kpi-sub">à payer</div></div>
+        <div class="kpi"><div class="kpi-label">Déclarations</div><div class="kpi-value" id="tax-kpi-decls" style="color:var(--green)">0</div><div class="kpi-sub">soumises</div></div>
+      </div>
+      <div class="card" id="taxesContent">
+        <div class="empty-state"><div class="icon">📋</div><p>Aucune déclaration fiscale. Déclarez votre TVA.</p></div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════ APPELS VIDÉO 3D ═══════════════════ -->
+    <div class="view" id="view-appels">
+      <div class="ph">
+        <div><h1>Appels vidéo 3D</h1><p>Communicat vidéo innovante · Partage d'écran · Historique</p></div>
+        <div class="ph-actions">
+          <button class="btn btn-ink" onclick="openNouveau3DCall()">🎥 Nouvel appel 3D</button>
+          <button class="btn btn-sm-wire" onclick="exportHistoriqueAppels()">↓ Historique</button>
+        </div>
+      </div>
+      <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
+        <div class="kpi"><div class="kpi-label">Appels</div><div class="kpi-value" id="video-kpi-total" style="color:var(--warm)">0</div><div class="kpi-sub">total</div></div>
+        <div class="kpi"><div class="kpi-label">Durée moyenne</div><div class="kpi-value" id="video-kpi-durée" style="color:var(--blue)">0:00</div><div class="kpi-sub">minutes</div></div>
+        <div class="kpi"><div class="kpi-label">Participants</div><div class="kpi-value" id="video-kpi-users" style="color:var(--green)">0</div><div class="kpi-sub">connectés</div></div>
+        <div class="kpi"><div class="kpi-label">Cette session</div><div class="kpi-value" id="video-kpi-session" style="color:var(--muted)">—</div><div class="kpi-sub">durée</div></div>
+      </div>
+      <div class="card" id="appealsContent">
+        <div id="videoCallPanel" style="display:none;padding:20px;background:rgba(34,197,94,.08);border-radius:10px;margin-bottom:16px">
+          <div style="display:flex;gap:12px;align-items:center;margin-bottom:16px">
+            <div style="width:60px;height:60px;background:var(--surface2);border-radius:50%;display:flex;align-items:center;justify-content:center;border:2px solid var(--warm)">
+              <span style="font-size:24px">📹</span>
+            </div>
+            <div>
+              <div style="font-weight:600;font-size:14px">Appel vidéo en cours</div>
+              <div style="font-size:12px;color:var(--muted)" id="video-duration">00:00</div>
+            </div>
+            <button onclick="terminerAppel()" style="margin-left:auto;background:var(--rust);color:white;border:none;padding:8px 16px;border-radius:6px;cursor:pointer">Terminer</button>
+          </div>
+          <div id="videoContainer" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
+            <video id="localVideo" autoplay muted style="width:100%;border-radius:6px;background:var(--surface2)"></video>
+            <video id="remoteVideo" autoplay style="width:100%;border-radius:6px;background:var(--surface2)"></video>
+          </div>
+          <div style="display:flex;gap:8px;justify-content:center">
+            <button onclick="toggleMic()" style="padding:10px 14px;background:var(--surface2);border:1px solid var(--line);border-radius:6px;cursor:pointer">🎤 Micro</button>
+            <button onclick="toggleCam()" style="padding:10px 14px;background:var(--surface2);border:1px solid var(--line);border-radius:6px;cursor:pointer">📹 Caméra</button>
+            <button onclick="shareScreen()" style="padding:10px 14px;background:var(--surface2);border:1px solid var(--line);border-radius:6px;cursor:pointer">🖥️ Partager</button>
+          </div>
+        </div>
+        <div class="empty-state"><div class="icon">🎥</div><p>Aucun appel actif. Cliquez sur "Nouvel appel 3D" pour commencer.</p></div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════ EFFETS DE COMMERCE ═══════════════════ -->
+    <div class="view" id="view-effets">
+      <div class="ph">
+        <div><h1>Effets de commerce</h1><p>LCR · Billets à ordre · Escompte · Suivi des échéances</p></div>
+        <div class="ph-actions">
+          <button class="btn btn-sm-wire" onclick="exportEffetsPDF()">↓ Portefeuille PDF</button>
+          <button class="btn btn-ink" onclick="openEffetModal()">+ Nouvel effet</button>
+        </div>
+      </div>
+      <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
+        <div class="kpi"><div class="kpi-label">En portefeuille</div><div class="kpi-value" id="effets-kpi-portefeuille" style="color:var(--blue)">0</div><div class="kpi-sub">FCFA</div></div>
+        <div class="kpi"><div class="kpi-label">À l'escompte</div><div class="kpi-value" id="effets-kpi-escompte" style="color:var(--warm)">0</div><div class="kpi-sub">FCFA</div></div>
+        <div class="kpi"><div class="kpi-label">Impayés</div><div class="kpi-value" id="effets-kpi-impayes" style="color:var(--rust)">0</div><div class="kpi-sub">FCFA</div></div>
+        <div class="kpi"><div class="kpi-label">Échéances &lt;7j</div><div class="kpi-value" id="effets-kpi-echeoir" style="color:var(--warm)">0</div><div class="kpi-sub">à encaisser ⚡</div></div>
+      </div>
+      <div class="card" id="effetsContent">
+        <div class="empty-state"><div class="icon">📄</div><p>Aucun effet de commerce enregistré.</p></div>
+      </div>
+    </div>
+
     <!-- PLAN COMPTABLE -->
     <div class="view" id="view-plancomptable">
       <div class="ph"><div><h1>Plan Comptable SYSCOHADA</h1><p>Révisé 2023</p></div></div>
@@ -807,6 +1202,402 @@
       <div class="pc3d-grid" id="pcBody"></div>
     </div>
 
+  </div>
+</div>
+
+<!-- ═══ MODAL PAIE ═══ -->
+<div id="paieModal" class="modal-overlay" style="display:none">
+  <div class="modal-box" style="width:600px;max-height:90vh;overflow-y:auto">
+    <div class="modal-title">👤 Salarié — Fiche de paie</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px">
+      <div><label class="af-label" style="color:var(--muted)">Nom complet</label><input class="af-input" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%" id="paie-nom" placeholder="ex: KOUAME Jean"></div>
+      <div><label class="af-label" style="color:var(--muted)">Poste</label><input class="af-input" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%" id="paie-poste" placeholder="ex: Comptable"></div>
+      <div><label class="af-label" style="color:var(--muted)">Salaire brut (FCFA)</label><input type="number" class="af-input" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%" id="paie-brut" placeholder="300000" oninput="calcPaie()"></div>
+      <div><label class="af-label" style="color:var(--muted)">Mois de paie</label><input type="month" class="af-input" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%" id="paie-mois"></div>
+    </div>
+    <div id="paie-calcul-result" style="margin-top:16px;background:var(--surface2);border:1px solid var(--line);border-radius:var(--r);padding:16px;font-size:13px;display:none">
+      <strong style="font-family:var(--font-display)">Détail du bulletin</strong>
+      <div style="margin-top:10px;display:grid;gap:6px" id="paie-detail-grid"></div>
+    </div>
+    <div class="af-field">
+  <label class="af-label" style="color:var(--muted)">Coût total employeur</label>
+  <div id="paie-cout-total" style="font-family:var(--font-mono);font-size:18px;font-weight:700;color:var(--rust)">—</div>
+</div>
+    <div class="modal-actions" style="margin-top:16px">
+      <button class="btn-modal-cancel" onclick="document.getElementById('paieModal').style.display='none'">Annuler</button>
+      <button class="btn-modal-ok" onclick="savePaie()">✓ Enregistrer & Générer écriture</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ MODAL IMMOBILISATION ═══ -->
+<div id="immobModal" class="modal-overlay" style="display:none">
+  <div class="modal-box" style="width:580px">
+    <div class="modal-title">🏗️ Nouvelle immobilisation</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px">
+      <div><label class="af-label" style="color:var(--muted)">Désignation</label><input class="af-input" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%" id="immob-nom" placeholder="ex: Ordinateur HP"></div>
+      <div><label class="af-label" style="color:var(--muted)">Catégorie</label>
+        <select id="immob-categorie" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%" onchange="updateImmobCompte()">
+          <option value="2442">Informatique (2442) — 33%/an</option>
+          <option value="2451">Véhicule (2451) — 25%/an</option>
+          <option value="2444">Mobilier (2444) — 20%/an</option>
+          <option value="2441">Matériel industriel (2441) — 10%/an</option>
+          <option value="231">Bâtiment (231) — 5%/an</option>
+          <option value="211">Immob. incorporelle (211) — 20%/an</option>
+        </select>
+      </div>
+      <div><label class="af-label" style="color:var(--muted)">Valeur d'achat HT (FCFA)</label><input type="number" id="immob-valeur" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%" placeholder="500000" oninput="calcAmortissement()"></div>
+      <div><label class="af-label" style="color:var(--muted)">Date d'acquisition</label><input type="date" id="immob-date" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%"></div>
+      <div><label class="af-label" style="color:var(--muted)">Méthode d'amortissement</label>
+        <select id="immob-methode" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%" onchange="calcAmortissement()">
+          <option value="lineaire">Linéaire</option>
+          <option value="degressif">Dégressif (coeff. 1,5)</option>
+        </select>
+      </div>
+      <div><label class="af-label" style="color:var(--muted)">Numéro de série / Référence</label><input id="immob-ref" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%" placeholder="optionnel"></div>
+    </div>
+    <div id="immob-amort-preview" style="margin-top:14px;background:var(--surface2);border:1px solid var(--line);border-radius:var(--r);padding:12px;font-size:12px;display:none"></div>
+    <div class="modal-actions" style="margin-top:14px">
+      <button class="btn-modal-cancel" onclick="document.getElementById('immobModal').style.display='none'">Annuler</button>
+      <button class="btn-modal-ok" onclick="saveImmob()">✓ Enregistrer</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ MODAL STOCK ═══ -->
+<div id="stockModal" class="modal-overlay" style="display:none">
+  <div class="modal-box" style="width:500px">
+    <div class="modal-title">📦 Mouvement de stock</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px">
+      <div style="grid-column:1/-1"><label class="af-label" style="color:var(--muted)">Article</label><input id="stock-article" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%" placeholder="Désignation de l'article"></div>
+      <div><label class="af-label" style="color:var(--muted)">Type mouvement</label>
+        <select id="stock-type" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%">
+          <option value="entree">Entrée (achat/réception)</option>
+          <option value="sortie">Sortie (vente/consommation)</option>
+          <option value="inventaire">Inventaire (ajustement)</option>
+        </select>
+      </div>
+      <div><label class="af-label" style="color:var(--muted)">Quantité</label><input type="number" id="stock-qte" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%" placeholder="0" min="0"></div>
+      <div><label class="af-label" style="color:var(--muted)">Prix unitaire HT (FCFA)</label><input type="number" id="stock-pu" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%" placeholder="0"></div>
+      <div><label class="af-label" style="color:var(--muted)">Date</label><input type="date" id="stock-date" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%"></div>
+      <div><label class="af-label" style="color:var(--muted)">Seuil alerte (qté min)</label><input type="number" id="stock-seuil" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%" placeholder="5"></div>
+    </div>
+    <div class="modal-actions" style="margin-top:14px">
+      <button class="btn-modal-cancel" onclick="document.getElementById('stockModal').style.display='none'">Annuler</button>
+      <button class="btn-modal-ok" onclick="saveStock()">✓ Enregistrer mouvement</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ MODAL BUDGET ═══ -->
+<div id="budgetModal" class="modal-overlay" style="display:none">
+  <div class="modal-box" style="width:520px">
+    <div class="modal-title">🎯 Saisir un budget</div>
+    <div style="display:grid;gap:12px;margin-top:14px">
+      <div><label class="af-label" style="color:var(--muted)">Compte SYSCOHADA</label><input id="budget-compte" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%" placeholder="ex: 601 — Achats marchandises" oninput="updateBudgetAccountSuggest(this)"></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div><label class="af-label" style="color:var(--muted)">Montant prévu (FCFA)</label><input type="number" id="budget-montant" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%" placeholder="1000000"></div>
+        <div><label class="af-label" style="color:var(--muted)">Période</label>
+          <select id="budget-periode" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%">
+            <option value="annuel">Annuel</option>
+            <option value="T1">T1</option><option value="T2">T2</option>
+            <option value="T3">T3</option><option value="T4">T4</option>
+          </select>
+        </div>
+      </div>
+      <div><label class="af-label" style="color:var(--muted)">Alerte dépassement à (%)</label><input type="number" id="budget-alerte" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%" placeholder="90" min="0" max="200" value="90"></div>
+    </div>
+    <div class="modal-actions" style="margin-top:14px">
+      <button class="btn-modal-cancel" onclick="document.getElementById('budgetModal').style.display='none'">Annuler</button>
+      <button class="btn-modal-ok" onclick="saveBudget()">✓ Enregistrer budget</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ MODAL CENTRE DE COÛT ═══ -->
+<div id="centreModal" class="modal-overlay" style="display:none">
+  <div class="modal-box" style="width:520px">
+    <div class="modal-title">📊 Centre de coût / Axe analytique</div>
+    <input type="hidden" id="centre-id">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px">
+      <div><label class="af-label" style="color:var(--muted)">Code</label><input class="af-input" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%" id="centre-code" placeholder="ex: CC-VENTE"></div>
+      <div><label class="af-label" style="color:var(--muted)">Type</label>
+        <select id="centre-type" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%">
+          <option value="exploitation">Exploitation</option>
+          <option value="support">Support / Administration</option>
+          <option value="projet">Projet</option>
+        </select>
+      </div>
+      <div style="grid-column:1/-1"><label class="af-label" style="color:var(--muted)">Libellé</label><input class="af-input" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%" id="centre-libelle" placeholder="ex: Centre commercial Abidjan"></div>
+      <div style="grid-column:1/-1"><label class="af-label" style="color:var(--muted)">Responsable</label><input class="af-input" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%" id="centre-responsable" placeholder="Nom du responsable (optionnel)"></div>
+    </div>
+    <div class="modal-actions" style="margin-top:16px">
+      <button class="btn-modal-cancel" onclick="document.getElementById('centreModal').style.display='none'">Annuler</button>
+      <button class="btn-modal-ok" onclick="saveCentre()">✓ Enregistrer</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ MODAL IMPUTATION ANALYTIQUE ═══ -->
+<div id="imputationModal" class="modal-overlay" style="display:none">
+  <div class="modal-box" style="width:480px">
+    <div class="modal-title">📊 Imputer à un centre de coût</div>
+    <input type="hidden" id="imput-ecr-id">
+    <input type="hidden" id="imput-ligne-idx">
+    <input type="hidden" id="imput-montant">
+    <input type="hidden" id="imput-sens">
+    <div style="display:grid;gap:12px;margin-top:14px">
+      <div><label class="af-label" style="color:var(--muted)">Centre de coût</label>
+        <select id="imput-centre" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%"></select>
+      </div>
+      <div><label class="af-label" style="color:var(--muted)">% à imputer</label>
+        <input type="range" id="imput-pct" min="1" max="100" value="100" oninput="updateImputMontant()" style="width:100%;margin-top:6px">
+        <div style="text-align:center;font-family:var(--font-mono);margin-top:6px;font-weight:700" id="imput-montant-calc">—</div>
+      </div>
+    </div>
+    <div class="modal-actions" style="margin-top:16px">
+      <button class="btn-modal-cancel" onclick="document.getElementById('imputationModal').style.display='none'">Annuler</button>
+      <button class="btn-modal-ok" onclick="saveImputation()">✓ Imputer</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ MODAL SOCIÉTÉ ═══ -->
+<div id="societeModal" class="modal-overlay" style="display:none">
+  <div class="modal-box" style="width:580px">
+    <div class="modal-title">🏢 Société</div>
+    <input type="hidden" id="soc-id">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px">
+      <div style="grid-column:1/-1"><label class="af-label" style="color:var(--muted)">Raison sociale</label><input class="af-input" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%" id="soc-nom" placeholder="ex: SOTRA SARL"></div>
+      <div><label class="af-label" style="color:var(--muted)">Forme juridique</label>
+        <select id="soc-forme" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%">
+          <option value="SARL">SARL</option><option value="SA">SA</option>
+          <option value="SAS">SAS</option><option value="SNC">SNC</option>
+          <option value="EI">Entreprise individuelle</option><option value="Autre">Autre</option>
+        </select>
+      </div>
+      <div><label class="af-label" style="color:var(--muted)">Exercice actif</label><input type="number" id="soc-exercice" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%" placeholder="2024"></div>
+      <div><label class="af-label" style="color:var(--muted)">RCCM</label><input id="soc-rccm" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%" placeholder="CI-ABJ-2024-B-12345"></div>
+      <div><label class="af-label" style="color:var(--muted)">NIF</label><input id="soc-nif" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%" placeholder="Numéro d'identification fiscale"></div>
+      <div style="grid-column:1/-1"><label class="af-label" style="color:var(--muted)">Adresse</label><input id="soc-adresse" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%" placeholder="Adresse complète"></div>
+    </div>
+    <div class="modal-actions" style="margin-top:16px">
+      <button class="btn-modal-cancel" onclick="document.getElementById('societeModal').style.display='none'">Annuler</button>
+      <button class="btn-modal-ok" onclick="saveSociete()">✓ Enregistrer</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ MODAL COLLAB — CODE UNIQUE (PROPRIETAIRE) ═══ -->
+<div id="collabModal" class="modal-overlay" style="display:none">
+  <div class="modal-box" style="width:520px;perspective:1000px">
+    <div style="transform-style:preserve-3d;transition:transform .6s" id="collabCard3D">
+
+      <!-- FACE : Générer code -->
+      <div class="modal-title" style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:20px">🔗</span> Inviter un collaborateur
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin:6px 0 16px">
+        Partagez ce code unique. Max 3 collaborateurs simultanés.
+      </p>
+
+      <!-- Code affiché en 3D card -->
+      <div id="collabCodeDisplay" style="
+        background:linear-gradient(135deg,var(--surface2),var(--surface));
+        border:1.5px solid var(--line);border-radius:12px;
+        padding:20px 24px;margin-bottom:16px;
+        box-shadow:0 8px 32px rgba(0,0,0,.18);
+        transform:translateZ(8px);
+        text-align:center;position:relative;overflow:hidden
+      ">
+        <div style="font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);margin-bottom:8px">Code de collaboration</div>
+        <div id="collabCodeText" style="
+          font-family:var(--font-mono);font-size:26px;font-weight:700;
+          letter-spacing:.25em;color:var(--warm);
+          text-shadow:0 0 20px rgba(212,168,83,.3)
+        ">——————</div>
+        <div id="collabCodeExpiry" style="font-size:11px;color:var(--muted);margin-top:6px"></div>
+        <!-- Décoration 3D -->
+        <div style="position:absolute;top:-20px;right:-20px;width:80px;height:80px;border-radius:50%;background:rgba(212,168,83,.06)"></div>
+        <div style="position:absolute;bottom:-30px;left:-10px;width:100px;height:100px;border-radius:50%;background:rgba(59,130,246,.04)"></div>
+      </div>
+
+      <!-- Boutons action code -->
+      <div style="display:flex;gap:10px;margin-bottom:16px">
+        <button class="btn btn-ink" style="flex:1;font-size:13px" onclick="genererCodeCollab()">⚡ Générer nouveau code</button>
+        <button class="btn btn-sm-wire" style="font-size:13px;padding:8px 14px" onclick="copierCodeCollab()" id="btnCopierCode" disabled>⎘ Copier</button>
+        <button class="btn btn-sm-wire" style="font-size:13px;padding:8px 14px;color:var(--rust)" onclick="revoquerTousCollab()" title="Révoquer tous les accès">✕ Tout révoquer</button>
+      </div>
+
+      <!-- Slots collaborateurs (max 3) -->
+      <div style="font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:8px">
+        Collaborateurs connectés
+      </div>
+      <div id="collabSlots" style="display:flex;flex-direction:column;gap:6px;min-height:48px">
+        <div style="color:var(--muted);font-size:12px;padding:8px 0">Aucun collaborateur pour l'instant.</div>
+      </div>
+
+      <!-- Bouton appel vidéo -->
+      <div id="collabVideoSection" style="margin-top:16px;display:none">
+        <div style="font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:8px">Appel vidéo</div>
+        <button class="btn btn-ink" style="width:100%;font-size:13px;background:rgba(34,197,94,.12);border-color:rgba(34,197,94,.3);color:#22c55e"
+          onclick="ouvrirAppelVideo()">📹 Démarrer un appel vidéo avec les collaborateurs</button>
+      </div>
+
+      <div class="modal-actions" style="margin-top:16px">
+        <button class="btn-modal-cancel" onclick="fermerCollabModal()">Fermer</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ MODAL REJOINDRE (COLLABORATEUR) ═══ -->
+<div id="joinCollabModal" class="modal-overlay" style="display:none">
+  <div class="modal-box" style="width:460px">
+    <div class="modal-title" style="display:flex;align-items:center;gap:8px">
+      <span style="font-size:20px">🔑</span> Rejoindre un espace de travail
+    </div>
+    <p style="font-size:12px;color:var(--muted);margin:6px 0 16px">
+      Collez le code que vous avez reçu du propriétaire du compte.
+    </p>
+
+    <!-- Input code 3D -->
+    <div style="
+      background:var(--surface2);border:1.5px solid var(--line);
+      border-radius:12px;padding:16px;margin-bottom:16px;
+      box-shadow:inset 0 2px 8px rgba(0,0,0,.12);
+      transform:perspective(600px) rotateX(2deg)
+    ">
+      <input id="joinCodeInput" type="text" placeholder="COMEO-XXXXXX"
+        style="
+          width:100%;background:transparent;border:none;outline:none;
+          font-family:var(--font-mono);font-size:22px;font-weight:700;
+          letter-spacing:.2em;color:var(--warm);text-align:center;
+          text-transform:uppercase
+        "
+        oninput="this.value=this.value.toUpperCase()"
+        onkeydown="if(event.key==='Enter')rejoindreCollab()"
+      >
+    </div>
+
+    <div class="auth-err" id="joinCollabErr"></div>
+
+    <div class="modal-actions" style="margin-top:8px">
+      <button class="btn-modal-cancel" onclick="document.getElementById('joinCollabModal').style.display='none'">Annuler</button>
+      <button class="btn-modal-ok" onclick="rejoindreCollab()">✓ Rejoindre</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ MODAL APPEL VIDEO WebRTC ═══ -->
+<div id="videoCallModal" class="modal-overlay" style="display:none;z-index:9999">
+  <div class="modal-box" style="width:720px;max-width:98vw;padding:0;overflow:hidden;border-radius:16px">
+    <!-- Header -->
+    <div style="
+      background:var(--surface2);padding:14px 20px;
+      display:flex;align-items:center;justify-content:space-between;
+      border-bottom:1px solid var(--line)
+    ">
+      <div style="display:flex;align-items:center;gap:10px">
+        <div style="width:10px;height:10px;border-radius:50%;background:#22c55e;box-shadow:0 0 8px #22c55e"></div>
+        <span style="font-weight:600;font-size:14px">Appel vidéo COMEO — <span id="videoCallTitle">En attente...</span></span>
+      </div>
+      <button onclick="terminerAppelVideo()" style="background:rgba(220,38,38,.15);border:1px solid rgba(220,38,38,.3);color:#dc2626;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px">✕ Raccrocher</button>
+    </div>
+
+    <!-- Grille vidéos 3D -->
+    <div id="videoGrid" style="
+      display:grid;grid-template-columns:1fr 1fr;gap:12px;
+      padding:16px;background:var(--bg);min-height:320px;
+      perspective:800px
+    ">
+      <!-- Vidéo locale -->
+      <div style="
+        position:relative;border-radius:10px;overflow:hidden;
+        background:#0a0b10;border:1px solid var(--line);
+        transform:perspective(600px) rotateY(-2deg) translateZ(4px);
+        transition:transform .3s
+      ">
+        <video id="localVideo" autoplay muted playsinline style="width:100%;height:200px;object-fit:cover;display:block"></video>
+        <div style="position:absolute;bottom:8px;left:10px;font-size:11px;color:#fff;background:rgba(0,0,0,.6);padding:2px 8px;border-radius:20px">
+          Vous
+        </div>
+        <!-- Controles -->
+        <div style="position:absolute;bottom:8px;right:8px;display:flex;gap:6px" id="localVideoControls">
+          <button id="btnMicToggle" onclick="toggleMic()" style="width:30px;height:30px;border-radius:50%;background:rgba(0,0,0,.6);border:1px solid rgba(255,255,255,.2);color:#fff;font-size:13px;cursor:pointer" title="Micro">🎤</button>
+          <button id="btnCamToggle" onclick="toggleCam()" style="width:30px;height:30px;border-radius:50%;background:rgba(0,0,0,.6);border:1px solid rgba(255,255,255,.2);color:#fff;font-size:13px;cursor:pointer" title="Caméra">📷</button>
+        </div>
+      </div>
+      <!-- Vidéo distante -->
+      <div style="
+        position:relative;border-radius:10px;overflow:hidden;
+        background:#0a0b10;border:1px solid var(--line);
+        transform:perspective(600px) rotateY(2deg) translateZ(4px);
+        transition:transform .3s
+      ">
+        <video id="remoteVideo" autoplay playsinline style="width:100%;height:200px;object-fit:cover;display:block"></video>
+        <div style="position:absolute;bottom:8px;left:10px;font-size:11px;color:#fff;background:rgba(0,0,0,.6);padding:2px 8px;border-radius:20px" id="remoteVideoLabel">
+          Collaborateur
+        </div>
+        <div id="remoteVideoPlaceholder" style="
+          position:absolute;inset:0;display:flex;flex-direction:column;
+          align-items:center;justify-content:center;color:var(--muted);font-size:13px
+        ">
+          <div style="font-size:32px;margin-bottom:8px">👤</div>
+          En attente de connexion...
+        </div>
+      </div>
+    </div>
+
+    <!-- Barre statut -->
+    <div style="
+      padding:10px 20px;background:var(--surface2);
+      border-top:1px solid var(--line);
+      display:flex;align-items:center;gap:16px;font-size:12px;color:var(--muted)
+    ">
+      <span id="videoCallStatus">⏳ Initialisation WebRTC...</span>
+      <span style="margin-left:auto" id="videoCallTimer">00:00</span>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ MODAL EFFET DE COMMERCE ═══ -->
+<div id="effetModal" class="modal-overlay" style="display:none">
+  <div class="modal-box" style="width:600px">
+    <div class="modal-title">📄 Effet de commerce</div>
+    <input type="hidden" id="effet-id">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px">
+      <div><label class="af-label" style="color:var(--muted)">Type d'effet</label>
+        <select id="effet-type" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%">
+          <option value="lcr">LCR — Lettre de change relevé (reçue)</option>
+          <option value="billet_recu">Billet à ordre (reçu de client)</option>
+          <option value="billet_emis">Billet à ordre (émis à fournisseur)</option>
+        </select>
+      </div>
+      <div><label class="af-label" style="color:var(--muted)">Statut</label>
+        <select id="effet-statut" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%">
+          <option value="en_portefeuille">En portefeuille</option>
+          <option value="remis_escompte">Remis à l'escompte</option>
+          <option value="encaisse">Encaissé</option>
+          <option value="impaye">Impayé</option>
+          <option value="endosse">Endossé</option>
+        </select>
+      </div>
+      <div style="grid-column:1/-1"><label class="af-label" style="color:var(--muted)">Tiré / Souscripteur (nom du client ou fournisseur)</label>
+        <input class="af-input" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%" id="effet-tire" placeholder="ex: CFAO MOTORS CI"></div>
+      <div><label class="af-label" style="color:var(--muted)">Montant (FCFA)</label><input type="number" id="effet-montant" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%" placeholder="0"></div>
+      <div><label class="af-label" style="color:var(--muted)">Référence</label><input id="effet-ref" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%" placeholder="N° de l'effet (optionnel)"></div>
+      <div><label class="af-label" style="color:var(--muted)">Date de création</label><input type="date" id="effet-date-creation" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%"></div>
+      <div><label class="af-label" style="color:var(--muted)">Date d'échéance</label><input type="date" id="effet-date-echeance" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%"></div>
+      <div style="grid-column:1/-1"><label class="af-label" style="color:var(--muted)">Banque domiciliataire</label><input id="effet-banque" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 10px;font-size:13px;width:100%" placeholder="ex: BICICI, SGBCI, Ecobank…"></div>
+    </div>
+    <div style="background:var(--surface2);border:1px solid var(--line);border-radius:var(--r);padding:12px;margin-top:12px;font-size:12px;color:var(--muted)">
+      💡 L'écriture comptable (413/411 ou 401/403) sera générée automatiquement à l'enregistrement.
+    </div>
+    <div class="modal-actions" style="margin-top:16px">
+      <button class="btn-modal-cancel" onclick="document.getElementById('effetModal').style.display='none'">Annuler</button>
+      <button class="btn-modal-ok" onclick="saveEffet()">✓ Enregistrer & Générer écriture</button>
+    </div>
   </div>
 </div>
 
@@ -884,6 +1675,21 @@
     </div>
 
     <div class="robot-hint" id="robotHint">Maintenez le micro pour parler</div>
+
+    <!-- ── Saisie texte — alternative au micro ── -->
+    <div class="robot-text-row" id="robotTextRow">
+      <input
+        class="robot-text-input"
+        id="robotTextInput"
+        type="text"
+        placeholder="Tapez votre question ici…"
+        maxlength="400"
+        onkeydown="if(event.key==='Enter')sendRobotText()"
+      >
+      <button class="robot-text-send" onclick="sendRobotText()" title="Envoyer">
+        <svg viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2v7z"/></svg>
+      </button>
+    </div>
   </div>
 
   <div class="robot-stats-bar">
@@ -893,7 +1699,44 @@
     <div class="rstat"><div class="rstat-dot" style="background:#8b5cf6"></div><span>Langue</span><span class="rstat-val">Français</span></div>
   </div>
 </div>
+<!-- ═══════════════════════════════════
+     MODAL PLAN COMPTABLE 3D
+     ═══════════════════════════════════ -->
+<div id="pcModalOverlay" onclick="if(event.target===this)closePcModal()">
+  <div id="pcModal">
+
+    <!-- En-tête -->
+    <div id="pcModalHeader">
+      <div>
+        <div class="pcm-title">📋 Plan Comptable SYSCOHADA</div>
+        <div class="pcm-subtitle">OHADA 2023 · Cliquez un compte pour le sélectionner</div>
+      </div>
+      <input id="pcModalSearch" type="text" placeholder="🔍  Rechercher par numéro ou libellé…" oninput="renderPcModal()" autocomplete="off">
+      <button class="pcm-close" onclick="closePcModal()" title="Fermer (Échap)">✕</button>
+    </div>
+
+    <!-- Navigation par classe -->
+    <div id="pcModalClassNav">
+      <button class="pcm-cls-btn active" onclick="filterPcClass('all',this)">
+        <span class="pcm-cls-num">★</span>
+        <span class="pcm-cls-label">Toutes</span>
+      </button>
+    </div>
+
+    <!-- Corps — grille 3D -->
+    <div id="pcModalBody"></div>
+
+    <!-- Pied -->
+    <div id="pcModalFooter">
+      <span class="pcm-kbd"><kbd>↑↓</kbd> Naviguer</span>
+      <span class="pcm-kbd"><kbd>Entrée</kbd> Sélectionner</span>
+      <span class="pcm-kbd"><kbd>Échap</kbd> Fermer</span>
+      <span style="margin-left:auto" id="pcModalCount"></span>
+    </div>
+
+  </div>
 </div>
+
 <script type="module" src="as.js"></script>
 </body>
 </html>
