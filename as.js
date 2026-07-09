@@ -21,6 +21,12 @@ import {
   onSnapshot,
   where,
 } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+import {
+  getDatabase,
+  ref as rtdbRef,
+  get as rtdbGet,
+  set as rtdbSet,
+} from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js';
 
 // ── BASE DE DONNÉES ROBOT (cache des réponses)
 const robotFirebaseConfig = {
@@ -77,6 +83,7 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
+const rtdb = getDatabase(app); // ── Base Realtime Database — utilisée pour les clés API (server_config)
 
 window._db = db;
 window._fbCollection = collection;
@@ -90,17 +97,25 @@ window._fbSetDoc = setDoc;
 window._fbGetDoc = getDoc;
 window._fbReady = true;
 window._firebaseFirestore = { onSnapshot, doc, getDocs, collection, query, where };
+window._rtdb = rtdb;
+window._rtdbRef = rtdbRef;
+window._rtdbGet = rtdbGet;
+window._rtdbSet = rtdbSet;
 document.dispatchEvent(new Event('firebase-ready'));
 
 // ══════════════════════════════════════════
-// CONFIGURATION SERVEUR — Chargée depuis Firestore (server_config)
-// Les clés API OpenRouter, Mistral et l'ordre des modèles sont gérés via server.html
+// CONFIGURATION SERVEUR — Chargée depuis Realtime Database (server_config)
+// Les clés API sont gérées via la page d'admin azur.html (protégée par mot de passe)
 // JAMAIS de clé API en dur dans ce fichier
 // ══════════════════════════════════════════
-// ── Clés API multiples (OpenRouter + Gemini fallback) ──
-let OPENROUTER_KEYS = ['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'];
-let GEMINI_KEYS = ['AQ.Ab8RN6LRPDzoKC3Y9_iM5VM1uuFTHdya_sS3k699IrMu2BeFHg'];
-let GROQ_API_KEYS = ['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'];    // Alias pour compatibilité
+// ── Clés API multiples (OpenRouter + Groq direct + Gemini fallback) ──
+// Ne JAMAIS mettre de clé en dur ici : elles sont chargées depuis Realtime Database
+// (chemins server_config/openrouter_keys, server_config/groq_keys, server_config/gemini_keys)
+// par loadServerConfig(). Ces clés sont administrées depuis azur.html.
+let OPENROUTER_KEYS = [];
+let GEMINI_KEYS = [];
+let GROQ_API_KEYS = [];    // Clés OpenRouter (utilisées par callGroqQueued → openrouter.ai)
+let GROQ_DIRECT_KEYS = []; // Clés Groq natives (utilisées par callGroqDirect → api.groq.com)
 let GROQ_MODELS = [];      // Chargées depuis server_config/models
 let groqKeyIdx = 0;        // Index rotation clés OpenRouter
 let groqModelIdx = 0;      // Index rotation modèles Groq
@@ -114,30 +129,69 @@ let serverConfigLoaded = false;
 const aiMemoryCache = new Map(); // clé → réponse (RAM, vidé au rechargement)
 const AI_CACHE_MAX = 500;        // maximum d'entrées en mémoire
 
+// ── Normalise ce qui est lu dans Realtime Database en simple tableau de chaînes ──
+// Accepte : ["clé1","clé2"]  OU  {0:"clé1",1:"clé2"}  OU  [{id:1,value:"clé1"}, ...]
+function normalizeRtdbKeys(raw) {
+  if (!raw) return [];
+  const arr = Array.isArray(raw) ? raw : Object.values(raw);
+  return arr.map(e => (typeof e === 'string' ? e : e?.value)).filter(Boolean);
+}
+
 async function loadServerConfig() {
   try {
-    // Clés API chargées directement du code
-    groqKeyBusy = new Array(GROQ_API_KEYS.length).fill(false);
-    
-    // Charger seulement les modèles de Firestore
+    // Charger les clés OpenRouter depuis Realtime Database (server_config/openrouter_keys)
     try {
-      const modelsSnap = await getDoc(doc(db, 'server_config', 'models'));
-      if (modelsSnap.exists()) {
-        GROQ_MODELS = modelsSnap.data().list || [];
+      const snap = await rtdbGet(rtdbRef(rtdb, 'server_config/openrouter_keys'));
+      if (snap.exists()) {
+        OPENROUTER_KEYS = normalizeRtdbKeys(snap.val());
+        GROQ_API_KEYS = OPENROUTER_KEYS; // GROQ_API_KEYS = clés utilisées par callGroqQueued (openrouter.ai)
       }
     } catch (e) {
-      console.warn('[COMEO] Erreur chargement modèles depuis Firestore :', e.message);
+      console.warn('[COMEO] Erreur chargement clés OpenRouter depuis Realtime Database :', e.message);
     }
 
-    // Valeurs par défaut si Firestore vide
+    // Charger les clés Groq natives depuis Realtime Database (server_config/groq_keys)
+    try {
+      const snap = await rtdbGet(rtdbRef(rtdb, 'server_config/groq_keys'));
+      if (snap.exists()) {
+        GROQ_DIRECT_KEYS = normalizeRtdbKeys(snap.val());
+      }
+    } catch (e) {
+      console.warn('[COMEO] Erreur chargement clés Groq depuis Realtime Database :', e.message);
+    }
+
+    // Charger les clés Gemini depuis Realtime Database (server_config/gemini_keys)
+    try {
+      const snap = await rtdbGet(rtdbRef(rtdb, 'server_config/gemini_keys'));
+      if (snap.exists()) {
+        GEMINI_KEYS = normalizeRtdbKeys(snap.val());
+      }
+    } catch (e) {
+      console.warn('[COMEO] Erreur chargement clés Gemini depuis Realtime Database :', e.message);
+    }
+
+    groqKeyBusy = new Array(GROQ_API_KEYS.length).fill(false);
+
+    // Charger les modèles depuis Realtime Database (server_config/models)
+    try {
+      const snap = await rtdbGet(rtdbRef(rtdb, 'server_config/models'));
+      if (snap.exists()) {
+        const val = snap.val();
+        GROQ_MODELS = Array.isArray(val) ? val.filter(Boolean) : Object.values(val || {}).filter(Boolean);
+      }
+    } catch (e) {
+      console.warn('[COMEO] Erreur chargement modèles depuis Realtime Database :', e.message);
+    }
+
+    // Valeurs par défaut si Realtime Database vide
     if (GROQ_MODELS.length === 0) {
       GROQ_MODELS = ['llama-3.3-70b-versatile', 'qwen/qwen3-32b', 'meta-llama/llama-4-scout-17b-16e-instruct'];
     }
 
     serverConfigLoaded = true;
-    aiServiceAvailable = GROQ_API_KEYS.length > 0;
+    aiServiceAvailable = GROQ_API_KEYS.length > 0 || GROQ_DIRECT_KEYS.length > 0 || GEMINI_KEYS.length > 0;
     updateServiceAvailabilityUI();
-    console.log(`[COMEO] Config chargée — ${GROQ_API_KEYS.length} clé(s) Groq (directe), ${GROQ_MODELS.length} modèle(s)`);
+    console.log(`[COMEO] Config chargée — ${GROQ_API_KEYS.length} clé(s) OpenRouter, ${GROQ_DIRECT_KEYS.length} clé(s) Groq direct, ${GEMINI_KEYS.length} clé(s) Gemini, ${GROQ_MODELS.length} modèle(s)`);
   } catch (e) {
     console.warn('[COMEO] Erreur chargement config serveur :', e.message);
     aiServiceAvailable = false;
@@ -209,9 +263,24 @@ const COMEO_SERVICE_MSG = 'Veuillez patienter quelques instants ou revenez plus 
 let aiServiceAvailable = true;
 let subscriptionCheckInterval = null;
 
+const OWNER_WHATSAPP_NUMBER = '2250508463003';
+
 function getWavePaymentUrl() {
   const p = ['https://pay.wave.com/m/', 'M_ci_iqMcg8KwRE-W', '/c/ci/?amount=', String(WAVE_AMOUNT_FCFA)];
   return p.join('');
+}
+
+// ── Construit le message WhatsApp de réabonnement envoyé au propriétaire ──
+function buildReabonnementWhatsAppUrl() {
+  const company = currentProfile?.company || '';
+  const email = currentProfile?.email || '';
+  const lignes = [
+    `Bonjour, je souhaite renouveler mon abonnement COMEO AI Pro (${WAVE_AMOUNT_FCFA.toLocaleString('fr-FR')} FCFA / mois).`,
+    company ? `Entreprise : ${company}` : '',
+    email ? `Email : ${email}` : '',
+  ].filter(Boolean);
+  const message = encodeURIComponent(lignes.join('\n'));
+  return `https://wa.me/${OWNER_WHATSAPP_NUMBER}?text=${message}`;
 }
 
 async function sha256Hex(text) {
@@ -412,10 +481,17 @@ async function callGroqQueued(messages, systemPrompt, maxTokens = 6000, temperat
 
         if (status === 429) {
           keyErrors.push({ keyNum: keyIdx + 1, code: 429, detail: 'Quota dépassé (rate limit)' });
-          console.warn(`[COMEO Queue] ${keyShort} saturée (429) → essai Gemini en fallback`);
+          console.warn(`[COMEO Queue] ${keyShort} saturée (429) → essai Groq direct puis Gemini en fallback`);
           releaseGroqKey(keyIdx);
-          
-          // 🔄 Basculer sur Gemini si OpenRouter est saturé
+
+          // 🔄 Basculer sur Groq natif si OpenRouter est saturé
+          const groqDirectResult = await callGroqDirect(messages, systemPrompt, maxTokens, temperature);
+          if (!groqDirectResult.error) {
+            console.log(`[COMEO] ✅ Fallback Groq direct réussi`);
+            return groqDirectResult;
+          }
+
+          // 🔄 Sinon basculer sur Gemini
           const geminiResult = await callGemini(messages, systemPrompt, maxTokens, temperature);
           if (!geminiResult.error) {
             console.log(`[COMEO] ✅ Fallback Gemini réussi`);
@@ -433,7 +509,7 @@ async function callGroqQueued(messages, systemPrompt, maxTokens = 6000, temperat
           }
           if (!found) {
             const detail = keyErrors.map(e => `clé ${e.keyNum} : ${e.detail}`).join(' · ');
-            return { error: 'all_rate_limited', msg: `⚠️ OpenRouter saturé et Gemini indisponible.\n${detail}\n\nVeuillez patienter quelques instants et réessayez.` };
+            return { error: 'all_rate_limited', msg: `⚠️ OpenRouter saturé, Groq direct et Gemini indisponibles.\n${detail}\n\nVeuillez patienter quelques instants et réessayez.` };
           }
           continue;
         }
@@ -471,6 +547,47 @@ async function callGroqQueued(messages, systemPrompt, maxTokens = 6000, temperat
   } finally {
     if (keyIdx !== undefined && groqKeyBusy[keyIdx]) releaseGroqKey(keyIdx);
   }
+}
+
+/**
+ * Appel Groq natif (api.groq.com) — fallback intermédiaire si OpenRouter est saturé,
+ * essayé avant Gemini car généralement plus rapide.
+ */
+async function callGroqDirect(messages, systemPrompt, maxTokens = 6000, temperature = 0.02) {
+  if (GROQ_DIRECT_KEYS.length === 0) {
+    return { error: 'no_groq_direct', msg: '⚠️ Clé Groq directe non configurée.' };
+  }
+  const model = GROQ_MODELS[0] || 'llama-3.3-70b-versatile';
+
+  for (let i = 0; i < GROQ_DIRECT_KEYS.length; i++) {
+    try {
+      console.log(`[COMEO Fallback] 🔄 Essai Groq direct clé ${i + 1}...`);
+      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${GROQ_DIRECT_KEYS[i]}`,
+        },
+        body: JSON.stringify({
+          model,
+          max_tokens: maxTokens,
+          temperature,
+          top_p: 0.95,
+          messages: [{ role: 'system', content: systemPrompt }, ...messages],
+        }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        console.log(`[COMEO Fallback] ✅ Groq direct OK — clé ${i + 1}, modèle ${model}`);
+        return { data, provider: 'groq_direct' };
+      }
+      console.warn(`[COMEO Fallback] Groq direct clé ${i + 1} — erreur HTTP ${response.status}`);
+    } catch (e) {
+      console.warn(`[COMEO Fallback] Groq direct clé ${i + 1} — exception : ${e.message}`);
+    }
+  }
+  return { error: 'groq_direct_failed', msg: '⚠️ Toutes les clés Groq directes ont échoué.' };
 }
 
 /**
@@ -657,7 +774,11 @@ async function claimWavePayment() {
 }
 
 function openWavePayment() {
-  window.open(getWavePaymentUrl(), '_blank', 'noopener,noreferrer');
+  openWhatsAppReabonnement();
+}
+
+function openWhatsAppReabonnement() {
+  window.open(buildReabonnementWhatsAppUrl(), '_blank', 'noopener,noreferrer');
 }
 
 // ══════════════════════════════════════════
@@ -2614,6 +2735,7 @@ async function doLogin() {
     currentProfile = { ...snap.data(), id: uid };
     conversationHistory = [];
     await loadApp();
+    playWelcomeSound();
   } catch (e) {
     const msgs = {
       'auth/user-not-found': 'Aucun compte avec cet email.',
@@ -3311,6 +3433,7 @@ function showSaisieNotif(libelle, count) {
       ? `${count} écritures liées préparées. Cliquez "Tout enregistrer" pour les grouper.`
       : `"${libelle || 'Écriture'}" — Vérifiez et enregistrez.`;
   notif.classList.add('show');
+  playAiNotificationSound();
   setTimeout(() => notif.classList.remove('show'), 15000);
 }
 function hideSaisieNotif() {
@@ -4959,6 +5082,7 @@ function appendMsg(context, role, text) {
   d.innerHTML = `<div class="msg-av">${role === 'ai' ? 'CA' : 'U'}</div><div class="msg-body">${fmt(text)}</div>`;
   c.appendChild(d);
   c.scrollTop = c.scrollHeight;
+  if (role === 'ai') playAiNotificationSound();
 }
 function appendTyping(context) {
   const id = 't' + Date.now();
@@ -7096,6 +7220,60 @@ window.closeRobotLinkOverlay = closeRobotLinkOverlay;
 window.toggleRobotMic = toggleRobotMic;
 window.initRobotMicHold = initRobotMicHold;
 // ══════════════════════════════════════════
+// SONS — Notification IA & Bienvenue connexion
+// ══════════════════════════════════════════
+let __comeoAudioCtx = null;
+function getComeoAudioCtx() {
+  try {
+    if (!__comeoAudioCtx) {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return null;
+      __comeoAudioCtx = new Ctx();
+    }
+    if (__comeoAudioCtx.state === 'suspended') __comeoAudioCtx.resume().catch(() => {});
+    return __comeoAudioCtx;
+  } catch (e) {
+    return null;
+  }
+}
+function playTone(freq, startTime, duration, ctx, gainPeak = 0.16) {
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = 'sine';
+  osc.frequency.value = freq;
+  gain.gain.setValueAtTime(0.0001, startTime);
+  gain.gain.exponentialRampToValueAtTime(gainPeak, startTime + 0.02);
+  gain.gain.exponentialRampToValueAtTime(0.0001, startTime + duration);
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  osc.start(startTime);
+  osc.stop(startTime + duration + 0.02);
+}
+// Son court joué chaque fois que COMEO AI livre un résultat
+function playAiNotificationSound() {
+  try {
+    const ctx = getComeoAudioCtx();
+    if (!ctx) return;
+    const t = ctx.currentTime;
+    playTone(880, t, 0.09, ctx, 0.14);
+    playTone(1320, t + 0.09, 0.12, ctx, 0.12);
+  } catch (e) {}
+}
+// Son de bienvenue joué à la connexion réussie sur la plateforme
+function playWelcomeSound() {
+  try {
+    const ctx = getComeoAudioCtx();
+    if (!ctx) return;
+    const t = ctx.currentTime;
+    playTone(523.25, t, 0.14, ctx, 0.15);
+    playTone(659.25, t + 0.12, 0.14, ctx, 0.15);
+    playTone(783.99, t + 0.24, 0.22, ctx, 0.16);
+  } catch (e) {}
+}
+window.playAiNotificationSound = playAiNotificationSound;
+window.playWelcomeSound = playWelcomeSound;
+
+// ══════════════════════════════════════════
 // TOAST
 // ══════════════════════════════════════════
 function toast(message, type = 'info') {
@@ -7772,7 +7950,7 @@ function renderFactures() {
       <td style="display:flex;gap:4px;flex-wrap:wrap">
         <button class="btn-action" onclick="exportFacturePDF(${f.id})">📄 PDF</button>
         <button class="btn-action" onclick="exportFactureWord(${f.id})">📝 Word</button>
-        <button class="btn-action" onclick="exportFactureExcel(${f.id})">📊 Excel</button>
+        <button class="btn-action" onclick="exportFactureExcel(${f.id})">📊 CSV</button>
         ${f.statut !== 'payee' && f.statut !== 'annulee' ? `<button class="btn-action" onclick="marquerPayee(${f.id})">✓ Payée</button>` : ''}
         <button class="btn-action" onclick="openFactureModal(${f.id})">✎</button>
         <button class="btn-action danger" onclick="supprimerFacture(${f.id})">✕</button>
@@ -7841,23 +8019,11 @@ function updateExportOptions() {
 // ══════════════════════════════════════════
 
 // ══════════════════════════════════════════
-// CONFIGURATION SERVEUR — Clés API en dur (mode local / CC.html)
-// Généré le 23/06/2026 19:30:55
+// CONFIGURATION SERVEUR — Les clés API ne sont plus en dur ici.
+// Elles sont chargées depuis Realtime Database (server_config/openrouter_keys,
+// server_config/groq_keys et server_config/gemini_keys) par loadServerConfig(), déclarée plus haut (ligne ~126).
+// Administration des clés : voir azur.html (protégé par mot de passe).
 // ══════════════════════════════════════════
-
-GROQ_API_KEYS = [
-    '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'
-  ];
-
-GROQ_MODELS = [
-    'auto'
-  ];
-
-// Initialiser le tableau d'occupation des clés
-groqKeyBusy = new Array(GROQ_API_KEYS.length).fill(false);
-
-
-// ── La fonction loadServerConfig() est déjà déclarée plus haut (ligne 113) ──
 
 // ══ API PUBLIQUE — Gestion des clés OpenRouter depuis CC.html ══
 /**
@@ -7868,19 +8034,19 @@ groqKeyBusy = new Array(GROQ_API_KEYS.length).fill(false);
  */
 window.setGroqKeysFromCC = function(keys, models) {
   GROQ_API_KEYS = (keys || []).filter(Boolean);
+  OPENROUTER_KEYS = GROQ_API_KEYS;
   groqKeyBusy = new Array(GROQ_API_KEYS.length).fill(false);
   if (models && models.length > 0) GROQ_MODELS = models;
   aiServiceAvailable = GROQ_API_KEYS.length > 0;
   updateServiceAvailabilityUI();
-  console.log(`[COMEO CC] ${GROQ_API_KEYS.length} clé(s) Groq chargée(s) depuis CC.html`);
-  // Sauvegarder dans Firestore pour persistance
-  if (window._fbReady) {
-    const entries = GROQ_API_KEYS.map((v, i) => ({ id: i + 1, value: v }));
-    window._fbSetDoc(window._fbDoc(window._db, 'server_config', 'groq_keys'), { keys: entries }, { merge: false })
-      .then(() => console.log('[COMEO CC] Clés sauvegardées dans Firestore'))
-      .catch((e) => console.warn('[COMEO CC] Erreur sauvegarde Firestore:', e.message));
+  console.log(`[COMEO CC] ${GROQ_API_KEYS.length} clé(s) OpenRouter chargée(s) depuis CC.html`);
+  // Sauvegarder dans Realtime Database pour persistance
+  if (window._rtdb) {
+    window._rtdbSet(window._rtdbRef(window._rtdb, 'server_config/openrouter_keys'), GROQ_API_KEYS)
+      .then(() => console.log('[COMEO CC] Clés OpenRouter sauvegardées dans Realtime Database'))
+      .catch((e) => console.warn('[COMEO CC] Erreur sauvegarde Realtime Database:', e.message));
     if (models && models.length > 0) {
-      window._fbSetDoc(window._fbDoc(window._db, 'server_config', 'models'), { list: models }, { merge: false }).catch(() => {});
+      window._rtdbSet(window._rtdbRef(window._rtdb, 'server_config/models'), models).catch(() => {});
     }
   }
 };
@@ -8223,7 +8389,7 @@ function exportFactureExcel(id) {
   a.href = URL.createObjectURL(blob);
   a.download = `${fac.type.toUpperCase()}_${fac.numero}.xls`;
   a.click();
-  toast('✓ Excel généré : ' + fac.numero, 'success');
+  toast('✓ CSV généré : ' + fac.numero, 'success');
 }
 
 function exportFactureList() {
@@ -8538,7 +8704,7 @@ function exportExcelAvance() {
   a.href = URL.createObjectURL(blob);
   a.download = `COMEO_${docType}_${company.replace(/\s+/g, '_')}_${yr}.csv`;
   a.click();
-  toast('✓ Excel (CSV) exporté', 'success');
+  toast('✓ CSV exporté', 'success');
 }
 
 // ══════════════════════════════════════════
@@ -10093,6 +10259,7 @@ async function doForgotPassword() {
 }
 window.doForgotPassword = doForgotPassword;
 window.openWavePayment = openWavePayment;
+window.openWhatsAppReabonnement = openWhatsAppReabonnement;
 window.claimWavePayment = claimWavePayment;
 window.activatePremiumWithCode = activatePremiumWithCode;
 // ══════════════════════════════════════════
@@ -11820,23 +11987,20 @@ function exportHistoriqueAppels() {
   } catch(e) { toast('Erreur: ' + e.message, 'error'); }
 }
 
-function confirmWavePaymentManual() {
-  const name = (document.getElementById('wavePayerName')?.value||'').trim();
-  const number = (document.getElementById('wavePayerNumber')?.value||'').trim();
+function confirmerDemandeReabonnement() {
   const err = document.getElementById('paymentFormErr');
-  if (!name || !number) {
-    if (err) { err.textContent = 'Veuillez remplir votre nom et numéro Wave.'; err.classList.add('show'); }
-    return;
-  }
   if (err) err.classList.remove('show');
   window._fbSetDoc && window._fbSetDoc(window._fbDoc(window._db, 'profiles', currentProfile.id), {
     paymentPendingAt: new Date().toISOString(),
     subscriptionStatus: 'pending_payment',
-    wavePayerName: name,
-    wavePayerNumber: number,
+    reabonnementVia: 'whatsapp',
   }, { merge: true }).catch(()=>{});
   document.getElementById('paywallPaymentForm').style.display = 'none';
   document.getElementById('paywallSuccessPanel').style.display = 'block';
+}
+// Ancien nom conservé par compatibilité (formulaires/scripts existants)
+function confirmWavePaymentManual() {
+  confirmerDemandeReabonnement();
 }
 
 // ══════════════════════════════════════════
@@ -11860,7 +12024,7 @@ const __globalExports = [
   'openClientModal','openCollabModal','openDeclTaxeModal','openDevisModal',
   'openEffetModal','openExportModal','openFactureModal','openFournisseurModal',
   'openImmobModal','openImportModal','openNouveau3DCall','openPaieModal','openRobot','openSocieteModal',
-  'openStockModal','openWavePayment','ouvrirAppelVideo','ouvrirNouvelExercice',
+  'openStockModal','openWavePayment','openWhatsAppReabonnement','confirmerDemandeReabonnement','ouvrirAppelVideo','ouvrirNouvelExercice',
   'previewFacturePDF','rejoindreCollab','renderBalance','renderBilan','renderClients',
   'renderFactures','renderFournisseurs','renderGrandLivre','renderJournal',
   'renderPlanComptable','resetBalanceFiltre','resetFactureFiltre','resetGLFiltre',
@@ -11937,7 +12101,7 @@ const __scope = { addFacLigne, addLigne, afficherDeclaration, afficherLettrage,
 Object.assign(window, __scope);
 
 // Functions that may not exist yet — safe optional exports
-const __optional = ['confirmWavePaymentManual','exportDeclFiscalePDF','openDeclTaxeModal',
+const __optional = ['confirmWavePaymentManual','confirmerDemandeReabonnement','openWhatsAppReabonnement','exportDeclFiscalePDF','openDeclTaxeModal',
   'openNouveau3DCall','exportHistoriqueAppels','terminerAppel','previewFacturePDF',
   'autoSaveAllFromNotif','hideSaisieNotif',
   'updateBudgetAccountSuggest','exportAuditPDF','exportBalanceAgeePDF',
