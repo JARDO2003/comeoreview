@@ -10939,13 +10939,20 @@ function ouvrirJoinCollabModal() {
   document.getElementById('joinCollabModal').style.display = 'flex';
 }
 
+let joinCollabEnCours = false; // ✅ anti double-clic
+
 async function rejoindreCollab() {
+  if (joinCollabEnCours) return; // ignore les clics répétés pendant une requête en cours
   const code = document.getElementById('joinCodeInput').value.trim().toUpperCase();
   const errEl = document.getElementById('joinCollabErr');
   errEl.textContent = '';
 
   if (!code || code.length < 8) { errEl.textContent = 'Code invalide.'; return; }
   if (!window._fbReady || !currentProfile?.id) { errEl.textContent = 'Non connecté.'; return; }
+
+  joinCollabEnCours = true;
+  const btn = document.querySelector('#joinCollabModal .btn-modal-ok');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Connexion...'; }
 
   try {
     // Chercher le code dans Firestore (collection collab_sessions)
@@ -11009,6 +11016,10 @@ async function rejoindreCollab() {
 
   } catch(e) {
     errEl.textContent = 'Erreur : ' + e.message;
+    toast('❌ Erreur lors de la connexion : ' + e.message, 'error');
+  } finally {
+    joinCollabEnCours = false;
+    if (btn) { btn.disabled = false; btn.textContent = '✓ Rejoindre'; }
   }
 }
 
