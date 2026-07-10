@@ -10779,6 +10779,7 @@ async function genererCodeCollab() {
     expiresAt,
     actif: true,
     collaborateurs: [],
+    collaborateurUids: [], // ✅ liste plate des UID — utilisée par les règles de sécurité Firestore
   };
   try {
     await window._fbSetDoc(window._fbDoc(window._db, 'collab_sessions', currentProfile.id), data);
@@ -10904,7 +10905,8 @@ async function revoquerCollaborateurV2(uid) {
     if (!snap.exists()) return;
     const d = snap.data();
     const updated = (d.collaborateurs || []).filter(c => c.uid !== uid);
-    await window._fbSetDoc(window._fbDoc(window._db, 'collab_sessions', currentProfile.id), { collaborateurs: updated }, { merge: true });
+    const updatedUids = (d.collaborateurUids || (d.collaborateurs || []).map(c => c.uid)).filter(u => u !== uid);
+    await window._fbSetDoc(window._fbDoc(window._db, 'collab_sessions', currentProfile.id), { collaborateurs: updated, collaborateurUids: updatedUids }, { merge: true });
     toast('✓ Accès révoqué', 'success');
     auditLog('REVOKE', 'collaboration', `Collaborateur ${uid} révoqué`);
   } catch(e) { toast('Erreur révocation', 'error'); }
@@ -10916,7 +10918,7 @@ async function revoquerTousCollab() {
   if (!window._fbReady || !currentProfile?.id) return;
   try {
     await window._fbSetDoc(window._fbDoc(window._db, 'collab_sessions', currentProfile.id), {
-      actif: false, collaborateurs: [], code: '——————'
+      actif: false, collaborateurs: [], collaborateurUids: [], code: '——————'
     }, { merge: true });
     document.getElementById('collabCodeText').textContent = '——————';
     document.getElementById('collabCodeExpiry').textContent = '';
@@ -10983,7 +10985,10 @@ async function rejoindreCollab() {
         role: 'comptable',
         joinedAt: new Date().toISOString(),
       }];
-      await window._fbSetDoc(window._fbDoc(window._db, 'collab_sessions', ownerUid), { collaborateurs: updatedCollabs }, { merge: true });
+      // ✅ liste plate des UID en parallèle (lue par les règles de sécurité Firestore)
+      const existingUids = sessionData.collaborateurUids || collabs.map(c => c.uid);
+      const updatedUids = existingUids.includes(currentProfile.id) ? existingUids : [...existingUids, currentProfile.id];
+      await window._fbSetDoc(window._fbDoc(window._db, 'collab_sessions', ownerUid), { collaborateurs: updatedCollabs, collaborateurUids: updatedUids }, { merge: true });
     }
 
   // Passer en mode collaborateur — charger les données du propriétaire
@@ -11367,8 +11372,11 @@ async function quitterModeCollab() {
     try {
       const snap = await window._fbGetDoc(window._fbDoc(window._db, 'collab_sessions', collabOwnerUid));
       if (snap.exists()) {
-        const updated = (snap.data().collaborateurs || []).filter(c => c.uid !== (currentProfile._realUid || currentProfile.id));
-        await window._fbSetDoc(window._fbDoc(window._db, 'collab_sessions', collabOwnerUid), { collaborateurs: updated }, { merge: true });
+        const d = snap.data();
+        const myUid = currentProfile._realUid || currentProfile.id;
+        const updated = (d.collaborateurs || []).filter(c => c.uid !== myUid);
+        const updatedUids = (d.collaborateurUids || (d.collaborateurs || []).map(c => c.uid)).filter(u => u !== myUid);
+        await window._fbSetDoc(window._fbDoc(window._db, 'collab_sessions', collabOwnerUid), { collaborateurs: updated, collaborateurUids: updatedUids }, { merge: true });
       }
     } catch(e) {}
   }
