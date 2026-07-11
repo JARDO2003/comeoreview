@@ -247,6 +247,7 @@
   <div class="nav-item" onclick="navigate('effets');closeMobileSidebar()"><span class="nav-icon">📄</span> Effets de commerce</div>
   <div class="nav-item" onclick="navigate('societes');closeMobileSidebar()"><span class="nav-icon">🏢</span> Multi-sociétés</div>
   <div class="nav-item" onclick="navigate('utilisateurs');closeMobileSidebar()"><span class="nav-icon">👥</span> Utilisateurs & Droits</div>
+  <div class="nav-item" onclick="navigate('modifications');closeMobileSidebar()"><span class="nav-icon">✎</span> Modifications <span class="nav-badge" id="modifPendingBadge">0</span></div>
 </div>
 <div class="sb-section">
   <div class="sb-title">RH & Paie</div>
@@ -533,6 +534,39 @@
   </div>
 </div>
 
+<!-- MODAL ÉDITION ÉCRITURE (Journal / Grand Livre) — avec circuit d'approbation collaborateur -->
+<div id="editEcritureModal" class="modal-overlay" style="display:none">
+  <div class="modal-box" style="width:760px;max-width:100%;max-height:92vh;overflow-y:auto">
+    <div class="modal-title">✎ Modifier l'écriture</div>
+    <div class="modal-sub" id="editEcrModalSub">Modification directe.</div>
+    <div class="fg c4">
+      <div class="field"><label>Date</label><input type="date" id="edit-ecr-date"></div>
+      <div class="field"><label>Journal</label>
+        <select id="edit-ecr-journal">
+          <option value="AC">AC — Achats</option><option value="VE">VE — Ventes</option>
+          <option value="BQ">BQ — Banque</option><option value="CA">CA — Caisse</option>
+          <option value="OD">OD — Opérations Diverses</option><option value="AN">AN — À Nouveau</option>
+          <option value="IN">IN — Inventaire</option>
+        </select>
+      </div>
+      <div class="field"><label>N° Pièce</label><input type="text" id="edit-ecr-piece"></div>
+      <div class="field"><label>Libellé général</label><input type="text" id="edit-ecr-libelle"></div>
+    </div>
+    <table class="jnl-lignes-table" style="margin-top:12px;width:100%">
+      <thead><tr>
+        <th style="min-width:120px">Compte</th><th>Libellé</th>
+        <th class="right" style="width:120px">Débit</th><th class="right" style="width:120px">Crédit</th><th style="width:30px"></th>
+      </tr></thead>
+      <tbody id="editEcrLignesBody"></tbody>
+    </table>
+    <button class="add-line-btn" onclick="addEditLigne()">＋ Ajouter une ligne</button>
+    <div class="modal-actions">
+      <button class="btn-modal-cancel" onclick="closeEditEcritureModal()">Annuler</button>
+      <button class="btn-modal-ok" id="editEcrSaveBtn" onclick="soumettreEditionEcriture()">✓ Enregistrer</button>
+    </div>
+  </div>
+</div>
+
 <!-- MODAL FOURNISSEUR -->
 <div id="fournisseurModal" class="modal-overlay" style="display:none">
   <div class="modal-box" style="width:520px">
@@ -704,6 +738,7 @@
       <div class="ph">
         <div><h1>Journal général</h1><p>Opérations regroupées — 3 écritures liées par opération</p></div>
         <div class="ph-actions">
+          <button class="btn btn-sm-wire" onclick="voirModificationsModule('journal')">✎ Modifications</button>
           <button class="btn btn-sm-wire" onclick="openExportModal()">⎙ Exporter</button>
           <button class="btn btn-ink" onclick="navigate('saisie')">+ Nouvelle</button>
         </div>
@@ -742,7 +777,10 @@
     <div class="view" id="view-grandlivre">
       <div class="ph">
         <div><h1>Grand Livre</h1><p>Mouvements détaillés par compte</p></div>
-        <div class="ph-actions"><button class="btn btn-sm-wire" onclick="openExportModal()">⎙ Exporter</button></div>
+        <div class="ph-actions">
+          <button class="btn btn-sm-wire" onclick="voirModificationsModule('grandlivre')">✎ Modifications</button>
+          <button class="btn btn-sm-wire" onclick="openExportModal()">⎙ Exporter</button>
+        </div>
       </div>
       <div class="filtre-periode-bar">
         <label>Du</label><input type="date" id="gl-date-debut" onchange="renderGrandLivre()">
@@ -757,7 +795,10 @@
     <div class="view" id="view-balance">
       <div class="ph">
         <div><h1>Balance générale</h1><p>Synthèse des mouvements et soldes par compte</p></div>
-        <div class="ph-actions"><button class="btn btn-sm-wire" onclick="openExportModal()">⎙ Exporter</button></div>
+        <div class="ph-actions">
+          <button class="btn btn-sm-wire" onclick="voirModificationsModule('journal')">✎ Modifications</button>
+          <button class="btn btn-sm-wire" onclick="openExportModal()">⎙ Exporter</button>
+        </div>
       </div>
       <div class="filtre-periode-bar">
         <label>Du</label><input type="date" id="bal-date-debut" onchange="renderBalance()">
@@ -792,7 +833,10 @@
     <div class="view" id="view-bilan">
       <div class="ph">
         <div><h1>Bilan</h1><p>Situation au <span id="bilanDate">31/12/2024</span></p></div>
-        <div class="ph-actions"><button class="btn btn-sm-wire" onclick="openExportModal()">⎙ Exporter</button></div>
+        <div class="ph-actions">
+          <button class="btn btn-sm-wire" onclick="voirModificationsModule('bilan')">✎ Modifications</button>
+          <button class="btn btn-sm-wire" onclick="openExportModal()">⎙ Exporter</button>
+        </div>
       </div>
       <div class="filtre-periode-bar">
         <label>Arrêté au</label>
@@ -808,7 +852,10 @@
     <div class="view" id="view-resultat">
       <div class="ph">
         <div><h1>Compte de résultat</h1><p>Exercice <span id="resultatYear">2024</span></p></div>
-        <div class="ph-actions"><button class="btn btn-sm-wire" onclick="openExportModal()">⎙ Exporter</button></div>
+        <div class="ph-actions">
+          <button class="btn btn-sm-wire" onclick="voirModificationsModule('resultat')">✎ Modifications</button>
+          <button class="btn btn-sm-wire" onclick="openExportModal()">⎙ Exporter</button>
+        </div>
       </div>
       <div class="card" id="resultatContent"><div class="empty-state"><div class="icon">↗</div><p>Aucune donnée</p></div></div>
     </div>
@@ -1102,6 +1149,31 @@
       </div>
       <div id="utilisateursContent">
         <div class="empty-state"><div class="icon">👥</div><p>Chargement de l'équipe…</p></div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════ MODIFICATIONS — DEMANDES DES COLLABORATEURS ═══════════════════ -->
+    <div class="view" id="view-modifications">
+      <div class="ph">
+        <div><h1>Modifications</h1><p>Journal, Grand Livre, Bilan · Demandes de modification des collaborateurs — approbation du propriétaire</p></div>
+        <div class="ph-actions">
+          <select id="modifModuleFilter" onchange="renderModifications()" style="background:var(--surface2);border:1.5px solid var(--line);border-radius:var(--rs);color:var(--ink);padding:8px 12px;font-size:13px;font-family:var(--font-body);outline:none">
+            <option value="">Tous les modules</option>
+            <option value="journal">Journal</option>
+            <option value="grandlivre">Grand Livre</option>
+            <option value="bilan">Bilan</option>
+            <option value="resultat">Compte de résultat</option>
+          </select>
+        </div>
+      </div>
+      <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
+        <div class="kpi"><div class="kpi-label">En attente</div><div class="kpi-value" id="modif-kpi-pending" style="color:var(--warm)">0</div><div class="kpi-sub">à approuver</div></div>
+        <div class="kpi"><div class="kpi-label">Approuvées</div><div class="kpi-value" id="modif-kpi-approuvees" style="color:var(--green)">0</div><div class="kpi-sub">appliquées</div></div>
+        <div class="kpi"><div class="kpi-label">Rejetées</div><div class="kpi-value" id="modif-kpi-rejetees" style="color:var(--rust)">0</div><div class="kpi-sub">refusées</div></div>
+        <div class="kpi"><div class="kpi-label">Total</div><div class="kpi-value" id="modif-kpi-total" style="color:var(--blue)">0</div><div class="kpi-sub">demandes</div></div>
+      </div>
+      <div id="modificationsContent">
+        <div class="empty-state"><div class="icon">✎</div><p>Aucune demande de modification pour l'instant.</p></div>
       </div>
     </div>
 
