@@ -2817,10 +2817,12 @@ async function loadApp() {
     loadDeclFiscales(),  // ✅ NOUVEAU
     loadAppelsVideo(),   // ✅ NOUVEAU
     loadLockedPeriods(), // 🔒 Périodes verrouillées
+    loadModifications(), // ✎ Demandes de modification (collaborateurs)
   ]);
   updateStats();
   renderPlanComptable();
   initSaisie();
+  ecouterModificationsTempsReel(); // 🔔 Notifie le propriétaire en temps réel des nouvelles demandes
 }
 
 // ══════════════════════════════════════════
@@ -2920,6 +2922,7 @@ const VIEW_KEYS = {
   societes: 'société',
   utilisateurs: 'utilisat',
   effets: 'effets',
+  modifications: 'modificat',
 };
 const RENDERERS = {
   journal: renderJournal,
@@ -2948,6 +2951,7 @@ const RENDERERS = {
   societes: renderSocietes,
   utilisateurs: renderUtilisateurs,
   effets: renderEffets,
+  modifications: renderModifications,
 };
 
 function navigate(view) {
@@ -3960,6 +3964,7 @@ function renderJournal() {
               </div>
             </div>
             <span class="jnl-step-equil ${equil ? 'ok' : 'nok'}">${equil ? '✓ EQ' : '✗ NEQ'}</span>
+            <button class="jnl-groupe-edit" onclick="ouvrirEditionEcriture('${e._docId}',${e.id},'journal')" title="Modifier">✎ Modifier</button>
             <button class="jnl-groupe-del" onclick="deleteEcriture('${e._docId}',${e.id})" title="Supprimer">✕</button>
           </div>
           <div class="jnl-groupe-body">${renderEcritureInGroupe(e, 0, 1)}</div>
@@ -4006,6 +4011,7 @@ function renderEcritureInGroupe(e, eIdx, totalInGroupe) {
         <span style="color:#60a5fa">${fn(eD)}</span> / <span style="color:#4ade80">${fn(eC)}</span>
       </span>
       <span class="jnl-step-equil ${equil ? 'ok' : 'nok'}">${equil ? '✓' : '✗'}</span>
+      <button class="jnl-step-edit" onclick="ouvrirEditionEcriture('${e._docId}',${e.id},'journal')" title="Modifier cette écriture">✎</button>
       <button class="jnl-step-del" onclick="deleteEcriture('${e._docId}',${e.id})" title="Supprimer cette écriture">✕</button>
     </div>
     <div class="jnl-ecriture-body">
@@ -4089,6 +4095,8 @@ function getMap(opts = {}) {
         libelle: l.libelle || e.libelle || '',
         debit: l.debit || 0,
         credit: l.credit || 0,
+        ecrId: e.id,
+        ecrDocId: e._docId,
       });
     }),
   );
@@ -4134,7 +4142,7 @@ function renderGrandLivre() {
         <table class="dt">
           <thead><tr><th>Date</th><th>Jnl</th><th>Pièce</th><th>Libellé</th>
             <th style="text-align:right">Débit</th><th style="text-align:right">Crédit</th>
-            <th style="text-align:right">Solde progressif</th></tr></thead>
+            <th style="text-align:right">Solde progressif</th><th></th></tr></thead>
           <tbody>${acc.mvts
             .map((m, i) => {
               const rD = acc.mvts.slice(0, i + 1).reduce((s, x) => s + x.debit, 0);
@@ -4149,6 +4157,7 @@ function renderGrandLivre() {
               <td class="credit">${m.credit ? fn(m.credit) : ''}</td>
               <td style="text-align:right;font-family:var(--font-mono);font-size:11px;color:${rs >= 0 ? '#60a5fa' : '#4ade80'}">
                 ${rs >= 0 ? 'Sd ' : 'Sc '}${fn(Math.abs(rs))}</td>
+              <td><button class="jnl-step-edit" onclick="ouvrirEditionEcriture('${m.ecrDocId}',${m.ecrId},'grandlivre')" title="Modifier cette écriture">✎</button></td>
             </tr>`;
             })
             .join('')}
@@ -4158,6 +4167,7 @@ function renderGrandLivre() {
             <td class="credit">${fn(acc.credit)}</td>
             <td style="text-align:right;font-family:var(--font-mono);color:${isD ? '#60a5fa' : '#4ade80'}">
               ${isD ? 'Sd ' : 'Sc '}${fn(Math.abs(s))}</td>
+            <td></td>
           </tr></tbody>
         </table></div>
       </div>
@@ -10729,6 +10739,22 @@ let collabUnsubscribe = null;   // listener Firestore temps réel
 let isCollabMode = false;       // true si connecté en tant que collaborateur
 let collabOwnerUid = null;      // uid du propriétaire (mode collab)
 
+// ══════════════════════════════════════════════════════════════════
+// ██  MODULE MODIFICATIONS — Édition Journal/Grand Livre/Bilan avec
+// ██  circuit d'approbation propriétaire pour les collaborateurs
+// ══════════════════════════════════════════════════════════════════
+let modifications = [];        // toutes les demandes de modification (pending/approuvee/rejetee/annulee)
+let modifUnsubscribe = null;   // listener Firestore temps réel (côté propriétaire)
+let editEcrContext = null;     // { ecrDocId, ecrId, module } de l'écriture en cours d'édition
+let editEcrLignes = [];        // lignes éditées dans le modal
+const MODULE_LABELS = { journal: 'Journal', grandlivre: 'Grand Livre', bilan: 'Bilan', resultat: 'Compte de résultat' };
+const MODIF_STATUS_LABELS = {
+  pending:   { label: '⏳ En attente',  cls: 'warn' },
+  approuvee: { label: '✓ Approuvée',   cls: 'ok' },
+  rejetee:   { label: '✗ Rejetée',     cls: 'nok' },
+  annulee:   { label: '↩ Annulée',     cls: 'muted' },
+};
+
 // WebRTC
 let localStream = null;
 let peerConnection = null;
@@ -10757,6 +10783,337 @@ function auditLog(action, module, detail) {
     window._fbAddDoc(window._fbCollection(window._db, 'profiles', currentProfile.id, 'audit_logs'), log).catch(() => {});
   }
 }
+
+// ══════════════════════════════════════════════════════════════════
+// MODIFICATIONS — Chargement / Sauvegarde Firestore
+// ══════════════════════════════════════════════════════════════════
+async function loadModifications() {
+  try {
+    const ownerID = getOwnerProfileId();
+    const col = window._fbCollection(window._db, 'profiles', ownerID, 'modifications');
+    const snap = await window._fbGetDocs(col);
+    modifications = [];
+    snap.forEach((d) => modifications.push({ ...d.data(), _docId: d.id }));
+    modifications.sort((a, b) => (b.ts || '').localeCompare(a.ts || ''));
+  } catch (e) {
+    console.error('Erreur chargement modifications:', e);
+  }
+  updateModifPendingBadge();
+}
+
+async function saveModificationToFirestore(mod) {
+  try {
+    const ownerID = getOwnerProfileId();
+    const col = window._fbCollection(window._db, 'profiles', ownerID, 'modifications');
+    const docRef = await window._fbAddDoc(col, mod);
+    mod._docId = docRef.id;
+    return docRef.id;
+  } catch (e) {
+    toast('Erreur envoi de la modification : ' + e.message, 'error');
+    return null;
+  }
+}
+
+async function updateModificationInFirestore(docId, patch) {
+  try {
+    const ownerID = getOwnerProfileId();
+    await window._fbSetDoc(window._fbDoc(window._db, 'profiles', ownerID, 'modifications', docId), patch, { merge: true });
+  } catch (e) {
+    toast('Erreur mise à jour de la modification : ' + e.message, 'error');
+  }
+}
+
+async function updateEcritureInFirestore(docId, patch) {
+  try {
+    const ownerID = getOwnerProfileId();
+    await window._fbSetDoc(window._fbDoc(window._db, 'profiles', ownerID, 'ecritures', docId), patch, { merge: true });
+    await logAudit('MODIFIER', 'COMPTABILITE', `Écriture modifiée`, currentProfile.email);
+  } catch (e) {
+    toast('Erreur mise à jour de l\'écriture : ' + e.message, 'error');
+  }
+}
+
+// ── Écoute temps réel des demandes de modification (côté propriétaire) ──
+function ecouterModificationsTempsReel() {
+  if (!window._fbReady || !currentProfile?.id || isCollabMode) return;
+  if (modifUnsubscribe) modifUnsubscribe();
+  const { onSnapshot, collection } = window._firebaseFirestore || {};
+  if (!onSnapshot || !collection) return;
+  let firstLoad = true;
+  modifUnsubscribe = onSnapshot(collection(window._db, 'profiles', currentProfile.id, 'modifications'), (snap) => {
+    const prevPendingIds = new Set(modifications.filter((m) => m.status === 'pending').map((m) => m._docId));
+    modifications = [];
+    snap.forEach((d) => modifications.push({ ...d.data(), _docId: d.id }));
+    modifications.sort((a, b) => (b.ts || '').localeCompare(a.ts || ''));
+    updateModifPendingBadge();
+    if (!firstLoad) {
+      const nouvelles = modifications.filter((m) => m.status === 'pending' && !prevPendingIds.has(m._docId));
+      nouvelles.forEach((m) => {
+        toast(`🔔 ${m.requestedBy} propose une modification sur une écriture (${MODULE_LABELS[m.module] || m.module}) — approbation requise`, 'info');
+      });
+    }
+    firstLoad = false;
+    if (document.getElementById('view-modifications')?.classList.contains('active')) renderModifications();
+  });
+}
+
+function updateModifPendingBadge() {
+  const count = modifications.filter((m) => m.status === 'pending').length;
+  const badge = document.getElementById('modifPendingBadge');
+  if (!badge) return;
+  badge.textContent = count;
+  badge.style.display = count > 0 ? 'inline-flex' : 'none';
+}
+
+// ══════════════════════════════════════════════════════════════════
+// MODAL D'ÉDITION D'ÉCRITURE — utilisé depuis le Journal et le Grand Livre
+// ══════════════════════════════════════════════════════════════════
+function ouvrirEditionEcriture(docId, id, module) {
+  module = module || 'journal';
+  const ecr = ecritures.find((e) => e.id === id || e._docId === docId);
+  if (!ecr) { toast('Écriture introuvable', 'error'); return; }
+  if (isPeriodeLocked(ecr.date)) {
+    toast(`🔒 Période ${String(ecr.date).substring(0, 4)} verrouillée — modification impossible. Exercice clôturé.`, 'error');
+    return;
+  }
+  editEcrContext = { ecrDocId: ecr._docId, ecrId: ecr.id, module };
+  document.getElementById('edit-ecr-date').value = ecr.date || '';
+  document.getElementById('edit-ecr-journal').value = ecr.journal || 'OD';
+  document.getElementById('edit-ecr-piece').value = ecr.piece || '';
+  document.getElementById('edit-ecr-libelle').value = ecr.libelle || '';
+  editEcrLignes = (ecr.lignes || []).map((l) => ({ ...l }));
+  renderEditEcrLignes();
+
+  const sub = document.getElementById('editEcrModalSub');
+  const btn = document.getElementById('editEcrSaveBtn');
+  if (isCollabMode) {
+    sub.textContent = '⏳ Vous êtes collaborateur : cette modification sera envoyée au propriétaire pour approbation avant d\'être appliquée.';
+    btn.textContent = '📤 Envoyer pour approbation';
+  } else {
+    sub.textContent = 'Vous êtes propriétaire du dossier : la modification sera appliquée immédiatement.';
+    btn.textContent = '✓ Enregistrer';
+  }
+  document.getElementById('editEcritureModal').style.display = 'flex';
+}
+
+function closeEditEcritureModal() {
+  document.getElementById('editEcritureModal').style.display = 'none';
+  editEcrContext = null;
+  editEcrLignes = [];
+}
+
+function renderEditEcrLignes() {
+  const body = document.getElementById('editEcrLignesBody');
+  if (!body) return;
+  body.innerHTML = editEcrLignes.map((l, i) => `
+    <tr>
+      <td><input type="text" value="${(l.compte || '').replace(/"/g, '&quot;')}" style="width:100%" onchange="editEcrLignes[${i}].compte=this.value"></td>
+      <td><input type="text" value="${(l.libelle || '').replace(/"/g, '&quot;')}" style="width:100%" onchange="editEcrLignes[${i}].libelle=this.value"></td>
+      <td class="right"><input type="number" value="${l.debit || 0}" style="width:100%;text-align:right" onchange="editEcrLignes[${i}].debit=Number(this.value)||0"></td>
+      <td class="right"><input type="number" value="${l.credit || 0}" style="width:100%;text-align:right" onchange="editEcrLignes[${i}].credit=Number(this.value)||0"></td>
+      <td><button class="jnl-step-del" onclick="editEcrLignes.splice(${i},1);renderEditEcrLignes()" title="Supprimer la ligne">✕</button></td>
+    </tr>`).join('');
+}
+
+function addEditLigne() {
+  editEcrLignes.push({ compte: '', libelle: '', debit: 0, credit: 0 });
+  renderEditEcrLignes();
+}
+window.addEditLigne = addEditLigne;
+
+async function soumettreEditionEcriture() {
+  if (!editEcrContext) return;
+  const ecr = ecritures.find((e) => e.id === editEcrContext.ecrId || e._docId === editEcrContext.ecrDocId);
+  if (!ecr) { toast('Écriture introuvable', 'error'); return; }
+
+  const lignesValides = editEcrLignes.filter((l) => (l.compte || '').trim());
+  const after = {
+    date: document.getElementById('edit-ecr-date').value,
+    journal: document.getElementById('edit-ecr-journal').value,
+    piece: document.getElementById('edit-ecr-piece').value,
+    libelle: document.getElementById('edit-ecr-libelle').value,
+    lignes: lignesValides,
+  };
+  if (!lignesValides.length) { toast('✗ Ajoutez au moins une ligne avec un compte', 'error'); return; }
+  const totalD = lignesValides.reduce((s, l) => s + (Number(l.debit) || 0), 0);
+  const totalC = lignesValides.reduce((s, l) => s + (Number(l.credit) || 0), 0);
+  if (Math.abs(totalD - totalC) > 1) { toast('✗ L\'écriture doit être équilibrée (Débit = Crédit)', 'error'); return; }
+
+  const before = {
+    date: ecr.date, journal: ecr.journal, piece: ecr.piece, libelle: ecr.libelle,
+    lignes: (ecr.lignes || []).map((l) => ({ ...l })),
+  };
+
+  if (isCollabMode) {
+    const mod = {
+      id: Date.now(), ecrId: ecr.id, ecrDocId: ecr._docId, module: editEcrContext.module,
+      before, after,
+      requestedBy: currentProfile?.email || currentProfile?.company || 'Collaborateur',
+      requestedByUid: currentProfile?.id || null,
+      status: 'pending', ts: new Date().toISOString(), decidedBy: null, decidedTs: null,
+    };
+    const docId = await saveModificationToFirestore(mod);
+    if (docId) {
+      modifications.unshift(mod);
+      updateModifPendingBadge();
+      auditLog('DEMANDE_MODIF', 'MODIFICATION', `Modification proposée sur l'écriture ${ecr.piece || ecr.id} (${MODULE_LABELS[editEcrContext.module] || editEcrContext.module})`);
+      toast('📤 Modification envoyée au propriétaire pour approbation', 'success');
+      closeEditEcritureModal();
+    }
+  } else {
+    Object.assign(ecr, after);
+    await updateEcritureInFirestore(ecr._docId, after);
+    auditLog('MODIFIER', 'MODIFICATION', `Écriture ${ecr.piece || ecr.id} modifiée directement (${MODULE_LABELS[editEcrContext.module] || editEcrContext.module})`);
+    updateStats();
+    renderJournal();
+    if (typeof renderGrandLivre === 'function') renderGrandLivre();
+    if (typeof renderBalance === 'function') renderBalance();
+    toast('✓ Écriture modifiée', 'success');
+    closeEditEcritureModal();
+  }
+}
+window.soumettreEditionEcriture = soumettreEditionEcriture;
+window.ouvrirEditionEcriture = ouvrirEditionEcriture;
+window.closeEditEcritureModal = closeEditEcritureModal;
+
+// ══════════════════════════════════════════════════════════════════
+// APPROBATION — le propriétaire approuve, rejette ou annule
+// ══════════════════════════════════════════════════════════════════
+async function approuverModification(docId) {
+  if (isCollabMode) { toast('Seul le propriétaire peut approuver une modification.', 'error'); return; }
+  const mod = modifications.find((m) => m._docId === docId);
+  if (!mod) return;
+  if (!confirm(`Approuver la modification proposée par ${mod.requestedBy} et l'appliquer à l'écriture ?`)) return;
+  const ecr = ecritures.find((e) => e.id === mod.ecrId || e._docId === mod.ecrDocId);
+  if (ecr) {
+    Object.assign(ecr, mod.after);
+    await updateEcritureInFirestore(ecr._docId, mod.after);
+  }
+  mod.status = 'approuvee';
+  mod.decidedBy = currentProfile?.email || currentProfile?.company || 'Propriétaire';
+  mod.decidedTs = new Date().toISOString();
+  await updateModificationInFirestore(docId, { status: mod.status, decidedBy: mod.decidedBy, decidedTs: mod.decidedTs });
+  auditLog('APPROUVER_MODIF', 'MODIFICATION', `Modification de ${mod.requestedBy} approuvée sur l'écriture ${mod.ecrId}`);
+  updateModifPendingBadge();
+  renderModifications();
+  renderJournal();
+  updateStats();
+  toast('✓ Modification approuvée et appliquée', 'success');
+}
+
+async function rejeterModification(docId) {
+  if (isCollabMode) { toast('Seul le propriétaire peut rejeter une modification.', 'error'); return; }
+  const mod = modifications.find((m) => m._docId === docId);
+  if (!mod) return;
+  if (!confirm('Rejeter cette modification ? Elle ne sera pas appliquée à l\'écriture.')) return;
+  mod.status = 'rejetee';
+  mod.decidedBy = currentProfile?.email || currentProfile?.company || 'Propriétaire';
+  mod.decidedTs = new Date().toISOString();
+  await updateModificationInFirestore(docId, { status: mod.status, decidedBy: mod.decidedBy, decidedTs: mod.decidedTs });
+  auditLog('REJETER_MODIF', 'MODIFICATION', `Modification de ${mod.requestedBy} rejetée sur l'écriture ${mod.ecrId}`);
+  updateModifPendingBadge();
+  renderModifications();
+  toast('✗ Modification rejetée', 'info');
+}
+
+async function annulerModificationApprouvee(docId) {
+  if (isCollabMode) { toast('Seul le propriétaire peut annuler une modification.', 'error'); return; }
+  const mod = modifications.find((m) => m._docId === docId);
+  if (!mod) return;
+  if (!confirm('Annuler cette modification déjà approuvée ? L\'écriture reviendra à son état précédent.')) return;
+  const ecr = ecritures.find((e) => e.id === mod.ecrId || e._docId === mod.ecrDocId);
+  if (ecr) {
+    Object.assign(ecr, mod.before);
+    await updateEcritureInFirestore(ecr._docId, mod.before);
+  }
+  mod.status = 'annulee';
+  mod.decidedBy = currentProfile?.email || currentProfile?.company || 'Propriétaire';
+  mod.decidedTs = new Date().toISOString();
+  await updateModificationInFirestore(docId, { status: mod.status, decidedBy: mod.decidedBy, decidedTs: mod.decidedTs });
+  auditLog('ANNULER_MODIF', 'MODIFICATION', `Modification approuvée annulée — écriture ${mod.ecrId} restaurée à son état antérieur`);
+  renderModifications();
+  renderJournal();
+  updateStats();
+  toast('↩ Modification annulée — écriture restaurée', 'info');
+}
+window.approuverModification = approuverModification;
+window.rejeterModification = rejeterModification;
+window.annulerModificationApprouvee = annulerModificationApprouvee;
+
+// ══════════════════════════════════════════════════════════════════
+// TAB "MODIFICATIONS" — historique des demandes des collaborateurs
+// ══════════════════════════════════════════════════════════════════
+function diffEcritureHtml(before, after) {
+  const rows = [];
+  const champs = [['date', 'Date'], ['journal', 'Journal'], ['piece', 'N° Pièce'], ['libelle', 'Libellé']];
+  champs.forEach(([k, label]) => {
+    if ((before[k] || '') !== (after[k] || '')) {
+      rows.push(`<div class="modif-diff-line"><strong>${label} :</strong> <span class="modif-diff-old">${before[k] || '—'}</span> → <span class="modif-diff-new">${after[k] || '—'}</span></div>`);
+    }
+  });
+  if (JSON.stringify(before.lignes || []) !== JSON.stringify(after.lignes || [])) {
+    const fmtLignes = (lignes) => (lignes || []).map((l) => `${l.compte || '—'} (D:${fn(l.debit || 0)} / C:${fn(l.credit || 0)})`).join(', ');
+    rows.push(`<div class="modif-diff-line"><strong>Lignes avant :</strong> <span class="modif-diff-old">${fmtLignes(before.lignes) || '—'}</span></div>`);
+    rows.push(`<div class="modif-diff-line"><strong>Lignes après :</strong> <span class="modif-diff-new">${fmtLignes(after.lignes) || '—'}</span></div>`);
+  }
+  return rows.join('') || '<div class="modif-diff-line" style="color:var(--muted)">Aucune différence détectée</div>';
+}
+
+function renderModifications() {
+  const content = document.getElementById('modificationsContent');
+  if (!content) return;
+  const filter = document.getElementById('modifModuleFilter')?.value || '';
+  let list = modifications.slice();
+  if (filter) list = list.filter((m) => m.module === filter);
+  if (isCollabMode) list = list.filter((m) => m.requestedByUid === currentProfile?.id);
+  list.sort((a, b) => (b.ts || '').localeCompare(a.ts || ''));
+
+  const pendingEl = document.getElementById('modif-kpi-pending');
+  if (pendingEl) {
+    document.getElementById('modif-kpi-pending').textContent = modifications.filter((m) => m.status === 'pending').length;
+    document.getElementById('modif-kpi-approuvees').textContent = modifications.filter((m) => m.status === 'approuvee').length;
+    document.getElementById('modif-kpi-rejetees').textContent = modifications.filter((m) => m.status === 'rejetee').length;
+    document.getElementById('modif-kpi-total').textContent = modifications.length;
+  }
+
+  if (!list.length) {
+    content.innerHTML = `<div class="empty-state"><div class="icon">✎</div><p>Aucune demande de modification${filter ? ' pour ce module' : ''}.</p></div>`;
+    return;
+  }
+
+  content.innerHTML = list.map((m) => {
+    const st = MODIF_STATUS_LABELS[m.status] || MODIF_STATUS_LABELS.pending;
+    return `<div class="card" style="margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <div>
+          <div style="font-weight:700">${MODULE_LABELS[m.module] || m.module} · Écriture ${(m.after && m.after.piece) || m.ecrId}</div>
+          <div style="font-size:11px;color:var(--muted)">Proposée par ${m.requestedBy} · ${m.ts ? new Date(m.ts).toLocaleString('fr-FR') : '—'}</div>
+        </div>
+        <span class="badge-status ${st.cls}">${st.label}</span>
+      </div>
+      <div style="margin-top:10px">${diffEcritureHtml(m.before || {}, m.after || {})}</div>
+      ${m.status === 'pending' && !isCollabMode ? `
+        <div class="modal-actions" style="margin-top:10px;justify-content:flex-start">
+          <button class="btn btn-ink" onclick="approuverModification('${m._docId}')">✓ Approuver</button>
+          <button class="btn btn-danger-outline" onclick="rejeterModification('${m._docId}')">✗ Rejeter</button>
+        </div>` : ''}
+      ${m.status === 'approuvee' && !isCollabMode ? `
+        <div class="modal-actions" style="margin-top:10px;justify-content:flex-start">
+          <button class="btn btn-danger-outline" onclick="annulerModificationApprouvee('${m._docId}')">↩ Annuler cette modification</button>
+        </div>` : ''}
+      ${m.decidedBy ? `<div style="font-size:11px;color:var(--muted);margin-top:6px">Décidé par ${m.decidedBy}${m.decidedTs ? ' le ' + new Date(m.decidedTs).toLocaleString('fr-FR') : ''}</div>` : ''}
+    </div>`;
+  }).join('');
+}
+window.renderModifications = renderModifications;
+
+function voirModificationsModule(module) {
+  navigate('modifications');
+  const sel = document.getElementById('modifModuleFilter');
+  if (sel) sel.value = module || '';
+  renderModifications();
+}
+window.voirModificationsModule = voirModificationsModule;
 
 // ── Génération du code unique ──────────────────────────────────
 function genererCodeString() {
