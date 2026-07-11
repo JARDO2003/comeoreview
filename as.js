@@ -10936,6 +10936,9 @@ async function revoquerTousCollab() {
 function ouvrirJoinCollabModal() {
   document.getElementById('joinCodeInput').value = '';
   document.getElementById('joinCollabErr').textContent = '';
+  const btn = document.getElementById('btnRejoindreCollab');
+  if (btn) { btn.disabled = false; btn.innerHTML = '✓ Rejoindre'; }
+  joinCollabEnCours = false;
   document.getElementById('joinCollabModal').style.display = 'flex';
 }
 
@@ -10950,9 +10953,10 @@ async function rejoindreCollab() {
   if (!code || code.length < 8) { errEl.textContent = 'Code invalide.'; return; }
   if (!window._fbReady || !currentProfile?.id) { errEl.textContent = 'Non connecté.'; return; }
 
+  // ✅ Retour visuel IMMÉDIAT dès le clic (avant tout appel réseau)
   joinCollabEnCours = true;
-  const btn = document.querySelector('#joinCollabModal .btn-modal-ok');
-  if (btn) { btn.disabled = true; btn.textContent = '⏳ Connexion...'; }
+  const btn = document.getElementById('btnRejoindreCollab');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="btn-spinner"></span>Connexion...'; }
 
   try {
     // Chercher le code dans Firestore (collection collab_sessions)
@@ -11002,11 +11006,13 @@ async function rejoindreCollab() {
     document.getElementById('joinCollabModal').style.display = 'none';
     isCollabMode = true;
     collabOwnerUid = ownerUid;
-    toast(`✓ Connecté à l'espace de ${sessionData.ownerCompany || sessionData.ownerEmail}`, 'success');
+    const nomEspace = sessionData.ownerCompany || sessionData.ownerEmail || 'cet espace';
+    toast(`🎉 Merci d'avoir rejoint l'espace de ${nomEspace} !`, 'success');
     auditLog('JOIN', 'collaboration', `Rejoint l'espace de ${sessionData.ownerCompany}`);
 
     // Charger données du propriétaire
     await chargerDonneesProprietaire(ownerUid);
+    toast('✓ Données chargées, vous pouvez commencer l\'audit.', 'success');
 
     // Écoute révocation temps réel
     ecouterRevocationCollab(ownerUid);
@@ -11019,7 +11025,7 @@ async function rejoindreCollab() {
     toast('❌ Erreur lors de la connexion : ' + e.message, 'error');
   } finally {
     joinCollabEnCours = false;
-    if (btn) { btn.disabled = false; btn.textContent = '✓ Rejoindre'; }
+    if (btn) { btn.disabled = false; btn.innerHTML = '✓ Rejoindre'; }
   }
 }
 
