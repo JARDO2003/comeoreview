@@ -2803,8 +2803,11 @@ async function loadApp() {
     loadClientsFromFirestore(),
     loadFournisseursFromFirestore(),
     loadFacturesFromFirestore(),
+    loadCommandesFournisseurs(),
+    loadBonsLivraison(),
     loadSalaries(),
     loadImmobilisations(),
+    loadEmprunts(),
     loadStocks(),
     loadBudgets(),
     loadAnalytique(),
@@ -2916,10 +2919,14 @@ const VIEW_KEYS = {
   plancomptable: 'plan',
   factures: 'factur',
   devis: 'devis',
+  relances: 'relance',
+  commandes: 'commande',
+  livraisons: 'livraison',
   clients: 'client',
   fournisseurs: 'fourniss',
   analytique: 'analyt',
   societes: 'société',
+  consolidation: 'consolidation',
   utilisateurs: 'utilisat',
   effets: 'effets',
   modifications: 'modificat',
@@ -2935,12 +2942,17 @@ const RENDERERS = {
   saisie: initSaisie,
   factures: renderFactures,
   devis: renderDevis,
+  relances: renderRelances,
+  commandes: renderCommandes,
+  livraisons: renderBonsLivraison,
   clients: renderClients,
   fournisseurs: renderFournisseurs,
   tafire: renderTAFIRE,
   // ── NOUVEAUX MODULES ──
   paie: renderPaie,
   immobilisations: renderImmobilisations,
+  emprunts: renderEmprunts,
+  declsociales: renderDeclarationsSociales,
   stocks: renderStocks,
   rapprochement: renderRapprochement,
   budgets: renderBudgets,
@@ -2949,6 +2961,7 @@ const RENDERERS = {
   exercices: () => {},
   analytique: renderAnalytique,
   societes: renderSocietes,
+  consolidation: renderConsolidation,
   utilisateurs: renderUtilisateurs,
   effets: renderEffets,
   modifications: renderModifications,
@@ -3110,6 +3123,7 @@ async function autoSaveAllEcritures() {
       journal: journalCode,
       piece,
       libelle: ecr.libelle || 'Écriture IA',
+      societeId: currentSociete?.id || 'principale',
       groupId,
       groupLibelle: groupLib,
       groupSize: total,
@@ -3796,6 +3810,7 @@ async function saveEcriture() {
     journal,
     piece,
     libelle,
+    societeId: currentSociete?.id || 'principale',
     ...groupInfo,
     createdAt: new Date().toISOString(),
     lignes: lignesSorted.map((l) => ({
@@ -7257,7 +7272,8 @@ ANALYSE AUTOMATIQUE :
   factures: 'factures', clients: 'clients', fournisseurs: 'fournisseurs',
   journal: 'journal', balance: 'balance', bilan: 'bilan', resultat: 'resultat',
   tresorerie: 'tresorerie', dashboard: 'dashboard', saisie: 'saisie', grandlivre: 'grandlivre',
-  paie: 'paie', immobilisations: 'immobilisations', stocks: 'stocks',
+  paie: 'paie', immobilisations: 'immobilisations', emprunts: 'emprunts', stocks: 'stocks',
+  declsociales: 'sociales',
   rapprochement: 'rapprochement', budgets: 'budgets', lettrage: 'lettrage',
   declarations: 'declarations', tafire: 'tafire', exercices: 'exercices', devis: 'devis',
 };
@@ -7717,6 +7733,8 @@ function openFactureModal(id = null) {
     document.getElementById('fac-mode-reglement').value = fac.modeReglement || 'virement';
     document.getElementById('fac-conditions').value = fac.conditions || '30j';
     document.getElementById('fac-monnaie').value = fac.monnaie || 'FCFA';
+    document.getElementById('fac-taux-change').value = fac.tauxChange || '';
+    toggleTauxChangeField();
     document.getElementById('fac-remise-globale').value = fac.remiseGlobale || 0;
     (fac.lignes || []).forEach((l) => facLignes.push(l));
   } else {
@@ -7732,6 +7750,9 @@ function openFactureModal(id = null) {
     document.getElementById('fac-client-tel').value = '';
     document.getElementById('fac-notes').value = '';
     document.getElementById('fac-remise-globale').value = 0;
+    document.getElementById('fac-monnaie').value = 'FCFA';
+    document.getElementById('fac-taux-change').value = '';
+    toggleTauxChangeField();
   }
   renderFacLignes();
   modal.style.display = 'flex';
@@ -7799,6 +7820,13 @@ function selectClientForFac(id) {
 // ══════════════════════════════════════════
 // FACTURES — SAUVEGARDE
 // ══════════════════════════════════════════
+function toggleTauxChangeField() {
+  const devise = document.getElementById('fac-monnaie').value;
+  const field = document.getElementById('fac-taux-change-field');
+  if (field) field.style.display = devise === 'FCFA' ? 'none' : 'block';
+}
+window.toggleTauxChangeField = toggleTauxChangeField;
+
 async function saveFacture(statut = 'brouillon') {
   const clientNom = document.getElementById('fac-client-search').value.trim();
   if (!clientNom) {
@@ -7822,6 +7850,13 @@ async function saveFacture(statut = 'brouillon') {
   const tvaNet = Math.round(tvaTotal * (1 - remiseG / 100));
   const ttc = htNet + tvaNet;
 
+  // Multi-devise : les montants saisis sont dans la devise sélectionnée ; on stocke
+  // aussi leur équivalent FCFA (ht/tva/ttc) pour que toute la comptabilité (grand
+  // livre, bilan, exports) continue de fonctionner en FCFA sans modification.
+  const devise = document.getElementById('fac-monnaie').value || 'FCFA';
+  const tauxChange = devise === 'FCFA' ? 1 : (parseFloat(document.getElementById('fac-taux-change').value) || 1);
+  if (devise !== 'FCFA' && tauxChange <= 0) { toast('Indiquez un taux de change valide', 'error'); return; }
+
   const clientId = parseInt(document.getElementById('fac-client-search').dataset?.clientId || 0);
   const facture = {
     id: editingFactureId || Date.now(),
@@ -7838,12 +7873,17 @@ async function saveFacture(statut = 'brouillon') {
     notes: document.getElementById('fac-notes').value,
     modeReglement: document.getElementById('fac-mode-reglement').value,
     conditions: document.getElementById('fac-conditions').value,
-    monnaie: document.getElementById('fac-monnaie').value,
+    monnaie: devise,
+    devise,
+    tauxChange,
+    htDevise: htNet,
+    tvaDevise: tvaNet,
+    ttcDevise: ttc,
     remiseGlobale: remiseG,
     lignes: facLignes.filter((l) => l.designation),
-    ht: htNet,
-    tva: tvaNet,
-    ttc,
+    ht: Math.round(htNet * tauxChange),
+    tva: Math.round(tvaNet * tauxChange),
+    ttc: Math.round(ttc * tauxChange),
     statut,
     montantPaye: 0,
     createdAt: new Date().toISOString(),
@@ -7876,7 +7916,7 @@ async function saveFacture(statut = 'brouillon') {
 
     closeFactureModal();
     renderFactures();
-    toast(`✓ Facture ${facture.numero} enregistrée (${statut})`, 'success');
+    toast(`✓ Facture ${facture.numero} enregistrée (${statut})${devise !== 'FCFA' ? ` — ${fn(ttc)} ${devise} = ${fn(facture.ttc)} FCFA` : ''}`, 'success');
   } catch (e) {
     toast('Erreur : ' + e.message, 'error');
   }
@@ -7963,6 +8003,328 @@ async function supprimerFacture(id) {
 }
 
 // ══════════════════════════════════════════
+// MODULE RELANCES CLIENTS — factures en retard, 3 niveaux d'escalade
+// ══════════════════════════════════════════
+const RELANCE_NIVEAUX = {
+  1: { label: '1ère relance (courtoise)', cls: 'warn' },
+  2: { label: '2ème relance (ferme)', cls: 'nok' },
+  3: { label: 'Mise en demeure', cls: 'nok' },
+};
+
+function texteRelance(fac, niveau) {
+  const company = currentProfile?.company || 'Notre société';
+  const reste = (fac.ttc || 0) - (fac.montantPaye || 0);
+  const dateJour = new Date().toLocaleDateString('fr-FR');
+  if (niveau === 1) {
+    return `${company}\nÀ l'attention de ${fac.clientNom}\n\nObjet : Rappel — Facture ${fac.numero}\n\n${dateJour}\n\nMadame, Monsieur,\n\nSauf erreur de notre part, nous n'avons pas encore reçu le règlement de la facture ${fac.numero} d'un montant de ${fn(reste)} FCFA, échue le ${fac.dateEcheance}.\n\nNous vous remercions de bien vouloir procéder à son règlement dans les meilleurs délais, ou de nous contacter si celui-ci est déjà effectué.\n\nCordialement,\n${company}`;
+  }
+  if (niveau === 2) {
+    return `${company}\nÀ l'attention de ${fac.clientNom}\n\nObjet : Relance — Facture ${fac.numero} toujours impayée\n\n${dateJour}\n\nMadame, Monsieur,\n\nMalgré notre précédent rappel, la facture ${fac.numero} d'un montant de ${fn(reste)} FCFA, échue le ${fac.dateEcheance}, demeure impayée à ce jour.\n\nNous vous demandons de régulariser cette situation sous huitaine. Passé ce délai, nous serons contraints d'engager une procédure de recouvrement.\n\nCordialement,\n${company}`;
+  }
+  return `${company}\nÀ l'attention de ${fac.clientNom}\n\nObjet : MISE EN DEMEURE — Facture ${fac.numero}\n\n${dateJour}\n\nMadame, Monsieur,\n\nPar la présente, nous vous mettons en demeure de régler sous 8 (huit) jours la facture ${fac.numero} d'un montant de ${fn(reste)} FCFA, échue le ${fac.dateEcheance}, restée impayée malgré nos relances précédentes.\n\nÀ défaut de règlement dans ce délai, nous nous réservons le droit d'engager toute action judiciaire utile au recouvrement de cette créance, sans autre préavis.\n\n${company}`;
+}
+
+function renderRelances() {
+  const el = document.getElementById('relancesContent');
+  if (!el) return;
+  const today = new Date().toISOString().split('T')[0];
+  facturesList.forEach((f) => { if (f.statut === 'envoyee' && f.dateEcheance && f.dateEcheance < today) f.statut = 'retard'; });
+  const enRetard = facturesList.filter((f) => f.statut === 'retard' || (f.statut === 'partielle' && f.dateEcheance < today));
+
+  const totalDu = enRetard.reduce((s, f) => s + ((f.ttc || 0) - (f.montantPaye || 0)), 0);
+  const kpi = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+  kpi('relance-kpi-nb', enRetard.length);
+  kpi('relance-kpi-montant', fn(totalDu));
+  kpi('relance-kpi-niv3', enRetard.filter((f) => (f.relanceNiveau || 0) >= 3).length);
+
+  if (!enRetard.length) {
+    el.innerHTML = '<div class="empty-state"><div class="icon">✓</div><p>Aucune facture en retard — bravo !</p></div>';
+    return;
+  }
+  el.innerHTML = `<div class="dtw"><table class="dt"><thead><tr><th>N°</th><th>Client</th><th style="text-align:right">Reste dû</th><th>Échéance</th><th>Dernière relance</th><th>Niveau</th><th></th></tr></thead><tbody>${
+    enRetard.map((f) => {
+      const reste = (f.ttc || 0) - (f.montantPaye || 0);
+      const niveau = f.relanceNiveau || 0;
+      const dernier = (f.relanceHistorique || [])[(f.relanceHistorique || []).length - 1];
+      const niveauInfo = RELANCE_NIVEAUX[Math.min(niveau + 1, 3)];
+      return `<tr>
+        <td><strong style="font-family:var(--font-mono);font-size:11px">${f.numero}</strong></td>
+        <td>${f.clientNom || '—'}</td>
+        <td style="text-align:right;font-family:var(--font-mono);color:var(--red);font-weight:700">${fn(reste)}</td>
+        <td style="font-family:var(--font-mono);font-size:12px;color:var(--red)">${f.dateEcheance || '—'}</td>
+        <td style="font-size:11px;color:var(--muted)">${dernier ? new Date(dernier.date).toLocaleDateString('fr-FR') + ' · Niv.' + dernier.niveau : 'Aucune'}</td>
+        <td><span class="badge-status ${niveau > 0 ? 'nok' : 'muted'}">${niveau > 0 ? RELANCE_NIVEAUX[niveau].label : 'Pas encore relancé'}</span></td>
+        <td style="display:flex;gap:4px;flex-wrap:wrap">
+          <button class="btn-action" onclick="genererRelance(${f.id})">✉ ${niveauInfo.label.split(' ')[0] === '1ère' ? '1ère relance' : 'Relancer (niv. ' + Math.min(niveau + 1, 3) + ')'}</button>
+          <button class="btn-action" onclick="exportRelancePDF(${f.id})">⎙ PDF</button>
+        </td>
+      </tr>`;
+    }).join('')
+  }</tbody></table></div>`;
+}
+
+async function genererRelance(factureId) {
+  const fac = facturesList.find((f) => f.id === factureId);
+  if (!fac) return;
+  const niveau = Math.min((fac.relanceNiveau || 0) + 1, 3);
+  fac.relanceNiveau = niveau;
+  fac.relanceHistorique = fac.relanceHistorique || [];
+  fac.relanceHistorique.push({ niveau, date: new Date().toISOString() });
+  try {
+    if (fac._docId) await window._fbSetDoc(window._fbDoc(window._db, 'profiles', currentProfile.id, 'factures', fac._docId), fac, { merge: true });
+  } catch (e) {}
+  auditLog('RELANCE_CLIENT', 'RELANCES', `Relance niveau ${niveau} envoyée à ${fac.clientNom} pour facture ${fac.numero}`);
+  renderRelances();
+  exportRelancePDF(factureId);
+  toast(`✓ ${RELANCE_NIVEAUX[niveau].label} générée pour ${fac.clientNom}`, 'success');
+}
+
+function exportRelancePDF(factureId) {
+  const fac = facturesList.find((f) => f.id === factureId);
+  if (!fac) return;
+  const { jsPDF } = window.jspdf;
+  if (!jsPDF) { toast('jsPDF non disponible', 'error'); return; }
+  const niveau = fac.relanceNiveau || 1;
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const company = currentProfile?.company || 'Entreprise';
+  doc.setFontSize(12); doc.setFont('helvetica', 'bold');
+  doc.text(niveau >= 3 ? 'MISE EN DEMEURE' : 'LETTRE DE RELANCE', 14, 20);
+  doc.setFontSize(9); doc.setFont('helvetica', 'normal');
+  const texte = texteRelance(fac, niveau);
+  const lignes = doc.splitTextToSize(texte, 180);
+  doc.text(lignes, 14, 32);
+  doc.save(`RELANCE_${niveau}_${fac.numero}_${(fac.clientNom || '').replace(/\s+/g, '_')}.pdf`);
+  toast('✓ Lettre de relance exportée en PDF', 'success');
+}
+
+window.renderRelances = renderRelances;
+window.genererRelance = genererRelance;
+window.exportRelancePDF = exportRelancePDF;
+
+// ══════════════════════════════════════════
+// CYCLE ACHATS/VENTES COMPLET — Bons de commande fournisseurs & Bons de livraison clients
+// ══════════════════════════════════════════
+let commandesFournisseurs = [];
+let bonsLivraison = [];
+let commandeCounter = 1;
+let blCounter = 1;
+let cmdLignes = [];
+let blLignes = [];
+
+// ── Bons de commande fournisseurs ──
+function openCommandeModal() {
+  cmdLignes = [{ designation: '', qte: 1, pu: 0 }];
+  document.getElementById('cmd-date').value = new Date().toISOString().split('T')[0];
+  document.getElementById('cmd-fournisseur').value = '';
+  document.getElementById('cmd-date-livraison').value = '';
+  renderCmdLignes();
+  document.getElementById('commandeModal').style.display = 'flex';
+}
+function closeCommandeModal() { document.getElementById('commandeModal').style.display = 'none'; }
+function addCmdLigne() { cmdLignes.push({ designation: '', qte: 1, pu: 0 }); renderCmdLignes(); }
+function renderCmdLignes() {
+  const body = document.getElementById('cmdLignesBody');
+  if (!body) return;
+  body.innerHTML = cmdLignes.map((l, i) => `
+    <tr>
+      <td><input type="text" value="${(l.designation || '').replace(/"/g, '&quot;')}" style="width:100%" onchange="cmdLignes[${i}].designation=this.value"></td>
+      <td><input type="number" value="${l.qte}" style="width:80px;text-align:right" onchange="cmdLignes[${i}].qte=Number(this.value)||0;updateCmdTotal()"></td>
+      <td><input type="number" value="${l.pu}" style="width:110px;text-align:right" onchange="cmdLignes[${i}].pu=Number(this.value)||0;updateCmdTotal()"></td>
+      <td style="text-align:right;font-family:var(--font-mono)">${fn((l.qte || 0) * (l.pu || 0))}</td>
+      <td><button class="jnl-step-del" onclick="cmdLignes.splice(${i},1);renderCmdLignes();updateCmdTotal()">✕</button></td>
+    </tr>`).join('');
+  updateCmdTotal();
+}
+function updateCmdTotal() {
+  const total = cmdLignes.reduce((s, l) => s + (l.qte || 0) * (l.pu || 0), 0);
+  const el = document.getElementById('cmd-total');
+  if (el) el.textContent = fn(total) + ' FCFA';
+}
+window.addCmdLigne = addCmdLigne;
+
+async function saveCommande() {
+  const fournisseurNom = document.getElementById('cmd-fournisseur').value.trim();
+  const dateCommande = document.getElementById('cmd-date').value;
+  const dateLivraisonPrevue = document.getElementById('cmd-date-livraison').value;
+  const lignesValides = cmdLignes.filter((l) => l.designation && l.qte);
+  if (!fournisseurNom || !dateCommande || !lignesValides.length) { toast('Remplissez le fournisseur, la date et au moins une ligne', 'error'); return; }
+  const montantHT = lignesValides.reduce((s, l) => s + l.qte * l.pu, 0);
+  const commande = {
+    id: Date.now(), numero: 'CMD-' + new Date().getFullYear() + '-' + String(commandeCounter).padStart(4, '0'),
+    fournisseurNom, dateCommande, dateLivraisonPrevue, statut: 'en_attente',
+    lignes: lignesValides, montantHT, createdAt: new Date().toISOString(),
+  };
+  commandeCounter++;
+  if (window._fbReady && currentProfile?.id) {
+    try { const ref = await window._fbAddDoc(window._fbCollection(window._db, 'profiles', currentProfile.id, 'commandesFournisseurs'), commande); commande._docId = ref.id; } catch (e) {}
+  }
+  commandesFournisseurs.push(commande);
+  closeCommandeModal();
+  toast(`✓ Commande ${commande.numero} enregistrée — ${fn(montantHT)} FCFA`, 'success');
+  renderCommandes();
+}
+
+async function loadCommandesFournisseurs() {
+  if (!window._fbReady || !currentProfile?.id) return;
+  try {
+    const snap = await window._fbGetDocs(window._fbCollection(window._db, 'profiles', currentProfile.id, 'commandesFournisseurs'));
+    commandesFournisseurs = snap.docs.map((d) => ({ ...d.data(), _docId: d.id }));
+  } catch (e) {}
+}
+
+async function marquerCommandeRecue(id) {
+  const cmd = commandesFournisseurs.find((c) => c.id === id);
+  if (!cmd) return;
+  cmd.statut = 'recue';
+  cmd.dateReception = new Date().toISOString().split('T')[0];
+  if (window._fbReady && currentProfile?.id && cmd._docId) {
+    try { await window._fbSetDoc(window._fbDoc(window._db, 'profiles', currentProfile.id, 'commandesFournisseurs', cmd._docId), cmd, { merge: true }); } catch (e) {}
+  }
+  auditLog('RECEPTION_COMMANDE', 'ACHATS', `Commande ${cmd.numero} marquée reçue`);
+  renderCommandes();
+  toast(`✓ Commande ${cmd.numero} marquée reçue`, 'success');
+}
+
+async function supprimerCommande(id) {
+  if (!confirm('Supprimer cette commande ?')) return;
+  const cmd = commandesFournisseurs.find((c) => c.id === id);
+  if (cmd?._docId) await window._fbDeleteDoc(window._fbDoc(window._db, 'profiles', currentProfile.id, 'commandesFournisseurs', cmd._docId));
+  commandesFournisseurs = commandesFournisseurs.filter((c) => c.id !== id);
+  renderCommandes();
+  toast('Commande supprimée', 'info');
+}
+
+const CMD_STATUT_LABELS = { en_attente: 'En attente', recue: 'Reçue', annulee: 'Annulée' };
+function renderCommandes() {
+  const el = document.getElementById('commandesContent');
+  if (!el) return;
+  if (!commandesFournisseurs.length) { el.innerHTML = '<div class="empty-state"><div class="icon">📦</div><p>Aucune commande fournisseur.</p></div>'; return; }
+  const kpi = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+  kpi('cmd-kpi-nb', commandesFournisseurs.length);
+  kpi('cmd-kpi-attente', commandesFournisseurs.filter((c) => c.statut === 'en_attente').length);
+  kpi('cmd-kpi-montant', fn(commandesFournisseurs.reduce((s, c) => s + (c.montantHT || 0), 0)));
+  el.innerHTML = `<div class="dtw"><table class="dt"><thead><tr><th>N°</th><th>Fournisseur</th><th>Date commande</th><th>Livraison prévue</th><th style="text-align:right">Montant HT</th><th>Statut</th><th></th></tr></thead><tbody>${
+    commandesFournisseurs.map((c) => `<tr>
+      <td><strong style="font-family:var(--font-mono);font-size:11px">${c.numero}</strong></td>
+      <td>${c.fournisseurNom}</td>
+      <td style="font-family:var(--font-mono);font-size:12px">${c.dateCommande}</td>
+      <td style="font-family:var(--font-mono);font-size:12px">${c.dateLivraisonPrevue || '—'}</td>
+      <td style="text-align:right;font-family:var(--font-mono);font-weight:700">${fn(c.montantHT)}</td>
+      <td><span class="badge-status ${c.statut === 'recue' ? 'ok' : c.statut === 'annulee' ? 'nok' : 'warn'}">${CMD_STATUT_LABELS[c.statut] || c.statut}</span></td>
+      <td style="display:flex;gap:4px">${c.statut === 'en_attente' ? `<button class="btn-action" onclick="marquerCommandeRecue(${c.id})">✓ Reçue</button>` : ''}<button class="btn-action danger" onclick="supprimerCommande(${c.id})">✕</button></td>
+    </tr>`).join('')
+  }</tbody></table></div>`;
+}
+window.openCommandeModal = openCommandeModal;
+window.closeCommandeModal = closeCommandeModal;
+window.saveCommande = saveCommande;
+window.renderCommandes = renderCommandes;
+window.marquerCommandeRecue = marquerCommandeRecue;
+window.supprimerCommande = supprimerCommande;
+
+// ── Bons de livraison clients ──
+function openBlModal() {
+  blLignes = [{ designation: '', qte: 1 }];
+  document.getElementById('bl-date').value = new Date().toISOString().split('T')[0];
+  document.getElementById('bl-client').value = '';
+  document.getElementById('bl-facture').value = '';
+  renderBlLignes();
+  document.getElementById('blModal').style.display = 'flex';
+}
+function closeBlModal() { document.getElementById('blModal').style.display = 'none'; }
+function addBlLigne() { blLignes.push({ designation: '', qte: 1 }); renderBlLignes(); }
+function renderBlLignes() {
+  const body = document.getElementById('blLignesBody');
+  if (!body) return;
+  body.innerHTML = blLignes.map((l, i) => `
+    <tr>
+      <td><input type="text" value="${(l.designation || '').replace(/"/g, '&quot;')}" style="width:100%" onchange="blLignes[${i}].designation=this.value"></td>
+      <td><input type="number" value="${l.qte}" style="width:80px;text-align:right" onchange="blLignes[${i}].qte=Number(this.value)||0"></td>
+      <td><button class="jnl-step-del" onclick="blLignes.splice(${i},1);renderBlLignes()">✕</button></td>
+    </tr>`).join('');
+}
+window.addBlLigne = addBlLigne;
+
+async function saveBl() {
+  const clientNom = document.getElementById('bl-client').value.trim();
+  const dateLivraison = document.getElementById('bl-date').value;
+  const factureRef = document.getElementById('bl-facture').value.trim();
+  const lignesValides = blLignes.filter((l) => l.designation && l.qte);
+  if (!clientNom || !dateLivraison || !lignesValides.length) { toast('Remplissez le client, la date et au moins une ligne', 'error'); return; }
+  const bl = {
+    id: Date.now(), numero: 'BL-' + new Date().getFullYear() + '-' + String(blCounter).padStart(4, '0'),
+    clientNom, dateLivraison, factureRef, lignes: lignesValides, createdAt: new Date().toISOString(),
+  };
+  blCounter++;
+  if (window._fbReady && currentProfile?.id) {
+    try { const ref = await window._fbAddDoc(window._fbCollection(window._db, 'profiles', currentProfile.id, 'bonsLivraison'), bl); bl._docId = ref.id; } catch (e) {}
+  }
+  bonsLivraison.push(bl);
+  closeBlModal();
+  toast(`✓ Bon de livraison ${bl.numero} créé`, 'success');
+  renderBonsLivraison();
+}
+
+async function loadBonsLivraison() {
+  if (!window._fbReady || !currentProfile?.id) return;
+  try {
+    const snap = await window._fbGetDocs(window._fbCollection(window._db, 'profiles', currentProfile.id, 'bonsLivraison'));
+    bonsLivraison = snap.docs.map((d) => ({ ...d.data(), _docId: d.id }));
+  } catch (e) {}
+}
+
+async function supprimerBl(id) {
+  if (!confirm('Supprimer ce bon de livraison ?')) return;
+  const bl = bonsLivraison.find((b) => b.id === id);
+  if (bl?._docId) await window._fbDeleteDoc(window._fbDoc(window._db, 'profiles', currentProfile.id, 'bonsLivraison', bl._docId));
+  bonsLivraison = bonsLivraison.filter((b) => b.id !== id);
+  renderBonsLivraison();
+  toast('Bon de livraison supprimé', 'info');
+}
+
+function exportBlPDF(id) {
+  const bl = bonsLivraison.find((b) => b.id === id);
+  if (!bl) return;
+  const { jsPDF } = window.jspdf;
+  if (!jsPDF) { toast('jsPDF non disponible', 'error'); return; }
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const company = currentProfile?.company || 'Entreprise';
+  doc.setFontSize(13); doc.setFont('helvetica', 'bold');
+  doc.text('BON DE LIVRAISON ' + bl.numero, 14, 18);
+  doc.setFontSize(9); doc.setFont('helvetica', 'normal');
+  doc.text(`${company} — Livré à : ${bl.clientNom}`, 14, 26);
+  doc.text(`Date : ${bl.dateLivraison}${bl.factureRef ? ' · Facture réf. ' + bl.factureRef : ''}`, 14, 32);
+  doc.autoTable({ startY: 40, head: [['Désignation', 'Quantité livrée']], body: bl.lignes.map((l) => [l.designation, String(l.qte)]), styles: { fontSize: 9 } });
+  const y = doc.lastAutoTable.finalY + 20;
+  doc.text('Signature client : _______________', 14, y);
+  doc.save(`${bl.numero}_${bl.clientNom.replace(/\s+/g, '_')}.pdf`);
+  toast('✓ Bon de livraison exporté', 'success');
+}
+
+function renderBonsLivraison() {
+  const el = document.getElementById('blContent');
+  if (!el) return;
+  if (!bonsLivraison.length) { el.innerHTML = '<div class="empty-state"><div class="icon">🚚</div><p>Aucun bon de livraison.</p></div>'; return; }
+  document.getElementById('bl-kpi-nb').textContent = bonsLivraison.length;
+  el.innerHTML = `<div class="dtw"><table class="dt"><thead><tr><th>N°</th><th>Client</th><th>Date</th><th>Facture réf.</th><th>Articles</th><th></th></tr></thead><tbody>${
+    bonsLivraison.map((bl) => `<tr>
+      <td><strong style="font-family:var(--font-mono);font-size:11px">${bl.numero}</strong></td>
+      <td>${bl.clientNom}</td>
+      <td style="font-family:var(--font-mono);font-size:12px">${bl.dateLivraison}</td>
+      <td style="font-size:12px;color:var(--muted)">${bl.factureRef || '—'}</td>
+      <td style="font-size:12px">${bl.lignes.length} ligne(s)</td>
+      <td style="display:flex;gap:4px"><button class="btn-action" onclick="exportBlPDF(${bl.id})">⎙ PDF</button><button class="btn-action danger" onclick="supprimerBl(${bl.id})">✕</button></td>
+    </tr>`).join('')
+  }</tbody></table></div>`;
+}
+window.openBlModal = openBlModal;
+window.closeBlModal = closeBlModal;
+window.saveBl = saveBl;
+window.renderBonsLivraison = renderBonsLivraison;
+window.supprimerBl = supprimerBl;
+window.exportBlPDF = exportBlPDF;
+
+// ══════════════════════════════════════════
 // FACTURES — AFFICHAGE
 // ══════════════════════════════════════════
 function resetFactureFiltre() {
@@ -8030,7 +8392,7 @@ function renderFactures() {
       <td style="font-weight:500">${f.clientNom || '—'}</td>
       <td style="text-align:right;font-family:var(--font-mono)">${fn(f.ht)}</td>
       <td style="text-align:right;font-family:var(--font-mono);color:#60a5fa">${fn(f.tva)}</td>
-      <td style="text-align:right;font-family:var(--font-mono);font-weight:700">${fn(f.ttc)}</td>
+      <td style="text-align:right;font-family:var(--font-mono);font-weight:700">${fn(f.ttc)}${f.devise && f.devise !== 'FCFA' ? `<br><span style="font-size:10px;color:var(--muted);font-weight:400">${fn(f.ttcDevise)} ${f.devise}</span>` : ''}</td>
       <td style="text-align:right;font-family:var(--font-mono);color:${reste > 0 ? 'var(--red)' : 'var(--green)'}">${fn(f.montantPaye || 0)}</td>
       <td><span class="statut-badge statut-${f.statut}">${STATUT_LABELS[f.statut] || f.statut}</span></td>
       <td style="display:flex;gap:4px;flex-wrap:wrap">
@@ -9027,6 +9389,95 @@ window.savePaie = savePaie;
 window.renderPaie = renderPaie;
 window.exportBulletinPDF = exportBulletinPDF;
 
+// ══════════════════════════════════════════
+// DÉCLARATIONS SOCIALES — Bordereau CNPS mensuel (cotisations salariales + patronales)
+// ══════════════════════════════════════════
+function renderDeclarationsSociales() {
+  const el = document.getElementById('declSocialesContent');
+  if (!el) return;
+  if (!salaries.length) { el.innerHTML = '<div class="empty-state"><div class="icon">🛡️</div><p>Aucun bulletin de paie enregistré.</p></div>'; return; }
+
+  // Regrouper par mois
+  const parMois = {};
+  salaries.forEach((s) => {
+    const mois = s.mois || '—';
+    if (!parMois[mois]) parMois[mois] = { salaries: [], cnpsSal: 0, cnpsPat: 0, tpa: 0, cn: 0, taxeApp: 0, brut: 0 };
+    const g = parMois[mois];
+    g.salaries.push(s);
+    g.cnpsSal += s.cnpsSal || 0;
+    g.cnpsPat += s.cnpsPat || 0;
+    g.tpa += s.tpa || 0;
+    g.cn += s.cn || 0;
+    g.taxeApp += s.taxeApp || 0;
+    g.brut += s.brut || 0;
+  });
+
+  const totalDu = Object.values(parMois).reduce((s, g) => s + g.cnpsSal + g.cnpsPat + g.tpa + g.cn + g.taxeApp, 0);
+  const kpi = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+  kpi('decl-soc-kpi-mois', Object.keys(parMois).length);
+  kpi('decl-soc-kpi-total', fn(totalDu));
+  kpi('decl-soc-kpi-effectif', salaries.length);
+
+  el.innerHTML = Object.entries(parMois).map(([mois, g]) => {
+    const totalMois = g.cnpsSal + g.cnpsPat + g.tpa + g.cn + g.taxeApp;
+    return `<div class="card" style="margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <div>
+          <div style="font-weight:700">Bordereau CNPS — ${mois}</div>
+          <div style="font-size:11px;color:var(--muted)">${g.salaries.length} salarié(s) · Masse brute ${fn(g.brut)} FCFA</div>
+        </div>
+        <button class="btn btn-gold" onclick="exportDeclarationCNPS('${mois}')">⎙ Bordereau PDF</button>
+      </div>
+      <div class="dtw" style="margin-top:10px"><table class="dt">
+        <thead><tr><th>Cotisation</th><th style="text-align:right">Taux</th><th style="text-align:right">Montant (FCFA)</th></tr></thead>
+        <tbody>
+          <tr><td>CNPS salarial (retraite 7,7%)</td><td style="text-align:right">7,7%</td><td style="text-align:right;font-family:var(--font-mono)">${fn(g.cnpsSal)}</td></tr>
+          <tr><td>CNPS patronal (16,0%)</td><td style="text-align:right">16,0%</td><td style="text-align:right;font-family:var(--font-mono)">${fn(g.cnpsPat)}</td></tr>
+          <tr><td>Taxe Prévoyance Accidents (TPA)</td><td style="text-align:right">0,4%</td><td style="text-align:right;font-family:var(--font-mono)">${fn(g.tpa)}</td></tr>
+          <tr><td>Contribution Nationale</td><td style="text-align:right">1,5%</td><td style="text-align:right;font-family:var(--font-mono)">${fn(g.cn)}</td></tr>
+          <tr><td>Taxe d'apprentissage</td><td style="text-align:right">0,4%</td><td style="text-align:right;font-family:var(--font-mono)">${fn(g.taxeApp)}</td></tr>
+          <tr class="total-row"><td style="font-weight:700">TOTAL À VERSER À LA CNPS</td><td></td><td style="text-align:right;font-family:var(--font-mono);font-weight:700;color:var(--warm)">${fn(totalMois)}</td></tr>
+        </tbody>
+      </table></div>
+    </div>`;
+  }).join('');
+}
+
+function exportDeclarationCNPS(mois) {
+  const salsMois = salaries.filter((s) => (s.mois || '—') === mois);
+  if (!salsMois.length) { toast('Aucun salarié pour ce mois', 'error'); return; }
+  const { jsPDF } = window.jspdf;
+  if (!jsPDF) { toast('jsPDF non disponible', 'error'); return; }
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const company = currentProfile?.company || 'Entreprise';
+  doc.setFillColor(10, 11, 16); doc.rect(0, 0, 210, 26, 'F');
+  doc.setTextColor(212, 168, 83); doc.setFontSize(13); doc.setFont('helvetica', 'bold');
+  doc.text(`BORDEREAU DE COTISATIONS CNPS — ${mois}`, 14, 12);
+  doc.setFontSize(8); doc.setFont('helvetica', 'normal');
+  doc.text(`${company} · Édité le ${new Date().toLocaleDateString('fr-FR')}`, 14, 19);
+
+  const rows = salsMois.map((s) => [s.nom, fn(s.brut), fn(s.cnpsSal), fn(s.cnpsPat || 0), fn((s.cnpsSal || 0) + (s.cnpsPat || 0))]);
+  const totalBrut = salsMois.reduce((t, s) => t + (s.brut || 0), 0);
+  const totalSal = salsMois.reduce((t, s) => t + (s.cnpsSal || 0), 0);
+  const totalPat = salsMois.reduce((t, s) => t + (s.cnpsPat || 0), 0);
+  doc.autoTable({
+    startY: 32,
+    head: [['Salarié', 'Salaire brut', 'CNPS salarial (7,7%)', 'CNPS patronal (16%)', 'Total cotisation']],
+    body: rows,
+    foot: [['TOTAL', fn(totalBrut), fn(totalSal), fn(totalPat), fn(totalSal + totalPat)]],
+    styles: { font: 'helvetica', fontSize: 9, cellPadding: 3 },
+    headStyles: { fillColor: [10, 11, 16], textColor: [212, 168, 83], fontStyle: 'bold' },
+    footStyles: { fillColor: [30, 34, 54], textColor: [212, 168, 83], fontStyle: 'bold' },
+    columnStyles: { 1: { halign: 'right' }, 2: { halign: 'right' }, 3: { halign: 'right' }, 4: { halign: 'right' } },
+    margin: { left: 14, right: 14 },
+  });
+  doc.save(`BORDEREAU_CNPS_${mois.replace(/\s+/g, '_')}.pdf`);
+  toast('✓ Bordereau CNPS exporté en PDF', 'success');
+}
+
+window.renderDeclarationsSociales = renderDeclarationsSociales;
+window.exportDeclarationCNPS = exportDeclarationCNPS;
+
 
 
 // ══════════════════════════════════════════
@@ -9100,10 +9551,11 @@ function renderImmobilisations() {
   const el = document.getElementById('immobContent');
   if (!el) return;
   if (!immobilisations.length) { el.innerHTML = '<div class="empty-state"><div class="icon">🏗️</div><p>Aucune immobilisation enregistrée.</p></div>'; return; }
-  const totalBrut = immobilisations.reduce((s, x) => s + (x.valeur || 0), 0);
-  const totalAmort = immobilisations.reduce((s, x) => s + (x.amortCumul || 0), 0);
+  const actives = immobilisations.filter(x => x.statut !== 'cedee');
+  const totalBrut = actives.reduce((s, x) => s + (x.valeur || 0), 0);
+  const totalAmort = actives.reduce((s, x) => s + (x.amortCumul || 0), 0);
   const totalNet = totalBrut - totalAmort;
-  const totalDot = immobilisations.reduce((s, x) => s + (x.dotAnnuelle || 0), 0);
+  const totalDot = actives.reduce((s, x) => s + (x.dotAnnuelle || 0), 0);
   document.getElementById('immob-kpi-brut').textContent = fn(totalBrut);
   document.getElementById('immob-kpi-amort').textContent = fn(totalAmort);
   document.getElementById('immob-kpi-net').textContent = fn(totalNet);
@@ -9111,10 +9563,69 @@ function renderImmobilisations() {
   el.innerHTML = `<div class="dtw"><table class="dt amort-table"><thead><tr><th>Désignation</th><th>Catégorie</th><th>Date acq.</th><th style="text-align:right">Valeur brute</th><th style="text-align:right">Taux</th><th style="text-align:right" class="dot-cell">Dot. annuelle</th><th style="text-align:right" class="vnc-cell">VNC</th><th></th></tr></thead><tbody>${
     immobilisations.map(im => {
       const vnc = (im.valeur || 0) - (im.amortCumul || 0);
-      return `<tr><td><strong>${im.nom}</strong>${im.ref ? `<br><span style="font-size:11px;color:var(--muted)">${im.ref}</span>` : ''}</td><td style="font-size:12px">${IMMOB_LABELS[im.cat] || im.cat}</td><td style="font-family:var(--font-mono);font-size:12px">${im.dateAcq}</td><td style="text-align:right;font-family:var(--font-mono)">${fn(im.valeur)}</td><td style="text-align:right;font-family:var(--font-mono)">${((im.taux||0)*100).toFixed(0)}%</td><td style="text-align:right;font-family:var(--font-mono);color:var(--rust)">${fn(im.dotAnnuelle)}</td><td style="text-align:right;font-family:var(--font-mono);color:var(--teal);font-weight:700">${fn(vnc)}</td><td><button class="btn btn-sm-wire" onclick="genererDotation(${im.id})">681↗</button></td></tr>`;
+      const cedee = im.statut === 'cedee';
+      return `<tr style="${cedee ? 'opacity:.55' : ''}"><td><strong>${im.nom}</strong>${im.ref ? `<br><span style="font-size:11px;color:var(--muted)">${im.ref}</span>` : ''}${cedee ? `<br><span class="badge-status muted" style="margin-top:4px;display:inline-block">Cédée le ${im.dateCession}</span>` : ''}</td><td style="font-size:12px">${IMMOB_LABELS[im.cat] || im.cat}</td><td style="font-family:var(--font-mono);font-size:12px">${im.dateAcq}</td><td style="text-align:right;font-family:var(--font-mono)">${fn(im.valeur)}</td><td style="text-align:right;font-family:var(--font-mono)">${((im.taux||0)*100).toFixed(0)}%</td><td style="text-align:right;font-family:var(--font-mono);color:var(--rust)">${fn(im.dotAnnuelle)}</td><td style="text-align:right;font-family:var(--font-mono);color:var(--teal);font-weight:700">${cedee ? '—' : fn(vnc)}</td><td style="display:flex;gap:4px;flex-wrap:wrap">${cedee ? `<span style="font-size:11px;color:${(im.plusValue||0) >= 0 ? 'var(--green)' : 'var(--red)'}">${(im.plusValue||0) >= 0 ? '+' : ''}${fn(im.plusValue||0)} FCFA</span>` : `<button class="btn btn-sm-wire" onclick="genererDotation(${im.id})">681↗</button><button class="btn btn-sm-wire" onclick="ouvrirCessionImmob(${im.id})" title="Céder cette immobilisation">↗ Céder</button>`}</td></tr>`;
     }).join('')
   }</tbody></table></div>`;
 }
+
+// ── CESSION D'IMMOBILISATION — sortie du bien + plus/moins-value ──
+function ouvrirCessionImmob(immobId) {
+  const im = immobilisations.find(x => x.id === immobId);
+  if (!im) return;
+  if (im.statut === 'cedee') { toast('Cette immobilisation a déjà été cédée.', 'error'); return; }
+  cessionImmobId = immobId;
+  const vnc = (im.valeur || 0) - (im.amortCumul || 0);
+  document.getElementById('cession-immob-nom').textContent = im.nom;
+  document.getElementById('cession-immob-vnc').textContent = fn(vnc) + ' FCFA';
+  document.getElementById('cession-date').value = new Date().toISOString().split('T')[0];
+  document.getElementById('cession-prix').value = '';
+  document.getElementById('cessionImmobModal').style.display = 'flex';
+}
+function closeCessionImmobModal() {
+  document.getElementById('cessionImmobModal').style.display = 'none';
+  cessionImmobId = null;
+}
+async function validerCessionImmob() {
+  const im = immobilisations.find(x => x.id === cessionImmobId);
+  if (!im) return;
+  const dateCession = document.getElementById('cession-date').value;
+  const prixCession = parseFloat(document.getElementById('cession-prix').value) || 0;
+  if (!dateCession) { toast('Indiquez la date de cession', 'error'); return; }
+  const vnc = (im.valeur || 0) - (im.amortCumul || 0);
+  const plusValue = prixCession - vnc;
+  const amortCpte = IMMOB_AMORT[im.cat] || '2844';
+  const ecr = {
+    id: Date.now(), date: dateCession, journal: 'OD', piece: 'CES-' + im.id,
+    libelle: `Cession ${im.nom} — Prix ${fn(prixCession)} FCFA`, createdAt: new Date().toISOString(),
+    lignes: [
+      { compte: amortCpte, libelle: `Solde amort. ${im.nom}`, debit: im.amortCumul || 0, credit: 0 },
+      { compte: '81', libelle: `VNC cédée — ${im.nom}`, debit: Math.max(vnc, 0), credit: 0 },
+      { compte: im.cat, libelle: `Sortie — ${im.nom}`, debit: 0, credit: im.valeur || 0 },
+      { compte: '521', libelle: `Encaissement cession ${im.nom}`, debit: prixCession, credit: 0 },
+      { compte: '82', libelle: `Produit de cession — ${im.nom}`, debit: 0, credit: prixCession },
+    ].filter(l => l.debit || l.credit),
+  };
+  const docId = await saveEcritureToFirestore(ecr);
+  if (!docId) return;
+  ecritures.push(ecr);
+  im.statut = 'cedee';
+  im.dateCession = dateCession;
+  im.prixCession = prixCession;
+  im.plusValue = plusValue;
+  if (window._fbReady && currentProfile?.id) {
+    try { await window._fbSetDoc(window._fbDoc(window._db, 'profiles', currentProfile.id, 'immobilisations', String(im.id)), im, { merge: true }); } catch (e) {}
+  }
+  auditLog('CESSION_IMMOB', 'IMMOBILISATIONS', `Cession de ${im.nom} — VNC ${fn(vnc)}, prix ${fn(prixCession)}, ${plusValue >= 0 ? 'plus' : 'moins'}-value ${fn(Math.abs(plusValue))}`);
+  updateStats();
+  closeCessionImmobModal();
+  renderImmobilisations();
+  toast(`✓ Cession enregistrée — ${plusValue >= 0 ? 'Plus-value' : 'Moins-value'} de ${fn(Math.abs(plusValue))} FCFA`, 'success');
+}
+window.ouvrirCessionImmob = ouvrirCessionImmob;
+window.closeCessionImmobModal = closeCessionImmobModal;
+window.validerCessionImmob = validerCessionImmob;
+let cessionImmobId = null;
 
 async function genererDotation(immobId) {
   const im = immobilisations.find(x => x.id === immobId);
@@ -9327,6 +9838,124 @@ function exportTAFIREpdf() {
 window.renderTAFIRE = renderTAFIRE;
 window.exportTAFIREpdf = exportTAFIREpdf;
 window.exportTableauAmortissement = exportTableauAmortissement;
+
+// ══════════════════════════════════════════
+// ANNEXES LIASSE FISCALE — État des provisions & Échéancier créances/dettes
+// ══════════════════════════════════════════
+const COMPTES_PROVISIONS_PREFIXES = ['15', '19', '29', '39', '49', '59'];
+const LIBELLES_PROVISIONS = {
+  '15': 'Provisions pour risques et charges', '19': 'Provisions réglementées',
+  '29': 'Dépréciation des immobilisations', '39': 'Dépréciation des stocks',
+  '49': 'Dépréciation des comptes de tiers', '59': 'Dépréciation des comptes de trésorerie',
+};
+
+function exportEtatProvisions() {
+  const { jsPDF } = window.jspdf;
+  if (!jsPDF) { toast('jsPDF non chargé', 'error'); return; }
+  const soldes = {};
+  ecritures.forEach((e) => (e.lignes || []).forEach((l) => {
+    const c = String(l.compte || '');
+    const prefix = COMPTES_PROVISIONS_PREFIXES.find((p) => c.startsWith(p));
+    if (!prefix) return;
+    soldes[c] = soldes[c] || { compte: c, libelle: libelleCompte(c) || LIBELLES_PROVISIONS[prefix], solde: 0 };
+    soldes[c].solde += (l.credit || 0) - (l.debit || 0);
+  }));
+  const lignes = Object.values(soldes).filter((x) => Math.abs(x.solde) > 0.5);
+  if (!lignes.length) { toast('Aucune provision constatée dans les écritures', 'error'); return; }
+
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const company = currentProfile?.company || 'Entreprise';
+  const yr = document.getElementById('exerciceYear')?.value || new Date().getFullYear();
+  doc.setFillColor(10, 11, 16); doc.rect(0, 0, 210, 24, 'F');
+  doc.setTextColor(212, 168, 83); doc.setFontSize(13); doc.setFont('helvetica', 'bold');
+  doc.text(`ÉTAT DES PROVISIONS — ${company} — ${yr}`, 14, 10);
+  doc.setFontSize(7); doc.setFont('helvetica', 'normal');
+  doc.text('Annexe SYSCOHADA · Soldes des comptes de provisions et dépréciations', 14, 17);
+  const total = lignes.reduce((s, l) => s + l.solde, 0);
+  doc.autoTable({
+    startY: 28,
+    head: [['Compte', 'Libellé', 'Solde au ' + new Date().toLocaleDateString('fr-FR')]],
+    body: lignes.map((l) => [l.compte, l.libelle, fn(l.solde)]),
+    foot: [['', 'TOTAL PROVISIONS', fn(total)]],
+    styles: { font: 'helvetica', fontSize: 9, cellPadding: 3 },
+    headStyles: { fillColor: [10, 11, 16], textColor: [212, 168, 83], fontStyle: 'bold' },
+    footStyles: { fillColor: [30, 34, 54], textColor: [212, 168, 83], fontStyle: 'bold' },
+    columnStyles: { 2: { halign: 'right' } },
+    margin: { left: 14, right: 14 },
+  });
+  doc.save(`ETAT_PROVISIONS_${yr}.pdf`);
+  toast('✓ État des provisions exporté', 'success');
+}
+
+function exportEcheancierCreancesDettes() {
+  const { jsPDF } = window.jspdf;
+  if (!jsPDF) { toast('jsPDF non chargé', 'error'); return; }
+  const today = new Date().toISOString().split('T')[0];
+  const creances = facturesList.filter((f) => f.type === 'facture' && ['envoyee', 'retard', 'partielle'].includes(f.statut));
+
+  const brackets = { 'À échoir': [], '0-30 jours': [], '31-60 jours': [], '61-90 jours': [], '+ 90 jours': [] };
+  creances.forEach((f) => {
+    const reste = (f.ttc || 0) - (f.montantPaye || 0);
+    if (reste <= 0) return;
+    const joursRetard = Math.floor((new Date(today) - new Date(f.dateEcheance)) / 86400000);
+    let bracket = 'À échoir';
+    if (joursRetard > 90) bracket = '+ 90 jours';
+    else if (joursRetard > 60) bracket = '61-90 jours';
+    else if (joursRetard > 30) bracket = '31-60 jours';
+    else if (joursRetard > 0) bracket = '0-30 jours';
+    brackets[bracket].push({ client: f.clientNom, numero: f.numero, echeance: f.dateEcheance, montant: reste });
+  });
+
+  // Solde global fournisseurs (compte 401) — détail par échéance non individualisé
+  let soldeFournisseurs = 0;
+  ecritures.forEach((e) => (e.lignes || []).forEach((l) => {
+    if (String(l.compte).startsWith('401')) soldeFournisseurs += (l.credit || 0) - (l.debit || 0);
+  }));
+
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const company = currentProfile?.company || 'Entreprise';
+  doc.setFillColor(10, 11, 16); doc.rect(0, 0, 210, 24, 'F');
+  doc.setTextColor(212, 168, 83); doc.setFontSize(13); doc.setFont('helvetica', 'bold');
+  doc.text(`ÉCHÉANCIER CRÉANCES & DETTES — ${company}`, 14, 10);
+  doc.setFontSize(7); doc.setFont('helvetica', 'normal');
+  doc.text(`Situation au ${new Date().toLocaleDateString('fr-FR')}`, 14, 17);
+
+  let y = 30;
+  doc.setTextColor(0, 0, 0); doc.setFontSize(10); doc.setFont('helvetica', 'bold');
+  doc.text('CRÉANCES CLIENTS PAR ANCIENNETÉ', 14, y); y += 4;
+  const rows = [];
+  let totalCreances = 0;
+  Object.entries(brackets).forEach(([bracket, items]) => {
+    const totalBracket = items.reduce((s, i) => s + i.montant, 0);
+    totalCreances += totalBracket;
+    items.forEach((i) => rows.push([bracket, i.numero, i.client, i.echeance, fn(i.montant)]));
+    if (!items.length) rows.push([bracket, '—', '—', '—', '0']);
+  });
+  doc.autoTable({
+    startY: y,
+    head: [['Tranche', 'N° Facture', 'Client', 'Échéance', 'Montant dû']],
+    body: rows,
+    foot: [['', '', '', 'TOTAL CRÉANCES', fn(totalCreances)]],
+    styles: { font: 'helvetica', fontSize: 8, cellPadding: 2.5 },
+    headStyles: { fillColor: [10, 11, 16], textColor: [212, 168, 83], fontStyle: 'bold' },
+    footStyles: { fillColor: [30, 34, 54], textColor: [212, 168, 83], fontStyle: 'bold' },
+    columnStyles: { 4: { halign: 'right' } },
+    margin: { left: 14, right: 14 },
+  });
+
+  const y2 = doc.lastAutoTable.finalY + 12;
+  doc.setFontSize(10); doc.setFont('helvetica', 'bold');
+  doc.text('DETTES FOURNISSEURS', 14, y2);
+  doc.setFontSize(8); doc.setFont('helvetica', 'normal');
+  doc.text(`Solde global (cpte 401) : ${fn(soldeFournisseurs)} FCFA`, 14, y2 + 6);
+  doc.text('Détail par échéance non disponible (nécessite la facturation fournisseur individualisée — voir module Commandes fournisseurs).', 14, y2 + 11, { maxWidth: 180 });
+
+  doc.save(`ECHEANCIER_CREANCES_DETTES_${new Date().toISOString().split('T')[0]}.pdf`);
+  toast('✓ Échéancier créances/dettes exporté', 'success');
+}
+
+window.exportEtatProvisions = exportEtatProvisions;
+window.exportEcheancierCreancesDettes = exportEcheancierCreancesDettes;
 window.openImmobModal = openImmobModal;
 window.saveImmob = saveImmob;
 window.renderImmobilisations = renderImmobilisations;
@@ -9440,6 +10069,155 @@ window.renderStocks = renderStocks;
 window.exportInventairePDF = exportInventairePDF;
 
 // ══════════════════════════════════════════
+// MODULE EMPRUNTS — Tableau d'amortissement de prêts (méthode française, mensualité constante)
+// ══════════════════════════════════════════
+let emprunts = [];
+
+function calcTableauEmprunt(montant, tauxAnnuel, dureeMois) {
+  const tauxMensuel = (tauxAnnuel / 100) / 12;
+  const mensualite = tauxMensuel > 0
+    ? Math.round(montant * tauxMensuel / (1 - Math.pow(1 + tauxMensuel, -dureeMois)))
+    : Math.round(montant / dureeMois);
+  let capitalRestant = montant;
+  const tableau = [];
+  for (let m = 1; m <= dureeMois; m++) {
+    const interets = Math.round(capitalRestant * tauxMensuel);
+    let capitalRembourse = mensualite - interets;
+    if (m === dureeMois) capitalRembourse = capitalRestant; // ajustement dernière échéance
+    capitalRestant = Math.max(0, capitalRestant - capitalRembourse);
+    tableau.push({ mois: m, interets, capitalRembourse, mensualite: interets + capitalRembourse, capitalRestant, genere: false });
+  }
+  return { mensualite, tableau };
+}
+
+function previewEmprunt() {
+  const montant = parseFloat(document.getElementById('emprunt-montant')?.value) || 0;
+  const taux = parseFloat(document.getElementById('emprunt-taux')?.value) || 0;
+  const duree = parseInt(document.getElementById('emprunt-duree')?.value) || 0;
+  const preview = document.getElementById('emprunt-preview');
+  if (!preview || !montant || !duree) { if (preview) preview.style.display = 'none'; return; }
+  const { mensualite, tableau } = calcTableauEmprunt(montant, taux, duree);
+  const totalInterets = tableau.reduce((s, l) => s + l.interets, 0);
+  preview.style.display = 'block';
+  preview.innerHTML = `<strong>Mensualité : ${fn(mensualite)} FCFA · Coût total du crédit : ${fn(totalInterets)} FCFA d'intérêts sur ${duree} mois</strong>`;
+}
+
+function openEmpruntModal() {
+  document.getElementById('empruntModal').style.display = 'flex';
+  document.getElementById('emprunt-date').value = new Date().toISOString().split('T')[0];
+}
+function closeEmpruntModal() { document.getElementById('empruntModal').style.display = 'none'; }
+
+async function saveEmprunt() {
+  const nom = document.getElementById('emprunt-nom').value.trim();
+  const montant = parseFloat(document.getElementById('emprunt-montant').value) || 0;
+  const taux = parseFloat(document.getElementById('emprunt-taux').value) || 0;
+  const duree = parseInt(document.getElementById('emprunt-duree').value) || 0;
+  const dateDebut = document.getElementById('emprunt-date').value;
+  const banque = document.getElementById('emprunt-banque').value.trim();
+  if (!nom || !montant || !duree || !dateDebut) { toast('Remplissez tous les champs obligatoires', 'error'); return; }
+  const { mensualite, tableau } = calcTableauEmprunt(montant, taux, duree);
+  const emprunt = { id: Date.now(), nom, montant, taux, duree, dateDebut, banque, mensualite, tableau, createdAt: new Date().toISOString() };
+  emprunts.push(emprunt);
+  if (window._fbReady && currentProfile?.id) {
+    try { await window._fbAddDoc(window._fbCollection(window._db, 'profiles', currentProfile.id, 'emprunts'), emprunt); } catch (e) {}
+  }
+  closeEmpruntModal();
+  toast(`✓ Emprunt "${nom}" enregistré — Mensualité ${fn(mensualite)} FCFA`, 'success');
+  renderEmprunts();
+}
+
+async function loadEmprunts() {
+  if (!window._fbReady || !currentProfile?.id) return;
+  try {
+    const snap = await window._fbGetDocs(window._fbCollection(window._db, 'profiles', currentProfile.id, 'emprunts'));
+    emprunts = snap.docs.map((d) => ({ ...d.data(), _docId: d.id }));
+  } catch (e) {}
+}
+
+let empruntDetailId = null;
+function toggleEmpruntDetail(id) {
+  empruntDetailId = empruntDetailId === id ? null : id;
+  renderEmprunts();
+}
+
+function renderEmprunts() {
+  const el = document.getElementById('empruntsContent');
+  if (!el) return;
+  if (!emprunts.length) { el.innerHTML = '<div class="empty-state"><div class="icon">🏦</div><p>Aucun emprunt enregistré.</p></div>'; return; }
+  const totalRestant = emprunts.reduce((s, e) => {
+    const dernier = e.tableau[e.tableau.length - 1];
+    const prochain = e.tableau.find((l) => !l.genere);
+    return s + (prochain ? prochain.capitalRestant + (prochain.capitalRembourse || 0) : 0);
+  }, 0);
+  const totalMensualites = emprunts.reduce((s, e) => s + (e.mensualite || 0), 0);
+  const totalInterets = emprunts.reduce((s, e) => s + e.tableau.reduce((t, l) => t + l.interets, 0), 0);
+  document.getElementById('emprunt-kpi-nb').textContent = emprunts.length;
+  document.getElementById('emprunt-kpi-mensualites').textContent = fn(totalMensualites);
+  document.getElementById('emprunt-kpi-interets').textContent = fn(totalInterets);
+  document.getElementById('emprunt-kpi-restant').textContent = fn(totalRestant);
+
+  el.innerHTML = emprunts.map((e) => {
+    const genereCount = e.tableau.filter((l) => l.genere).length;
+    const capitalRestantActuel = genereCount < e.tableau.length ? e.tableau[genereCount].capitalRestant + e.tableau[genereCount].capitalRembourse : 0;
+    const open = empruntDetailId === e.id;
+    return `<div class="card" style="margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;cursor:pointer" onclick="toggleEmpruntDetail(${e.id})">
+        <div>
+          <div style="font-weight:700">${e.nom}${e.banque ? ` · ${e.banque}` : ''}</div>
+          <div style="font-size:11px;color:var(--muted)">${fn(e.montant)} FCFA · ${e.taux}%/an · ${e.duree} mois · depuis ${e.dateDebut}</div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-family:var(--font-mono);font-weight:700">${fn(e.mensualite)} FCFA/mois</div>
+          <div style="font-size:11px;color:var(--muted)">Capital restant : ${fn(capitalRestantActuel)} FCFA · ${genereCount}/${e.duree} échéances</div>
+        </div>
+      </div>
+      ${open ? `<div class="dtw" style="margin-top:12px"><table class="dt"><thead><tr><th>Mois</th><th style="text-align:right">Intérêts</th><th style="text-align:right">Capital</th><th style="text-align:right">Mensualité</th><th style="text-align:right">Capital restant</th><th></th></tr></thead><tbody>${
+        e.tableau.map((l) => `<tr style="${l.genere ? 'opacity:.5' : ''}"><td>${l.mois}</td><td style="text-align:right;font-family:var(--font-mono);color:var(--rust)">${fn(l.interets)}</td><td style="text-align:right;font-family:var(--font-mono)">${fn(l.capitalRembourse)}</td><td style="text-align:right;font-family:var(--font-mono);font-weight:700">${fn(l.mensualite)}</td><td style="text-align:right;font-family:var(--font-mono)">${fn(l.capitalRestant)}</td><td>${l.genere ? '<span class="badge-status ok" style="padding:2px 6px">✓ passée</span>' : `<button class="btn btn-sm-wire" onclick="event.stopPropagation();genererEcheanceEmprunt(${e.id},${l.mois})">Générer</button>`}</td></tr>`).join('')
+      }</tbody></table></div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+async function genererEcheanceEmprunt(empruntId, mois) {
+  const e = emprunts.find((x) => x.id === empruntId);
+  if (!e) return;
+  const ligne = e.tableau.find((l) => l.mois === mois);
+  if (!ligne || ligne.genere) return;
+  const d = new Date(e.dateDebut);
+  d.setMonth(d.getMonth() + mois);
+  const dateEcr = d.toISOString().split('T')[0];
+  const ecr = {
+    id: Date.now(), date: dateEcr, journal: 'BQ', piece: `EMP-${e.id}-${mois}`,
+    libelle: `Échéance ${mois}/${e.duree} — ${e.nom}`, createdAt: new Date().toISOString(),
+    lignes: [
+      { compte: '162', libelle: `Remb. capital — ${e.nom}`, debit: ligne.capitalRembourse, credit: 0 },
+      { compte: '671', libelle: `Intérêts — ${e.nom}`, debit: ligne.interets, credit: 0 },
+      { compte: '521', libelle: `Échéance ${e.nom}`, debit: 0, credit: ligne.mensualite },
+    ],
+  };
+  const docId = await saveEcritureToFirestore(ecr);
+  if (!docId) return;
+  ecritures.push(ecr);
+  ligne.genere = true;
+  if (window._fbReady && currentProfile?.id) {
+    try { await window._fbSetDoc(window._fbDoc(window._db, 'profiles', currentProfile.id, 'emprunts', String(e.id)), e, { merge: true }); } catch (err) {}
+  }
+  auditLog('ECHEANCE_EMPRUNT', 'EMPRUNTS', `Échéance ${mois}/${e.duree} de "${e.nom}" générée — ${fn(ligne.mensualite)} FCFA`);
+  updateStats();
+  renderEmprunts();
+  toast(`✓ Écriture générée — ${fn(ligne.mensualite)} FCFA (${fn(ligne.capitalRembourse)} capital + ${fn(ligne.interets)} intérêts)`, 'success');
+}
+
+window.previewEmprunt = previewEmprunt;
+window.openEmpruntModal = openEmpruntModal;
+window.closeEmpruntModal = closeEmpruntModal;
+window.saveEmprunt = saveEmprunt;
+window.renderEmprunts = renderEmprunts;
+window.toggleEmpruntDetail = toggleEmpruntDetail;
+window.genererEcheanceEmprunt = genererEcheanceEmprunt;
+
+// ══════════════════════════════════════════
 // MODULE RAPPROCHEMENT BANCAIRE
 // ══════════════════════════════════════════
 let lignesReleve = [];
@@ -9447,18 +10225,94 @@ let lignesReleve = [];
 function importReleveBancaire(input) {
   const file = input.files[0];
   if (!file) return;
+  const ext = (file.name.split('.').pop() || '').toLowerCase();
   const reader = new FileReader();
   reader.onload = (e) => {
-    const lines = e.target.result.split('\n').filter(l => l.trim());
-    lignesReleve = lines.slice(1).map(l => {
-      const cols = l.split(/[;,]/).map(c => c.replace(/"/g,'').trim());
-      return { date: cols[0] || '', libelle: cols[1] || '', debit: parseFloat(cols[2]) || 0, credit: parseFloat(cols[3]) || 0, rapproche: false };
-    }).filter(l => l.date);
-    toast(`✓ ${lignesReleve.length} lignes importées du relevé`, 'success');
+    const raw = e.target.result;
+    let lignes;
+    if (ext === 'ofx' || raw.includes('<OFX>') || raw.includes('<STMTTRN>')) {
+      lignes = parseOFX(raw);
+    } else if (ext === 'qif' || raw.trim().startsWith('!Type')) {
+      lignes = parseQIF(raw);
+    } else {
+      lignes = parseCSVReleve(raw);
+    }
+    lignesReleve = lignes;
+    toast(`✓ ${lignesReleve.length} lignes importées du relevé (${ext.toUpperCase() || 'CSV'})`, 'success');
     renderRapprochement();
   };
   reader.readAsText(file, 'UTF-8');
 }
+
+function parseCSVReleve(raw) {
+  const lines = raw.split('\n').filter((l) => l.trim());
+  return lines.slice(1).map((l) => {
+    const cols = l.split(/[;,]/).map((c) => c.replace(/"/g, '').trim());
+    return { date: cols[0] || '', libelle: cols[1] || '', debit: parseFloat(cols[2]) || 0, credit: parseFloat(cols[3]) || 0, rapproche: false };
+  }).filter((l) => l.date);
+}
+
+// Format OFX (Open Financial Exchange) — utilisé par la plupart des banques pour l'export de relevés
+function parseOFX(raw) {
+  const result = [];
+  const blocks = raw.split(/<STMTTRN>/i).slice(1);
+  blocks.forEach((block) => {
+    const get = (tag) => {
+      const m = block.match(new RegExp(`<${tag}>([^<\r\n]*)`, 'i'));
+      return m ? m[1].trim() : '';
+    };
+    const dtRaw = get('DTPOSTED'); // format AAAAMMJJ...
+    const date = dtRaw.length >= 8 ? `${dtRaw.slice(0, 4)}-${dtRaw.slice(4, 6)}-${dtRaw.slice(6, 8)}` : '';
+    const montant = parseFloat(get('TRNAMT')) || 0;
+    const libelle = get('MEMO') || get('NAME') || '';
+    if (!date) return;
+    result.push({
+      date, libelle,
+      debit: montant < 0 ? Math.abs(montant) : 0,
+      credit: montant > 0 ? montant : 0,
+      rapproche: false,
+    });
+  });
+  return result;
+}
+
+// Format QIF (Quicken Interchange Format)
+function parseQIF(raw) {
+  const result = [];
+  const entries = raw.split(/^\^\s*$/m);
+  entries.forEach((entry) => {
+    const lines = entry.split('\n').map((l) => l.trim()).filter(Boolean);
+    if (!lines.length) return;
+    let date = '', montant = 0, libelle = '';
+    lines.forEach((l) => {
+      const code = l[0];
+      const val = l.slice(1).trim();
+      if (code === 'D') {
+        // formats courants : MM/DD/YYYY ou DD/MM/YYYY
+        const parts = val.split(/[\/\-]/);
+        if (parts.length === 3) {
+          let [a, b, c] = parts;
+          if (c.length === 2) c = '20' + c;
+          date = `${c}-${a.padStart(2, '0')}-${b.padStart(2, '0')}`;
+        }
+      } else if (code === 'T' || code === 'U') {
+        montant = parseFloat(val.replace(/,/g, '')) || 0;
+      } else if (code === 'M' || code === 'P') {
+        libelle = libelle || val;
+      }
+    });
+    if (date) {
+      result.push({
+        date, libelle,
+        debit: montant < 0 ? Math.abs(montant) : 0,
+        credit: montant > 0 ? montant : 0,
+        rapproche: false,
+      });
+    }
+  });
+  return result;
+}
+window.importReleveBancaire = importReleveBancaire;
 
 function renderRapprochement() {
   const el = document.getElementById('rapprochementContent');
@@ -10801,6 +11655,73 @@ function renderSocietes() {
 window.openSocieteModal = openSocieteModal;
 window.saveSociete = saveSociete;
 window.switchSociete = switchSociete;
+
+// ══════════════════════════════════════════════════════════════════
+// CONSOLIDATION MULTI-SOCIÉTÉS (simplifiée — sans élimination des opérations intragroupe)
+// ══════════════════════════════════════════════════════════════════
+// Les écritures créées à partir de maintenant sont tagguées avec societeId.
+// Les écritures antérieures (non tagguées) sont regroupées sous la société principale.
+function calculerSyntheseSociete(societeId, principaleId) {
+  const ecrsSociete = ecritures.filter((e) => (e.societeId || principaleId) === societeId);
+  let charges = 0, produits = 0, actif = 0, passif = 0;
+  ecrsSociete.forEach((e) => {
+    (e.lignes || []).forEach((l) => {
+      const c = String(l.compte || '');
+      const solde = (l.debit || 0) - (l.credit || 0);
+      if (c.startsWith('6')) charges += solde;
+      else if (c.startsWith('7')) produits += -solde;
+      else if (c.startsWith('2') || c.startsWith('3') || c.startsWith('4') || c.startsWith('5')) {
+        if (solde > 0) actif += solde; else passif += -solde;
+      } else if (c.startsWith('1')) {
+        passif += -solde;
+      }
+    });
+  });
+  return { nbEcritures: ecrsSociete.length, charges, produits, resultat: produits - charges, actif, passif: passif + Math.max(produits - charges, 0) };
+}
+
+function renderConsolidation() {
+  const el = document.getElementById('consolidationContent');
+  if (!el) return;
+  if (allSocietes.length < 1) { el.innerHTML = '<div class="empty-state"><div class="icon">🏢</div><p>Créez au moins une société dans "Multi-sociétés".</p></div>'; return; }
+  const principaleId = allSocietes.find((s) => s.estPrincipale)?.id || allSocietes[0]?.id;
+  const lignes = allSocietes.map((s) => ({ societe: s, synthese: calculerSyntheseSociete(s.id, principaleId) }));
+
+  const totalActif = lignes.reduce((s, l) => s + l.synthese.actif, 0);
+  const totalPassif = lignes.reduce((s, l) => s + l.synthese.passif, 0);
+  const totalProduits = lignes.reduce((s, l) => s + l.synthese.produits, 0);
+  const totalCharges = lignes.reduce((s, l) => s + l.synthese.charges, 0);
+  const kpi = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+  kpi('conso-kpi-nb', allSocietes.length);
+  kpi('conso-kpi-actif', fn(totalActif));
+  kpi('conso-kpi-produits', fn(totalProduits));
+  kpi('conso-kpi-resultat', fn(totalProduits - totalCharges));
+
+  el.innerHTML = `
+    <div class="empty-state" style="background:rgba(212,168,83,.06);border:1px solid rgba(212,168,83,.2);border-radius:var(--r);padding:12px;margin-bottom:16px;text-align:left">
+      <p style="margin:0;font-size:12px;color:var(--muted)">ℹ️ Consolidation simplifiée : cumul des soldes de chaque société, <strong>sans élimination des opérations intragroupe</strong> (créances/dettes ou ventes/achats entre sociétés du groupe ne sont pas neutralisées).</p>
+    </div>
+    <div class="dtw"><table class="dt"><thead><tr><th>Société</th><th style="text-align:right">Actif</th><th style="text-align:right">Passif</th><th style="text-align:right">Produits</th><th style="text-align:right">Charges</th><th style="text-align:right">Résultat</th></tr></thead><tbody>${
+      lignes.map(({ societe, synthese }) => `<tr>
+        <td><strong>${societe.nom}</strong>${societe.estPrincipale ? ' <span class="badge-status ok" style="padding:1px 5px">principale</span>' : ''}</td>
+        <td style="text-align:right;font-family:var(--font-mono)">${fn(synthese.actif)}</td>
+        <td style="text-align:right;font-family:var(--font-mono)">${fn(synthese.passif)}</td>
+        <td style="text-align:right;font-family:var(--font-mono);color:#4ade80">${fn(synthese.produits)}</td>
+        <td style="text-align:right;font-family:var(--font-mono);color:#f87171">${fn(synthese.charges)}</td>
+        <td style="text-align:right;font-family:var(--font-mono);font-weight:700;color:${synthese.resultat >= 0 ? '#4ade80' : '#f87171'}">${fn(synthese.resultat)}</td>
+      </tr>`).join('')
+    }
+    <tr class="total-row">
+      <td style="font-weight:700">GROUPE CONSOLIDÉ</td>
+      <td style="text-align:right;font-family:var(--font-mono);font-weight:700">${fn(totalActif)}</td>
+      <td style="text-align:right;font-family:var(--font-mono);font-weight:700">${fn(totalPassif)}</td>
+      <td style="text-align:right;font-family:var(--font-mono);font-weight:700;color:#4ade80">${fn(totalProduits)}</td>
+      <td style="text-align:right;font-family:var(--font-mono);font-weight:700;color:#f87171">${fn(totalCharges)}</td>
+      <td style="text-align:right;font-family:var(--font-mono);font-weight:700;color:${(totalProduits - totalCharges) >= 0 ? '#4ade80' : '#f87171'}">${fn(totalProduits - totalCharges)}</td>
+    </tr>
+    </tbody></table></div>`;
+}
+window.renderConsolidation = renderConsolidation;
 window.ajouterExercice = ajouterExercice;
 window.renderSocietes = renderSocietes;
 
@@ -11552,8 +12473,11 @@ async function chargerDonneesProprietaire(ownerUid) {
     loadClientsFromFirestore(),
     loadFournisseursFromFirestore(),
     loadFacturesFromFirestore(),
+    loadCommandesFournisseurs(),
+    loadBonsLivraison(),
     loadSalaries(),
     loadImmobilisations(),
+    loadEmprunts(),
     loadStocks(),
     loadBudgets(),
   ]);
