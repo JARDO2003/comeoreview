@@ -2967,6 +2967,82 @@ const RENDERERS = {
   modifications: renderModifications,
 };
 
+// ══════════════════════════════════════════════════════════════════
+// GUIDE CONTEXTUEL — petit bouton "?" qui explique l'onglet aux débutants
+// ══════════════════════════════════════════════════════════════════
+const GUIDES = {
+  societes: {
+    title: '🏢 Multi-sociétés — Guide',
+    sub: 'Gérer plusieurs entreprises ou exercices depuis un seul compte',
+    steps: [
+      '<strong>1. Créer une société</strong> — cliquez sur "+ Nouvelle société" et renseignez son nom, sa forme juridique (SARL, SA...), son RCCM et son NIF.',
+      '<strong>2. Basculer entre sociétés</strong> — la carte "Actif" en haut indique la société actuellement sélectionnée. Cliquez sur une autre carte pour basculer dessus.',
+      '<strong>3. Exercices</strong> — chaque société peut avoir plusieurs exercices comptables (années). Le bouton "+ Exercice" en ajoute un nouveau.',
+      '<strong>4. Modifier une société</strong> — le bouton "✎ Modifier" permet de corriger ses informations légales à tout moment.',
+      '⚠️ <strong>Important</strong> : les écritures que vous créez sont automatiquement associées à la société active au moment de la saisie (utile pour la Consolidation groupe).',
+    ],
+  },
+  consolidation: {
+    title: '🌐 Consolidation groupe — Guide',
+    sub: 'Voir la situation cumulée de toutes vos sociétés',
+    steps: [
+      'Cette page additionne automatiquement les soldes (Actif, Passif, Produits, Charges, Résultat) de <strong>toutes les sociétés</strong> créées dans "Multi-sociétés".',
+      'Chaque ligne du tableau correspond à une société ; la dernière ligne "GROUPE CONSOLIDÉ" est la somme de toutes les sociétés.',
+      '⚠️ <strong>Limite à connaître</strong> : c\'est une consolidation simplifiée. Les opérations <em>entre vos propres sociétés</em> (une vente d\'une société du groupe à une autre) ne sont pas neutralisées/éliminées — elles apparaîtront donc en double si elles existent.',
+      'Si les montants affichent 0, c\'est normal tant qu\'aucune écriture n\'a été saisie pour vos sociétés.',
+    ],
+  },
+  analytique: {
+    title: '📊 Comptabilité analytique — Guide',
+    sub: 'Suivre vos coûts par projet, service ou activité',
+    steps: [
+      '<strong>1. Créer un centre de coût</strong> — cliquez sur "+ Nouveau centre" : donnez-lui un nom (ex: "Chantier Cocody", "Service Marketing") et un code.',
+      '<strong>2. Ventiler une charge</strong> — lors de la saisie d\'une écriture (classe 6), vous pourrez affecter tout ou partie du montant à un ou plusieurs centres de coût.',
+      '<strong>3. Analyser</strong> — cette page vous montre ensuite combien chaque centre de coût a réellement consommé, pour comparer vos projets entre eux.',
+      '<strong>4. Rapport PDF</strong> — le bouton "↓ Rapport PDF" exporte la ventilation complète pour la direction ou un bailleur de fonds.',
+      'ℹ️ Si "Aucun centre de coût" s\'affiche, commencez par en créer au moins un.',
+    ],
+  },
+  exercices: {
+    title: '🔄 Clôture d\'exercice — Guide',
+    sub: 'Clôturer une année comptable et ouvrir la suivante',
+    steps: [
+      '<strong>Étape 1 — Vérification</strong> : cliquez sur "Vérifier" pour vous assurer que la balance est équilibrée (débit = crédit) et qu\'il n\'y a pas d\'anomalie avant de clôturer.',
+      '<strong>Étape 2 — Inventaire</strong> : contrôlez vos amortissements (bouton "→ Immob."), vos stocks et vos provisions de fin d\'année.',
+      '<strong>Étape 3 — Clôture des comptes</strong> : le bouton "Générer écritures" solde les comptes de charges et produits (classe 6/7) et vire le résultat vers le compte 13x (résultat de l\'exercice).',
+      '<strong>Étape 4 — Ouverture N+1</strong> : le bouton "Ouvrir N+1" crée automatiquement l\'exercice suivant et reporte les soldes des comptes de bilan (à-nouveaux).',
+      '⚠️ Une fois clôturé, un exercice ne peut normalement plus être modifié — assurez-vous d\'avoir bien vérifié avant de passer à l\'étape suivante.',
+      '📥 <strong>Import Saari/Sage</strong> : plus bas sur cette page, vous pouvez importer vos données existantes au format CSV exporté depuis Saari ou Sage Ligne 100.',
+    ],
+  },
+  lettrage: {
+    title: '🔗 Lettrage & Échéances — Guide',
+    sub: 'Faire correspondre les factures avec leurs règlements',
+    steps: [
+      '<strong>1. Choisissez l\'onglet</strong> "Clients (411)" pour vos créances, ou "Fournisseurs (401)" pour vos dettes.',
+      '<strong>2. Lettrage automatique</strong> — le bouton "⚡ Lettrage auto" associe chaque règlement à la facture la plus ancienne non soldée du même tiers (méthode FIFO, premier entré premier sorti).',
+      '<strong>3. Regrouper par client/fournisseur</strong> — si vous utilisez des sous-comptes dédiés par tiers (ex: 411001 pour un client précis, comme dans Sage/Saari), le lettrage regroupera automatiquement ses mouvements. Sinon, le regroupement se fait par le libellé saisi sur chaque écriture — veillez à utiliser un libellé cohérent (ex: toujours "Client Kouassi") pour bien les relier.',
+      '<strong>4. Lire le résultat</strong> — "✓ Lettré" en vert signifie que le solde du tiers est à zéro (tout est payé) ; un montant en rouge indique ce qui reste dû.',
+      '<strong>5. Balance âgée</strong> — le bouton "↓ Balance âgée PDF" exporte un état classé par ancienneté (< 30j, 30-60j, 60-90j, > 90j) pour vos relances ou votre trésorerie prévisionnelle.',
+      'ℹ️ "Aucun mouvement" signifie simplement qu\'aucune écriture n\'a encore été saisie sur les comptes 411/401 concernés.',
+    ],
+  },
+};
+
+function openGuide(key) {
+  const guide = GUIDES[key];
+  if (!guide) return;
+  document.getElementById('guideModalTitle').textContent = guide.title;
+  document.getElementById('guideModalSub').textContent = guide.sub;
+  document.getElementById('guideModalBody').innerHTML = '<ol style="padding-left:18px;margin:0">' + guide.steps.map((s) => `<li style="margin-bottom:10px">${s}</li>`).join('') + '</ol>';
+  document.getElementById('guideModal').style.display = 'flex';
+}
+function closeGuideModal() {
+  document.getElementById('guideModal').style.display = 'none';
+}
+window.openGuide = openGuide;
+window.closeGuideModal = closeGuideModal;
+
 function navigate(view) {
   document.querySelectorAll('.view').forEach((v) => v.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach((n) => n.classList.remove('active'));
@@ -10469,60 +10545,75 @@ function afficherLettrage(cpte) {
   renderLettrage();
 }
 
+// Calcule les mouvements groupés par tiers (sous-compte dédié ou libellé) avec
+// répartition par ancienneté — utilisé à la fois par l'écran et l'export PDF.
+function calculerTiersMvts(mode) {
+  const map = getMap();
+  const tiersMvts = {};
+  const today = new Date();
+  Object.entries(map).filter(([c]) => c.startsWith(mode)).forEach(([c, acc]) => {
+    acc.mvts.forEach((m) => {
+      const tiers = tiersKeyFor(c, m.libelle);
+      if (!tiersMvts[tiers]) tiersMvts[tiers] = { mvts: [], solde: 0, nom: m.libelle || c, ranges: [0, 0, 0, 0] };
+      tiersMvts[tiers].mvts.push({ ...m, compte: c });
+      tiersMvts[tiers].solde += m.debit - m.credit;
+      if (!tiersMvts[tiers].nom && m.libelle) tiersMvts[tiers].nom = m.libelle;
+      const age = (today - new Date(m.date)) / 86400000;
+      const val = Math.abs(m.debit - m.credit);
+      if (age < 30) tiersMvts[tiers].ranges[0] += val;
+      else if (age < 60) tiersMvts[tiers].ranges[1] += val;
+      else if (age < 90) tiersMvts[tiers].ranges[2] += val;
+      else tiersMvts[tiers].ranges[3] += val;
+    });
+  });
+  return tiersMvts;
+}
+
 function renderLettrage() {
   const el = document.getElementById('lettrageContent');
   if (!el) return;
-  const map = getMap();
-  // Grouper les mouvements par tiers (libellé)
-  const tiersMvts = {};
-  Object.entries(map).filter(([c]) => c.startsWith(lettrageMode)).forEach(([c, acc]) => {
-    acc.mvts.forEach(m => {
-      const tiers = m.libelle || c;
-      if (!tiersMvts[tiers]) tiersMvts[tiers] = { mvts: [], solde: 0 };
-      tiersMvts[tiers].mvts.push({ ...m, compte: c });
-      tiersMvts[tiers].solde += m.debit - m.credit;
-    });
-  });
+  const tiersMvts = calculerTiersMvts(lettrageMode);
   // KPIs
   const totalClients = Object.values(tiersMvts).filter(t => t.solde > 0).reduce((s, t) => s + t.solde, 0);
   const totalFourn = Object.values(tiersMvts).filter(t => t.solde < 0).reduce((s, t) => s + Math.abs(t.solde), 0);
   document.getElementById('lettr-kpi-clients').textContent = fn(totalClients);
   document.getElementById('lettr-kpi-fourn').textContent = fn(totalFourn);
   const today = new Date();
+  // Retard : côté clients (411) on regarde les créances (débit) impayées > 30j ;
+  // côté fournisseurs (401) on regarde les dettes (crédit) impayées > 30j.
   const retard = Object.values(tiersMvts).reduce((s, t) => {
     return s + t.mvts.filter(m => {
       const d = new Date(m.date);
-      return (today - d) / 86400000 > 30 && m.debit > 0;
-    }).reduce((ss, m) => ss + m.debit, 0);
+      const ancien = (today - d) / 86400000 > 30;
+      return ancien && (lettrageMode === '401' ? m.credit > 0 : m.debit > 0);
+    }).reduce((ss, m) => ss + (lettrageMode === '401' ? m.credit : m.debit), 0);
   }, 0);
   document.getElementById('lettr-kpi-retard').textContent = fn(retard);
-  const total = Object.values(tiersMvts).reduce((s, t) => s + t.mvts.length, 0);
-  document.getElementById('lettr-kpi-lettre').textContent = total > 0 ? Math.round((total - Object.keys(tiersMvts).length) / total * 100) + '%' : '0%';
+  // % lettré : calculé sur le résultat réel du dernier lettrage automatique lancé (pas une estimation).
+  let totalMvtsLettr = 0, totalMvtsOk = 0;
+  Object.values(lettrageState).forEach((t) => {
+    totalMvtsLettr += t.factures.length + t.reglements.length;
+    totalMvtsOk += t.factures.filter((f) => f.reste < 0.01).length + t.reglements.filter((r) => r.reste < 0.01).length;
+  });
+  document.getElementById('lettr-kpi-lettre').textContent = totalMvtsLettr > 0 ? Math.round((totalMvtsOk / totalMvtsLettr) * 100) + '%' : '—';
   if (!Object.keys(tiersMvts).length) {
     el.innerHTML = `<div class="empty-state"><div class="icon">🔗</div><p>Aucun mouvement sur les comptes ${lettrageMode}xxx.</p></div>`;
     return;
   }
   // Balance âgée + détail lettrage si lancé
   el.innerHTML = `<div class="dtw"><table class="balance-agee-table"><thead><tr><th>Tiers</th><th>&lt; 30j</th><th>30–60j</th><th class="col-retard">60–90j</th><th class="col-tres-retard">&gt; 90j</th><th>Total</th><th>Solde résiduel</th></tr></thead><tbody>${
-    Object.entries(tiersMvts).map(([tiers, data]) => {
-      const ranges = [0, 0, 0, 0];
-      data.mvts.forEach(m => {
-        const age = (today - new Date(m.date)) / 86400000;
-        const val = Math.abs(m.debit - m.credit);
-        if (age < 30) ranges[0] += val;
-        else if (age < 60) ranges[1] += val;
-        else if (age < 90) ranges[2] += val;
-        else ranges[3] += val;
-      });
-      const etat = lettrageState[tiers];
+    Object.entries(tiersMvts).map(([tiersKey, data]) => {
+      const ranges = data.ranges;
+      const etat = lettrageState[tiersKey];
       const residuel = etat ? etat.soldeResiduel : null;
       const residuelCell = residuel !== null
         ? `<span style="color:${Math.abs(residuel)<0.01?'var(--green)':'var(--red)'}">
              ${Math.abs(residuel)<0.01 ? '✓ Lettré' : fn(Math.abs(residuel)) + ' FCFA'}
            </span>`
         : '<span style="color:var(--muted)">—</span>';
+      const label = tiersKey.length > 3 && /^\d+$/.test(tiersKey) ? `${data.nom || tiersKey} <span style="font-size:10px;color:var(--muted)">(cpte ${tiersKey})</span>` : tiersKey;
       return `<tr>
-        <td><strong>${tiers}</strong></td>
+        <td><strong>${label}</strong></td>
         <td>${fn(ranges[0])}</td><td>${fn(ranges[1])}</td>
         <td class="col-retard">${fn(ranges[2])}</td>
         <td class="col-tres-retard">${fn(ranges[3])}</td>
@@ -10534,6 +10625,14 @@ function renderLettrage() {
       </td></tr>` : ''}`;
     }).join('')
   }</tbody></table></div>`;
+}
+
+// Clé de regroupement d'un tiers : privilégie un sous-compte dédié (ex: 411001) s'il existe,
+// sinon retombe sur le libellé de l'écriture (compatibilité avec les comptes génériques 411/401).
+function tiersKeyFor(compte, libelle) {
+  const c = String(compte || '');
+  if (c.length > 3 && /^\d+$/.test(c)) return c;
+  return libelle || compte;
 }
 
 // ── État lettrage ──
@@ -10553,7 +10652,7 @@ function lancerLettrage() {
     .filter(([c]) => c.startsWith(lettrageMode))
     .forEach(([c, acc]) => {
       acc.mvts.forEach((m) => {
-        const tiers = m.libelle || c;
+        const tiers = tiersKeyFor(c, m.libelle);
         if (!lettrageState[tiers]) {
           lettrageState[tiers] = { factures: [], reglements: [], lettres: [], soldeResiduel: 0 };
         }
@@ -10610,17 +10709,15 @@ function exportBalanceAgeePDF() {
     doc.text('BALANCE ÂGÉE — ' + company, 14, 18);
     doc.setFontSize(9); doc.setFont('helvetica','normal');
     doc.text('Édité le ' + today, 14, 25);
-    const map = getMap();
     const headers = [['Tiers','< 30J','30-60J','60-90J','> 90J','TOTAL']];
-    const rows401 = [], rows411 = [];
-    Object.entries(map).forEach(([code, acc]) => {
-      if (!code.startsWith('401') && !code.startsWith('411')) return;
-      const s = acc.debit - acc.credit;
-      if (Math.abs(s) < 1) return;
-      const row = [PC[code] || code, fnPDF(Math.abs(s)), '0','0','0', fnPDF(Math.abs(s))];
-      if (code.startsWith('411')) rows411.push(row);
-      else rows401.push(row);
-    });
+    const buildRows = (mode) => Object.entries(calculerTiersMvts(mode))
+      .filter(([, data]) => Math.abs(data.solde) >= 1)
+      .map(([tiersKey, data]) => {
+        const label = tiersKey.length > 3 && /^\d+$/.test(tiersKey) ? `${data.nom || tiersKey} (cpte ${tiersKey})` : tiersKey;
+        return [label, fnPDF(data.ranges[0]), fnPDF(data.ranges[1]), fnPDF(data.ranges[2]), fnPDF(data.ranges[3]), fnPDF(Math.abs(data.solde))];
+      });
+    const rows411 = buildRows('411');
+    const rows401 = buildRows('401');
     doc.setFontSize(11); doc.setFont('helvetica','bold');
     doc.text('CLIENTS (411)', 14, 35);
     doc.autoTable({ head: headers, body: rows411.length ? rows411 : [['Aucune créance','','','','','']], startY: 38, styles: {fontSize:8}, headStyles:{fillColor:[30,30,40],textColor:[212,168,83]} });
