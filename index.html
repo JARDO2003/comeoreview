@@ -214,6 +214,9 @@
 <div class="sb-section">
   <div class="sb-title">Facturation</div>
   <div class="nav-item" onclick="navigate('factures');closeMobileSidebar()"><span class="nav-icon">🧾</span> Factures</div>
+  <div class="nav-item" onclick="navigate('relances');closeMobileSidebar()"><span class="nav-icon">✉</span> Relances clients</div>
+  <div class="nav-item" onclick="navigate('livraisons');closeMobileSidebar()"><span class="nav-icon">🚚</span> Bons de livraison</div>
+  <div class="nav-item" onclick="navigate('commandes');closeMobileSidebar()"><span class="nav-icon">📥</span> Commandes fournisseurs</div>
   <div class="nav-item" onclick="navigate('devis');closeMobileSidebar()"><span class="nav-icon">📋</span> Devis / Proformas</div>
   <div class="nav-item" onclick="navigate('clients');closeMobileSidebar()"><span class="nav-icon">👥</span> Clients</div>
   <div class="nav-item" onclick="navigate('fournisseurs');closeMobileSidebar()"><span class="nav-icon">🏭</span> Fournisseurs</div>
@@ -227,7 +230,9 @@
 <div class="sb-section">
   <div class="sb-title">Gestion RH</div>
   <div class="nav-item" onclick="navigate('paie');closeMobileSidebar()"><span class="nav-icon">👤</span> Paie & Salaires</div>
+  <div class="nav-item" onclick="navigate('declsociales');closeMobileSidebar()"><span class="nav-icon">🛡️</span> Déclarations sociales (CNPS)</div>
   <div class="nav-item" onclick="navigate('immobilisations');closeMobileSidebar()"><span class="nav-icon">🏗️</span> Immobilisations</div>
+  <div class="nav-item" onclick="navigate('emprunts');closeMobileSidebar()"><span class="nav-icon">🏦</span> Emprunts</div>
 </div>
 <div class="sb-section">
   <div class="sb-title">Gestion</div>
@@ -246,6 +251,7 @@
   <div class="nav-item" onclick="navigate('analytique');closeMobileSidebar()"><span class="nav-icon">📊</span> Comptabilité analytique</div>
   <div class="nav-item" onclick="navigate('effets');closeMobileSidebar()"><span class="nav-icon">📄</span> Effets de commerce</div>
   <div class="nav-item" onclick="navigate('societes');closeMobileSidebar()"><span class="nav-icon">🏢</span> Multi-sociétés</div>
+  <div class="nav-item" onclick="navigate('consolidation');closeMobileSidebar()"><span class="nav-icon">🌐</span> Consolidation groupe</div>
   <div class="nav-item" onclick="navigate('utilisateurs');closeMobileSidebar()"><span class="nav-icon">👥</span> Utilisateurs & Droits</div>
   <div class="nav-item" onclick="navigate('modifications');closeMobileSidebar()"><span class="nav-icon">✎</span> Modifications <span class="nav-badge" id="modifPendingBadge">0</span></div>
 </div>
@@ -420,11 +426,15 @@
         </select>
       </div>
       <div class="field"><label>Monnaie</label>
-        <select id="fac-monnaie">
+        <select id="fac-monnaie" onchange="toggleTauxChangeField()">
           <option value="FCFA">FCFA (XOF)</option>
           <option value="EUR">Euro (€)</option>
           <option value="USD">Dollar ($)</option>
         </select>
+      </div>
+      <div class="field" id="fac-taux-change-field" style="display:none">
+        <label>Taux de change (1 devise = X FCFA)</label>
+        <input type="number" id="fac-taux-change" step="0.01" placeholder="ex: 656 pour 1€">
       </div>
     </div>
     <div class="field full" style="margin-bottom:14px">
@@ -439,6 +449,51 @@
       <button class="btn btn-wire" onclick="previewFacturePDF()">👁 Aperçu PDF</button>
       <button class="btn btn-ink" onclick="saveFacture('envoyee')">✓ Valider & Enregistrer</button>
     </div>
+  </div>
+</div>
+
+<!-- ═══════════════════ RELANCES CLIENTS ═══════════════════ -->
+<div class="view" id="view-relances">
+  <div class="ph">
+    <div><h1>Relances clients</h1><p>Factures en retard · Lettres de relance à 3 niveaux d'escalade</p></div>
+  </div>
+  <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:16px">
+    <div class="kpi"><div class="kpi-label">Factures en retard</div><div class="kpi-value" id="relance-kpi-nb" style="color:var(--red)">0</div><div class="kpi-sub">à relancer</div></div>
+    <div class="kpi"><div class="kpi-label">Montant dû</div><div class="kpi-value" id="relance-kpi-montant" style="color:var(--warm)">0</div><div class="kpi-sub">FCFA</div></div>
+    <div class="kpi"><div class="kpi-label">Mises en demeure</div><div class="kpi-value" id="relance-kpi-niv3" style="color:var(--rust)">0</div><div class="kpi-sub">niveau 3</div></div>
+  </div>
+  <div id="relancesContent">
+    <div class="empty-state"><div class="icon">✓</div><p>Aucune facture en retard.</p></div>
+  </div>
+</div>
+
+<!-- ═══════════════════ BONS DE LIVRAISON ═══════════════════ -->
+<div class="view" id="view-livraisons">
+  <div class="ph">
+    <div><h1>Bons de livraison</h1><p>Preuves de livraison client, rattachables à une facture</p></div>
+    <div class="ph-actions"><button class="btn btn-ink" onclick="openBlModal()">+ Nouveau bon de livraison</button></div>
+  </div>
+  <div class="kpi-grid" style="grid-template-columns:repeat(1,1fr);max-width:220px;margin-bottom:16px">
+    <div class="kpi"><div class="kpi-label">Bons émis</div><div class="kpi-value" id="bl-kpi-nb" style="color:var(--blue)">0</div><div class="kpi-sub">total</div></div>
+  </div>
+  <div id="blContent">
+    <div class="empty-state"><div class="icon">🚚</div><p>Aucun bon de livraison.</p></div>
+  </div>
+</div>
+
+<!-- ═══════════════════ COMMANDES FOURNISSEURS ═══════════════════ -->
+<div class="view" id="view-commandes">
+  <div class="ph">
+    <div><h1>Commandes fournisseurs</h1><p>Cycle achats complet — commande → réception → facture</p></div>
+    <div class="ph-actions"><button class="btn btn-ink" onclick="openCommandeModal()">+ Nouvelle commande</button></div>
+  </div>
+  <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:16px">
+    <div class="kpi"><div class="kpi-label">Commandes</div><div class="kpi-value" id="cmd-kpi-nb" style="color:var(--blue)">0</div><div class="kpi-sub">total</div></div>
+    <div class="kpi"><div class="kpi-label">En attente</div><div class="kpi-value" id="cmd-kpi-attente" style="color:var(--warm)">0</div><div class="kpi-sub">de réception</div></div>
+    <div class="kpi"><div class="kpi-label">Montant total</div><div class="kpi-value" id="cmd-kpi-montant" style="color:var(--green)">0</div><div class="kpi-sub">FCFA HT</div></div>
+  </div>
+  <div id="commandesContent">
+    <div class="empty-state"><div class="icon">📦</div><p>Aucune commande fournisseur.</p></div>
   </div>
 </div>
 
@@ -835,6 +890,8 @@
         <div><h1>Bilan</h1><p>Situation au <span id="bilanDate">31/12/2024</span></p></div>
         <div class="ph-actions">
           <button class="btn btn-sm-wire" onclick="voirModificationsModule('bilan')">✎ Modifications</button>
+          <button class="btn btn-sm-wire" onclick="exportEtatProvisions()" title="Annexe SYSCOHADA">↓ État provisions</button>
+          <button class="btn btn-sm-wire" onclick="exportEcheancierCreancesDettes()" title="Annexe SYSCOHADA">↓ Échéancier créances/dettes</button>
           <button class="btn btn-sm-wire" onclick="openExportModal()">⎙ Exporter</button>
         </div>
       </div>
@@ -891,6 +948,21 @@
       </div>
     </div>
 
+    <!-- ═══════════════════ DÉCLARATIONS SOCIALES (CNPS) ═══════════════════ -->
+    <div class="view" id="view-declsociales">
+      <div class="ph">
+        <div><h1>Déclarations sociales</h1><p>Bordereaux de cotisations CNPS mensuels, générés à partir des bulletins de paie</p></div>
+      </div>
+      <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:16px">
+        <div class="kpi"><div class="kpi-label">Mois déclarés</div><div class="kpi-value" id="decl-soc-kpi-mois" style="color:var(--blue)">0</div><div class="kpi-sub">bordereaux</div></div>
+        <div class="kpi"><div class="kpi-label">Total dû CNPS</div><div class="kpi-value" id="decl-soc-kpi-total" style="color:var(--warm)">0</div><div class="kpi-sub">FCFA cumulé</div></div>
+        <div class="kpi"><div class="kpi-label">Bulletins</div><div class="kpi-value" id="decl-soc-kpi-effectif" style="color:var(--green)">0</div><div class="kpi-sub">au total</div></div>
+      </div>
+      <div id="declSocialesContent">
+        <div class="empty-state"><div class="icon">🛡️</div><p>Aucun bulletin de paie enregistré.</p></div>
+      </div>
+    </div>
+
     <!-- ═══════════════════ IMMOBILISATIONS ═══════════════════ -->
     <div class="view" id="view-immobilisations">
       <div class="ph">
@@ -908,6 +980,25 @@
       </div>
       <div class="card" id="immobContent">
         <div class="empty-state"><div class="icon">🏗️</div><p>Aucune immobilisation enregistrée.</p></div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════ EMPRUNTS ═══════════════════ -->
+    <div class="view" id="view-emprunts">
+      <div class="ph">
+        <div><h1>Emprunts</h1><p>Tableaux d'amortissement de prêts · Méthode française (mensualité constante)</p></div>
+        <div class="ph-actions">
+          <button class="btn btn-ink" onclick="openEmpruntModal()">+ Nouvel emprunt</button>
+        </div>
+      </div>
+      <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
+        <div class="kpi"><div class="kpi-label">Emprunts actifs</div><div class="kpi-value" id="emprunt-kpi-nb" style="color:var(--warm)">0</div><div class="kpi-sub">en cours</div></div>
+        <div class="kpi"><div class="kpi-label">Mensualités</div><div class="kpi-value" id="emprunt-kpi-mensualites" style="color:var(--blue)">0</div><div class="kpi-sub">FCFA / mois</div></div>
+        <div class="kpi"><div class="kpi-label">Coût du crédit</div><div class="kpi-value" id="emprunt-kpi-interets" style="color:var(--rust)">0</div><div class="kpi-sub">intérêts totaux</div></div>
+        <div class="kpi"><div class="kpi-label">Capital restant dû</div><div class="kpi-value" id="emprunt-kpi-restant" style="color:var(--green)">0</div><div class="kpi-sub">FCFA</div></div>
+      </div>
+      <div id="empruntsContent">
+        <div class="empty-state"><div class="icon">🏦</div><p>Aucun emprunt enregistré.</p></div>
       </div>
     </div>
 
@@ -937,7 +1028,7 @@
         <div><h1>Rapprochement bancaire</h1><p>Import relevé · Rapprochement auto avec journal BQ</p></div>
         <div class="ph-actions">
           <button class="btn btn-sm-wire" onclick="exportRapprochementPDF()">↓ État PDF</button>
-          <label class="btn btn-ink" style="cursor:pointer">📁 Importer relevé CSV <input type="file" id="releveBancaireInput" accept=".csv" style="display:none" onchange="importReleveBancaire(this)"></label>
+          <label class="btn btn-ink" style="cursor:pointer">📁 Importer relevé (CSV/OFX/QIF) <input type="file" id="releveBancaireInput" accept=".csv,.ofx,.qif" style="display:none" onchange="importReleveBancaire(this)"></label>
         </div>
       </div>
       <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
@@ -1129,6 +1220,22 @@
       </div>
       <div id="societesContent">
         <div class="empty-state"><div class="icon">🏢</div><p>Chargement des sociétés…</p></div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════ CONSOLIDATION GROUPE ═══════════════════ -->
+    <div class="view" id="view-consolidation">
+      <div class="ph">
+        <div><h1>Consolidation groupe</h1><p>Cumul des soldes de toutes les sociétés du groupe</p></div>
+      </div>
+      <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
+        <div class="kpi"><div class="kpi-label">Sociétés incluses</div><div class="kpi-value" id="conso-kpi-nb" style="color:var(--blue)">0</div><div class="kpi-sub">dans le groupe</div></div>
+        <div class="kpi"><div class="kpi-label">Actif cumulé</div><div class="kpi-value" id="conso-kpi-actif" style="color:var(--teal)">0</div><div class="kpi-sub">FCFA</div></div>
+        <div class="kpi"><div class="kpi-label">Produits cumulés</div><div class="kpi-value" id="conso-kpi-produits" style="color:var(--green)">0</div><div class="kpi-sub">FCFA</div></div>
+        <div class="kpi"><div class="kpi-label">Résultat cumulé</div><div class="kpi-value" id="conso-kpi-resultat" style="color:var(--warm)">0</div><div class="kpi-sub">FCFA</div></div>
+      </div>
+      <div id="consolidationContent">
+        <div class="empty-state"><div class="icon">🏢</div><p>Créez au moins une société.</p></div>
       </div>
     </div>
 
@@ -1332,6 +1439,90 @@
     <div class="modal-actions" style="margin-top:14px">
       <button class="btn-modal-cancel" onclick="document.getElementById('immobModal').style.display='none'">Annuler</button>
       <button class="btn-modal-ok" onclick="saveImmob()">✓ Enregistrer</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ MODAL COMMANDE FOURNISSEUR ═══ -->
+<div id="commandeModal" class="modal-overlay" style="display:none">
+  <div class="modal-box" style="width:680px;max-height:90vh;overflow-y:auto">
+    <div class="modal-title">📥 Nouvelle commande fournisseur</div>
+    <div class="fg c3" style="margin-top:12px">
+      <div class="field"><label>Fournisseur</label><input type="text" id="cmd-fournisseur" placeholder="Nom du fournisseur"></div>
+      <div class="field"><label>Date commande</label><input type="date" id="cmd-date"></div>
+      <div class="field"><label>Livraison prévue</label><input type="date" id="cmd-date-livraison"></div>
+    </div>
+    <table class="jnl-lignes-table" style="margin-top:12px;width:100%">
+      <thead><tr><th>Désignation</th><th style="width:90px">Qté</th><th style="width:120px">P.U.</th><th style="width:110px;text-align:right">Total</th><th style="width:30px"></th></tr></thead>
+      <tbody id="cmdLignesBody"></tbody>
+    </table>
+    <button class="add-line-btn" onclick="addCmdLigne()">＋ Ajouter une ligne</button>
+    <div style="text-align:right;margin-top:10px;font-weight:700">Total HT : <span id="cmd-total">0 FCFA</span></div>
+    <div class="modal-actions">
+      <button class="btn-modal-cancel" onclick="closeCommandeModal()">Annuler</button>
+      <button class="btn-modal-ok" onclick="saveCommande()">✓ Enregistrer la commande</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ MODAL BON DE LIVRAISON ═══ -->
+<div id="blModal" class="modal-overlay" style="display:none">
+  <div class="modal-box" style="width:620px;max-height:90vh;overflow-y:auto">
+    <div class="modal-title">🚚 Nouveau bon de livraison</div>
+    <div class="fg c3" style="margin-top:12px">
+      <div class="field"><label>Client</label><input type="text" id="bl-client" placeholder="Nom du client"></div>
+      <div class="field"><label>Date de livraison</label><input type="date" id="bl-date"></div>
+      <div class="field"><label>Réf. facture (optionnel)</label><input type="text" id="bl-facture" placeholder="ex: FAC-2026-0012"></div>
+    </div>
+    <table class="jnl-lignes-table" style="margin-top:12px;width:100%">
+      <thead><tr><th>Désignation</th><th style="width:100px">Qté livrée</th><th style="width:30px"></th></tr></thead>
+      <tbody id="blLignesBody"></tbody>
+    </table>
+    <button class="add-line-btn" onclick="addBlLigne()">＋ Ajouter une ligne</button>
+    <div class="modal-actions">
+      <button class="btn-modal-cancel" onclick="closeBlModal()">Annuler</button>
+      <button class="btn-modal-ok" onclick="saveBl()">✓ Créer le bon de livraison</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ MODAL EMPRUNT ═══ -->
+<div id="empruntModal" class="modal-overlay" style="display:none">
+  <div class="modal-box" style="width:560px">
+    <div class="modal-title">🏦 Nouvel emprunt</div>
+    <div class="modal-sub">Génère automatiquement le tableau d'amortissement (mensualité constante)</div>
+    <div class="fg c2" style="margin-top:12px">
+      <div class="field"><label>Désignation</label><input type="text" id="emprunt-nom" placeholder="ex: Emprunt matériel BOA"></div>
+      <div class="field"><label>Banque</label><input type="text" id="emprunt-banque" placeholder="optionnel"></div>
+      <div class="field"><label>Montant emprunté (FCFA)</label><input type="number" id="emprunt-montant" placeholder="5000000" oninput="previewEmprunt()"></div>
+      <div class="field"><label>Taux annuel (%)</label><input type="number" step="0.01" id="emprunt-taux" placeholder="8.5" oninput="previewEmprunt()"></div>
+      <div class="field"><label>Durée (mois)</label><input type="number" id="emprunt-duree" placeholder="36" oninput="previewEmprunt()"></div>
+      <div class="field"><label>Date de mise en place</label><input type="date" id="emprunt-date"></div>
+    </div>
+    <div id="emprunt-preview" style="margin-top:14px;background:var(--surface2);border:1px solid var(--line);border-radius:var(--r);padding:12px;font-size:12px;display:none"></div>
+    <div class="modal-actions">
+      <button class="btn-modal-cancel" onclick="closeEmpruntModal()">Annuler</button>
+      <button class="btn-modal-ok" onclick="saveEmprunt()">✓ Créer le tableau d'amortissement</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ MODAL CESSION D'IMMOBILISATION ═══ -->
+<div id="cessionImmobModal" class="modal-overlay" style="display:none">
+  <div class="modal-box" style="width:480px">
+    <div class="modal-title">↗ Céder une immobilisation</div>
+    <div class="modal-sub">Sortie du bien du patrimoine — calcul automatique de la plus/moins-value</div>
+    <div style="margin-top:12px;background:var(--surface2);border:1px solid var(--line);border-radius:var(--r);padding:12px">
+      <div style="font-weight:700" id="cession-immob-nom"></div>
+      <div style="font-size:12px;color:var(--muted);margin-top:4px">VNC actuelle : <strong id="cession-immob-vnc" style="color:var(--teal)"></strong></div>
+    </div>
+    <div class="fg c2" style="margin-top:12px">
+      <div class="field"><label>Date de cession</label><input type="date" id="cession-date"></div>
+      <div class="field"><label>Prix de cession (FCFA)</label><input type="number" id="cession-prix" placeholder="0"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-modal-cancel" onclick="closeCessionImmobModal()">Annuler</button>
+      <button class="btn-modal-ok" onclick="validerCessionImmob()">✓ Valider la cession</button>
     </div>
   </div>
 </div>
