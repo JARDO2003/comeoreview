@@ -4705,8 +4705,8 @@ function exportPDF() {
         l.compte,
         (libelleCompte(l.compte)).substring(0, 28),
         l.libelle || e.libelle || '',
-        l.debit ? fn(l.debit) : '',
-        l.credit ? fn(l.credit) : '',
+        l.debit ? fnPDF(l.debit) : '',
+        l.credit ? fnPDF(l.credit) : '',
       ]);
       totalD += l.debit || 0;
       totalC += l.credit || 0;
@@ -4716,7 +4716,7 @@ function exportPDF() {
     startY: 48,
     head: [['Date', 'Jnl', 'N° Pièce', 'Compte', 'Libellé compte', 'Libellé opération', 'Débit FCFA', 'Crédit FCFA']],
     body: tableData,
-    foot: [['', '', '', '', '', 'TOTAUX', fn(totalD), fn(totalC)]],
+    foot: [['', '', '', '', '', 'TOTAUX', fnPDF(totalD), fnPDF(totalC)]],
     styles: { font: 'helvetica', fontSize: 7.5, cellPadding: 2.5 },
     headStyles: { fillColor: [10, 11, 16], textColor: [212, 168, 83], fontStyle: 'bold', fontSize: 7 },
     footStyles: { fillColor: [30, 34, 54], textColor: [212, 168, 83], fontStyle: 'bold', fontSize: 8 },
@@ -8092,12 +8092,12 @@ function texteRelance(fac, niveau) {
   const reste = (fac.ttc || 0) - (fac.montantPaye || 0);
   const dateJour = new Date().toLocaleDateString('fr-FR');
   if (niveau === 1) {
-    return `${company}\nÀ l'attention de ${fac.clientNom}\n\nObjet : Rappel — Facture ${fac.numero}\n\n${dateJour}\n\nMadame, Monsieur,\n\nSauf erreur de notre part, nous n'avons pas encore reçu le règlement de la facture ${fac.numero} d'un montant de ${fn(reste)} FCFA, échue le ${fac.dateEcheance}.\n\nNous vous remercions de bien vouloir procéder à son règlement dans les meilleurs délais, ou de nous contacter si celui-ci est déjà effectué.\n\nCordialement,\n${company}`;
+    return `${company}\nÀ l'attention de ${fac.clientNom}\n\nObjet : Rappel — Facture ${fac.numero}\n\n${dateJour}\n\nMadame, Monsieur,\n\nSauf erreur de notre part, nous n'avons pas encore reçu le règlement de la facture ${fac.numero} d'un montant de ${fnPDF(reste)} FCFA, échue le ${fac.dateEcheance}.\n\nNous vous remercions de bien vouloir procéder à son règlement dans les meilleurs délais, ou de nous contacter si celui-ci est déjà effectué.\n\nCordialement,\n${company}`;
   }
   if (niveau === 2) {
-    return `${company}\nÀ l'attention de ${fac.clientNom}\n\nObjet : Relance — Facture ${fac.numero} toujours impayée\n\n${dateJour}\n\nMadame, Monsieur,\n\nMalgré notre précédent rappel, la facture ${fac.numero} d'un montant de ${fn(reste)} FCFA, échue le ${fac.dateEcheance}, demeure impayée à ce jour.\n\nNous vous demandons de régulariser cette situation sous huitaine. Passé ce délai, nous serons contraints d'engager une procédure de recouvrement.\n\nCordialement,\n${company}`;
+    return `${company}\nÀ l'attention de ${fac.clientNom}\n\nObjet : Relance — Facture ${fac.numero} toujours impayée\n\n${dateJour}\n\nMadame, Monsieur,\n\nMalgré notre précédent rappel, la facture ${fac.numero} d'un montant de ${fnPDF(reste)} FCFA, échue le ${fac.dateEcheance}, demeure impayée à ce jour.\n\nNous vous demandons de régulariser cette situation sous huitaine. Passé ce délai, nous serons contraints d'engager une procédure de recouvrement.\n\nCordialement,\n${company}`;
   }
-  return `${company}\nÀ l'attention de ${fac.clientNom}\n\nObjet : MISE EN DEMEURE — Facture ${fac.numero}\n\n${dateJour}\n\nMadame, Monsieur,\n\nPar la présente, nous vous mettons en demeure de régler sous 8 (huit) jours la facture ${fac.numero} d'un montant de ${fn(reste)} FCFA, échue le ${fac.dateEcheance}, restée impayée malgré nos relances précédentes.\n\nÀ défaut de règlement dans ce délai, nous nous réservons le droit d'engager toute action judiciaire utile au recouvrement de cette créance, sans autre préavis.\n\n${company}`;
+  return `${company}\nÀ l'attention de ${fac.clientNom}\n\nObjet : MISE EN DEMEURE — Facture ${fac.numero}\n\n${dateJour}\n\nMadame, Monsieur,\n\nPar la présente, nous vous mettons en demeure de régler sous 8 (huit) jours la facture ${fac.numero} d'un montant de ${fnPDF(reste)} FCFA, échue le ${fac.dateEcheance}, restée impayée malgré nos relances précédentes.\n\nÀ défaut de règlement dans ce délai, nous nous réservons le droit d'engager toute action judiciaire utile au recouvrement de cette créance, sans autre préavis.\n\n${company}`;
 }
 
 function renderRelances() {
@@ -9007,8 +9007,8 @@ function exportPDFAvance() {
           l.compte,
           (libelleCompte(l.compte)).substring(0, 24),
           l.libelle || e.libelle || '',
-          l.debit ? fn(l.debit) : '',
-          l.credit ? fn(l.credit) : '',
+          l.debit ? fnPDF(l.debit) : '',
+          l.credit ? fnPDF(l.credit) : '',
         ]);
         totalD += l.debit || 0;
         totalC += l.credit || 0;
@@ -9018,7 +9018,7 @@ function exportPDFAvance() {
       startY: 30,
       head: [['Date', 'Jnl', 'Pièce', 'Compte', 'Libellé compte', 'Libellé opération', 'Débit FCFA', 'Crédit FCFA']],
       body: rows,
-      foot: [['', '', '', '', '', 'TOTAUX', fn(totalD), fn(totalC)]],
+      foot: [['', '', '', '', '', 'TOTAUX', fnPDF(totalD), fnPDF(totalC)]],
       styles: { font: 'helvetica', fontSize: 7.5, cellPadding: 2.5 },
       headStyles: { fillColor: [10, 11, 16], textColor: [212, 168, 83], fontStyle: 'bold', fontSize: 7 },
       footStyles: { fillColor: [30, 34, 54], textColor: [212, 168, 83], fontStyle: 'bold', fontSize: 8 },
@@ -9041,7 +9041,7 @@ function exportPDFAvance() {
       .sort()
       .map(([code, acc]) => {
         const s = acc.debit - acc.credit;
-        return [code, (libelleCompte(code)).substring(0, 40), fn(acc.debit), fn(acc.credit), s > 0 ? fn(s) : '', s < 0 ? fn(-s) : ''];
+        return [code, (libelleCompte(code)).substring(0, 40), fnPDF(acc.debit), fnPDF(acc.credit), s > 0 ? fnPDF(s) : '', s < 0 ? fnPDF(-s) : ''];
       });
     doc.autoTable({
       startY: 30,
@@ -9059,9 +9059,9 @@ function exportPDFAvance() {
       f.type,
       f.dateEmission || '',
       f.clientNom || '',
-      fn(f.ht),
-      fn(f.tva),
-      fn(f.ttc),
+      fnPDF(f.ht),
+      fnPDF(f.tva),
+      fnPDF(f.ttc),
       f.statut,
     ]);
     doc.autoTable({
@@ -9420,11 +9420,11 @@ function exportBulletinPDF(salId) {
     startY: 55,
     head: [['Libellé', 'Base', 'Taux', 'Montant (FCFA)']],
     body: [
-      ['Salaire brut',                          fn(sal.brut)+' FCFA',            '100%',    fn(sal.brut)],
-      ['CNPS salarial (retraite)',               fn(sal.brut)+' FCFA',            '7,7%',   '- '+fn(sal.cnpsSal)],
-      ['Abattement forfaitaire',                 fn(sal.brut-sal.cnpsSal)+' FCFA','20%',    '—'],
-      ['Impôt sur le Revenu (barème DGI 2024)',  'Revenu net imposable',          'Progressif','- '+fn(sal.ir)],
-      ['NET À PAYER',                            '',                              '',        fn(sal.netAPayer)],
+      ['Salaire brut',                          fnPDF(sal.brut)+' FCFA',            '100%',    fnPDF(sal.brut)],
+      ['CNPS salarial (retraite)',               fnPDF(sal.brut)+' FCFA',            '7,7%',   '- '+fnPDF(sal.cnpsSal)],
+      ['Abattement forfaitaire',                 fnPDF(sal.brut-sal.cnpsSal)+' FCFA','20%',    '—'],
+      ['Impôt sur le Revenu (barème DGI 2024)',  'Revenu net imposable',          'Progressif','- '+fnPDF(sal.ir)],
+      ['NET À PAYER',                            '',                              '',        fnPDF(sal.netAPayer)],
     ],
     styles: { font:'helvetica', fontSize:9, cellPadding:4 },
     headStyles: { fillColor:[10,11,16], textColor:[212,168,83], fontStyle:'bold' },
@@ -9437,11 +9437,11 @@ function exportBulletinPDF(salId) {
     startY: y,
     head: [["Charges patronales (à la charge de l'employeur)", '', '', '']],
     body: [
-      ['CNPS patronal',          fn(sal.brut)+' FCFA', '16,0%', fn(sal.cnpsPat||0)],
-      ['TPA',                    fn(sal.brut)+' FCFA', '0,4%',  fn(sal.tpa||0)],
-      ['Contribution nationale', fn(sal.brut)+' FCFA', '1,5%',  fn(sal.cn||0)],
-      ['Taxe apprentissage',     fn(sal.brut)+' FCFA', '0,4%',  fn(sal.taxeApp||0)],
-      ['Coût total employeur',   '',                   '',       fn(sal.brut+(sal.chargesPatronales||0))],
+      ['CNPS patronal',          fnPDF(sal.brut)+' FCFA', '16,0%', fnPDF(sal.cnpsPat||0)],
+      ['TPA',                    fnPDF(sal.brut)+' FCFA', '0,4%',  fnPDF(sal.tpa||0)],
+      ['Contribution nationale', fnPDF(sal.brut)+' FCFA', '1,5%',  fnPDF(sal.cn||0)],
+      ['Taxe apprentissage',     fnPDF(sal.brut)+' FCFA', '0,4%',  fnPDF(sal.taxeApp||0)],
+      ['Coût total employeur',   '',                   '',       fnPDF(sal.brut+(sal.chargesPatronales||0))],
     ],
     styles: { font:'helvetica', fontSize:9, cellPadding:3 },
     headStyles: { fillColor:[22,80,60], textColor:[100,220,160], fontStyle:'bold' },
@@ -9532,7 +9532,7 @@ function exportDeclarationCNPS(mois) {
   doc.setFontSize(8); doc.setFont('helvetica', 'normal');
   doc.text(`${company} · Édité le ${new Date().toLocaleDateString('fr-FR')}`, 14, 19);
 
-  const rows = salsMois.map((s) => [s.nom, fn(s.brut), fn(s.cnpsSal), fn(s.cnpsPat || 0), fn((s.cnpsSal || 0) + (s.cnpsPat || 0))]);
+  const rows = salsMois.map((s) => [s.nom, fnPDF(s.brut), fnPDF(s.cnpsSal), fnPDF(s.cnpsPat || 0), fnPDF((s.cnpsSal || 0) + (s.cnpsPat || 0))]);
   const totalBrut = salsMois.reduce((t, s) => t + (s.brut || 0), 0);
   const totalSal = salsMois.reduce((t, s) => t + (s.cnpsSal || 0), 0);
   const totalPat = salsMois.reduce((t, s) => t + (s.cnpsPat || 0), 0);
@@ -9540,7 +9540,7 @@ function exportDeclarationCNPS(mois) {
     startY: 32,
     head: [['Salarié', 'Salaire brut', 'CNPS salarial (7,7%)', 'CNPS patronal (16%)', 'Total cotisation']],
     body: rows,
-    foot: [['TOTAL', fn(totalBrut), fn(totalSal), fn(totalPat), fn(totalSal + totalPat)]],
+    foot: [['TOTAL', fnPDF(totalBrut), fnPDF(totalSal), fnPDF(totalPat), fnPDF(totalSal + totalPat)]],
     styles: { font: 'helvetica', fontSize: 9, cellPadding: 3 },
     headStyles: { fillColor: [10, 11, 16], textColor: [212, 168, 83], fontStyle: 'bold' },
     footStyles: { fillColor: [30, 34, 54], textColor: [212, 168, 83], fontStyle: 'bold' },
@@ -9750,12 +9750,12 @@ function exportTableauAmortissement() {
       IMMOB_LABELS[im.cat] || im.cat,
       im.dateAcq,
       im.ref || '—',
-      fn(im.valeur),
+      fnPDF(im.valeur),
       ((im.taux||0)*100).toFixed(0) + '%',
       im.methode || 'linéaire',
-      fn(im.dotAnnuelle),
-      fn(im.amortCumul || 0),
-      fn(vnc),
+      fnPDF(im.dotAnnuelle),
+      fnPDF(im.amortCumul || 0),
+      fnPDF(vnc),
     ];
   });
   const totalBrut = immobilisations.reduce((s,x) => s + (x.valeur||0), 0);
@@ -9766,7 +9766,7 @@ function exportTableauAmortissement() {
     startY: 28,
     head: [['Désignation', 'Catégorie', 'Date acq.', 'Référence', 'Valeur brute', 'Taux', 'Méthode', 'Dot. annuelle', 'Amort. cumulé', 'VNC']],
     body: rows,
-    foot: [['TOTAL', '', '', '', fn(totalBrut), '', '', fn(totalDot), fn(totalAmort), fn(totalNet)]],
+    foot: [['TOTAL', '', '', '', fnPDF(totalBrut), '', '', fnPDF(totalDot), fnPDF(totalAmort), fnPDF(totalNet)]],
     styles: { font: 'helvetica', fontSize: 7.5, cellPadding: 2.5 },
     headStyles: { fillColor: [10, 11, 16], textColor: [212, 168, 83], fontStyle: 'bold', fontSize: 7 },
     footStyles: { fillColor: [30, 34, 54], textColor: [212, 168, 83], fontStyle: 'bold' },
@@ -9951,8 +9951,8 @@ function exportEtatProvisions() {
   doc.autoTable({
     startY: 28,
     head: [['Compte', 'Libellé', 'Solde au ' + new Date().toLocaleDateString('fr-FR')]],
-    body: lignes.map((l) => [l.compte, l.libelle, fn(l.solde)]),
-    foot: [['', 'TOTAL PROVISIONS', fn(total)]],
+    body: lignes.map((l) => [l.compte, l.libelle, fnPDF(l.solde)]),
+    foot: [['', 'TOTAL PROVISIONS', fnPDF(total)]],
     styles: { font: 'helvetica', fontSize: 9, cellPadding: 3 },
     headStyles: { fillColor: [10, 11, 16], textColor: [212, 168, 83], fontStyle: 'bold' },
     footStyles: { fillColor: [30, 34, 54], textColor: [212, 168, 83], fontStyle: 'bold' },
@@ -10004,14 +10004,14 @@ function exportEcheancierCreancesDettes() {
   Object.entries(brackets).forEach(([bracket, items]) => {
     const totalBracket = items.reduce((s, i) => s + i.montant, 0);
     totalCreances += totalBracket;
-    items.forEach((i) => rows.push([bracket, i.numero, i.client, i.echeance, fn(i.montant)]));
+    items.forEach((i) => rows.push([bracket, i.numero, i.client, i.echeance, fnPDF(i.montant)]));
     if (!items.length) rows.push([bracket, '—', '—', '—', '0']);
   });
   doc.autoTable({
     startY: y,
     head: [['Tranche', 'N° Facture', 'Client', 'Échéance', 'Montant dû']],
     body: rows,
-    foot: [['', '', '', 'TOTAL CRÉANCES', fn(totalCreances)]],
+    foot: [['', '', '', 'TOTAL CRÉANCES', fnPDF(totalCreances)]],
     styles: { font: 'helvetica', fontSize: 8, cellPadding: 2.5 },
     headStyles: { fillColor: [10, 11, 16], textColor: [212, 168, 83], fontStyle: 'bold' },
     footStyles: { fillColor: [30, 34, 54], textColor: [212, 168, 83], fontStyle: 'bold' },
@@ -10023,7 +10023,7 @@ function exportEcheancierCreancesDettes() {
   doc.setFontSize(10); doc.setFont('helvetica', 'bold');
   doc.text('DETTES FOURNISSEURS', 14, y2);
   doc.setFontSize(8); doc.setFont('helvetica', 'normal');
-  doc.text(`Solde global (cpte 401) : ${fn(soldeFournisseurs)} FCFA`, 14, y2 + 6);
+  doc.text(`Solde global (cpte 401) : ${fnPDF(soldeFournisseurs)} FCFA`, 14, y2 + 6);
   doc.text('Détail par échéance non disponible (nécessite la facturation fournisseur individualisée — voir module Commandes fournisseurs).', 14, y2 + 11, { maxWidth: 180 });
 
   doc.save(`ECHEANCIER_CREANCES_DETTES_${new Date().toISOString().split('T')[0]}.pdf`);
@@ -11573,7 +11573,7 @@ function exportAnalytiquePDF() {
     const imput = imputationsAnalyt.filter(i => String(i.centreId) === String(c.id));
     const charges = imput.filter(i=>i.sens==='debit').reduce((s,i)=>s+i.montant,0);
     const produits = imput.filter(i=>i.sens==='credit').reduce((s,i)=>s+i.montant,0);
-    return [c.code, c.libelle, c.type||'exploitation', c.responsable||'—', fn(charges), fn(produits), fn(Math.abs(charges-produits))];
+    return [c.code, c.libelle, c.type||'exploitation', c.responsable||'—', fnPDF(charges), fnPDF(produits), fnPDF(Math.abs(charges-produits))];
   });
   doc.autoTable({
     startY: 26,
@@ -13218,13 +13218,13 @@ function exportEffetsPDF() {
       e.ref || 'EFF-' + String(e.id).slice(-4),
       typeLabels[e.type] || e.type,
       e.tire,
-      fn(e.montant),
+      fnPDF(e.montant),
       e.dateCreation,
       e.dateEcheance,
       STATUTS_EFFET[e.statut]?.label || e.statut,
       e.banque || '—',
     ]),
-    foot: [['TOTAL','','',fn(effets.reduce((s,e)=>s+e.montant,0)),'','','','']],
+    foot: [['TOTAL','','',fnPDF(effets.reduce((s,e)=>s+e.montant,0)),'','','','']],
     styles: { font:'helvetica', fontSize:8 },
     headStyles: { fillColor:[10,11,16], textColor:[212,168,83] },
     footStyles: { fillColor:[30,34,54], textColor:[212,168,83], fontStyle:'bold' },
