@@ -3079,6 +3079,7 @@ async function autoSaveAllEcritures() {
   const groupId = 'grp_' + Date.now();
   const groupLib = ecrQueue[0]?.libelle || 'Opération ' + new Date().toLocaleDateString('fr-FR');
   let saved = 0;
+  let pendingApproval = 0;
   const errors = [];
 
   for (let i = 0; i < ecrQueue.length; i++) {
@@ -3116,16 +3117,35 @@ async function autoSaveAllEcritures() {
       createdAt: new Date().toISOString(),
       lignes: lignesSorted.map((l) => ({
         compte: String(l.compte),
-        libelle: l.libelle || PC[String(l.compte)] || '',
+        libelle: l.libelle || libelleCompte(l.compte),
         debit: Math.round((parseFloat(l.debit) || 0) * 100) / 100,
         credit: Math.round((parseFloat(l.credit) || 0) * 100) / 100,
       })),
     };
-    const docId = await saveEcritureToFirestore(ecriture);
-    if (docId) {
-      ecritures.push(ecriture);
-      pieceCounter++; // legacy display only
-      saved++;
+    const comptesInconnus = extraireComptesInconnus(ecriture);
+    if (isCollabMode && comptesInconnus.length) {
+      const mod = {
+        id: Date.now() + i, type: 'creation', ecrId: ecriture.id, ecrDocId: null, module: 'journal',
+        before: null, after: ecriture, comptesInconnus,
+        requestedBy: currentProfile?.email || currentProfile?.company || 'Collaborateur',
+        requestedByUid: currentProfile?.id || null,
+        status: 'pending', ts: new Date().toISOString(), decidedBy: null, decidedTs: null,
+      };
+      const modDocId = await saveModificationToFirestore(mod);
+      if (modDocId) {
+        modifications.unshift(mod);
+        updateModifPendingBadge();
+        auditLog('DEMANDE_CREATION', 'MODIFICATION', `Écriture ${i + 1} proposée avec compte(s) hors plan comptable : ${comptesInconnus.join(', ')}`);
+        pendingApproval++;
+        saved++;
+      }
+    } else {
+      const docId = await saveEcritureToFirestore(ecriture);
+      if (docId) {
+        ecritures.push(ecriture);
+        pieceCounter++; // legacy display only
+        saved++;
+      }
     }
     await new Promise((r) => setTimeout(r, 150));
   }
@@ -3143,6 +3163,8 @@ async function autoSaveAllEcritures() {
   updateStats();
   if (errors.length > 0) {
     toast(`⚠️ ${saved}/${total} écritures enregistrées — ${errors.length} erreur(s)`, 'error');
+  } else if (pendingApproval > 0) {
+    toast(`✅ ${saved - pendingApproval}/${total} enregistrée(s) · ${pendingApproval} envoyée(s) au propriétaire pour approbation (compte hors plan comptable)`, 'info');
   } else {
     toast(`✅ ${saved} écriture${saved > 1 ? 's' : ''} enregistrée${saved > 1 ? 's' : ''} !`, 'success');
   }
@@ -3177,7 +3199,7 @@ function loadEcritureFromQueue(idx) {
   const lignesSorted = sortLignesDebitAvantCredit(ecr.lignes || []);
   lignes = lignesSorted.map((l) => ({
     compte: String(l.compte || ''),
-    libelle: l.libelle || PC[String(l.compte)] || '',
+    libelle: l.libelle || libelleCompte(l.compte),
     debit: Math.round((parseFloat(l.debit) || 0) * 100) / 100,
     credit: Math.round((parseFloat(l.credit) || 0) * 100) / 100,
   }));
@@ -3701,6 +3723,37 @@ function updateBalance() {
 // ══════════════════════════════════════════
 // VALIDATION MANUELLE
 // ══════════════════════════════════════════
+// ══════════════════════════════════════════
+// COMPTES HORS PLAN COMPTABLE — Sous-comptes façon Sage/Saari (jusqu'à 6 chiffres)
+// ══════════════════════════════════════════
+// Le Plan Comptable SYSCOHADA de base ne référence que les comptes officiels.
+// En pratique (Sage/Saari), le comptable crée souvent des sous-comptes à 5 ou 6
+// chiffres (ex: 411001, 401002…) qui n'existent pas dans ce plan. On les
+// autorise librement : le libellé est alors hérité du compte parent le plus
+// proche trouvé dans PC ("411001" → libellé de "411" + mention sous-compte).
+function libelleCompte(code) {
+  code = String(code || '').trim();
+  if (!code) return '';
+  if (PC[code]) return PC[code];
+  for (let len = code.length - 1; len >= 2; len--) {
+    const prefix = code.slice(0, len);
+    if (PC[prefix]) return PC[prefix] + ' (sous-compte)';
+  }
+  return '';
+}
+window.libelleCompte = libelleCompte;
+
+function compteEstDansPlan(code) {
+  return !!PC[String(code || '').trim()];
+}
+
+// Retourne la liste (sans doublon) des comptes utilisés dans une écriture
+// qui ne sont pas répertoriés dans le Plan Comptable (nouveaux / sous-comptes).
+function extraireComptesInconnus(ecriture) {
+  const codes = (ecriture.lignes || []).map((l) => String(l.compte || '').trim()).filter(Boolean);
+  return [...new Set(codes.filter((c) => !compteEstDansPlan(c)))];
+}
+
 async function saveEcriture() {
   const date = document.getElementById('ecr-date').value;
   const journal = document.getElementById('ecr-journal').value;
@@ -3747,18 +3800,41 @@ async function saveEcriture() {
     createdAt: new Date().toISOString(),
     lignes: lignesSorted.map((l) => ({
       compte: String(l.compte),
-      libelle: l.libelle || PC[String(l.compte)] || '',
+      libelle: l.libelle || libelleCompte(l.compte),
       debit: Math.round((parseFloat(l.debit) || 0) * 100) / 100,
       credit: Math.round((parseFloat(l.credit) || 0) * 100) / 100,
     })),
   };
-  const docId = await saveEcritureToFirestore(ecriture);
-  if (!docId) return;
-  ecritures.push(ecriture);
-  pieceCounter++;
-  updateStats();
+  const comptesInconnus = extraireComptesInconnus(ecriture);
+
+  if (isCollabMode && comptesInconnus.length) {
+    // Collaborateur + compte hors plan comptable (ex: sous-compte 6 chiffres) → approbation du propriétaire requise
+    const mod = {
+      id: Date.now(), type: 'creation', ecrId: ecriture.id, ecrDocId: null, module: 'journal',
+      before: null, after: ecriture, comptesInconnus,
+      requestedBy: currentProfile?.email || currentProfile?.company || 'Collaborateur',
+      requestedByUid: currentProfile?.id || null,
+      status: 'pending', ts: new Date().toISOString(), decidedBy: null, decidedTs: null,
+    };
+    const modDocId = await saveModificationToFirestore(mod);
+    if (!modDocId) return;
+    modifications.unshift(mod);
+    updateModifPendingBadge();
+    auditLog('DEMANDE_CREATION', 'MODIFICATION', `Nouvelle écriture proposée avec compte(s) hors plan comptable : ${comptesInconnus.join(', ')}`);
+    toast(`📤 Compte(s) hors plan comptable (${comptesInconnus.join(', ')}) — écriture envoyée au propriétaire pour approbation`, 'info');
+  } else {
+    const docId = await saveEcritureToFirestore(ecriture);
+    if (!docId) return;
+    ecritures.push(ecriture);
+    pieceCounter++;
+    updateStats();
+    if (comptesInconnus.length) {
+      toast(`✓ Écriture enregistrée — compte(s) hors plan comptable utilisé(s) : ${comptesInconnus.join(', ')}`, 'success');
+    } else {
+      toast(`✓ Écriture [${JOURNAL_NAMES[journal] || journal}] enregistrée — Pièce ${piece}`, 'success');
+    }
+  }
   dismissFillBanner();
-  toast(`✓ Écriture [${JOURNAL_NAMES[journal] || journal}] enregistrée — Pièce ${piece}`, 'success');
   ecrQueueIdx++;
   if (ecrQueueIdx < ecrQueue.length) {
     loadEcritureFromQueue(ecrQueueIdx);
@@ -3844,7 +3920,7 @@ function renderJournal() {
       (l) =>
         (l.compte || '').includes(search) ||
         (l.libelle || '').toLowerCase().includes(search) ||
-        (PC[l.compte] || '').toLowerCase().includes(search),
+        (libelleCompte(l.compte)).toLowerCase().includes(search),
     );
   });
 
@@ -4029,7 +4105,7 @@ function renderEcritureInGroupe(e, eIdx, totalInGroupe) {
             <tr>
               <td><div class="jnl-compte-badge">
                 <span class="jnl-compte-code">${l.compte}</span>
-                <span class="jnl-compte-name" title="${PC[l.compte] || ''}">${(PC[l.compte] || '').substring(0, 22)}</span>
+                <span class="jnl-compte-name" title="${libelleCompte(l.compte)}">${(libelleCompte(l.compte)).substring(0, 22)}</span>
               </div></td>
               <td><span class="jnl-libelle-ligne">${l.libelle || e.libelle || '—'}</span></td>
               <td class="jnl-debit-cell">${l.debit ? fn(l.debit) : '<span style="color:var(--line2)">—</span>'}</td>
@@ -4128,7 +4204,7 @@ function renderGrandLivre() {
     .map((code) => {
       const acc = map[code],
         s = acc.debit - acc.credit,
-        lib = PC[code] || 'Compte ' + code,
+        lib = libelleCompte(code) || 'Compte ' + code,
         isD = s >= 0;
       return `<div class="gl-account">
       <div class="gl-account-header" onclick="toggleGL('gl-${code}')">
@@ -4223,7 +4299,7 @@ function renderBalance() {
     tSC += sc;
     return `<tr>
       <td><span class="ct">${code}</span></td>
-      <td style="font-size:11px">${(PC[code] || '').substring(0, 42)}</td>
+      <td style="font-size:11px">${(libelleCompte(code)).substring(0, 42)}</td>
       <td class="debit">${fn(acc.debit)}</td>
       <td class="credit">${fn(acc.credit)}</td>
       <td style="text-align:right;font-family:var(--font-mono);color:#2563eb">${sd ? fn(sd) : ''}</td>
@@ -4402,7 +4478,7 @@ function renderTresorerie() {
     ${tc
       .map(([code, acc]) => {
         const s = acc.debit - acc.credit;
-        return `<div class="rrow sub"><span><span class="ct">${code}</span><span style="margin-left:6px">${(PC[code] || '').substring(0, 34)}</span></span><span class="amount ${s >= 0 ? 'pos' : 'neg'}">${fn(Math.abs(s))} FCFA${s < 0 ? ' (Créditeur)' : ''}</span></div>`;
+        return `<div class="rrow sub"><span><span class="ct">${code}</span><span style="margin-left:6px">${(libelleCompte(code)).substring(0, 34)}</span></span><span class="amount ${s >= 0 ? 'pos' : 'neg'}">${fn(Math.abs(s))} FCFA${s < 0 ? ' (Créditeur)' : ''}</span></div>`;
       })
       .join('')}
     <div class="rrow result"><span>Trésorerie nette totale</span><span class="amount ${total >= 0 ? 'pos' : 'neg'}">${fn(Math.abs(total))} FCFA</span></div>
@@ -4536,7 +4612,7 @@ function exportPDF() {
         e.journal,
         e.piece || '',
         l.compte,
-        (PC[l.compte] || '').substring(0, 28),
+        (libelleCompte(l.compte)).substring(0, 28),
         l.libelle || e.libelle || '',
         l.debit ? fn(l.debit) : '',
         l.credit ? fn(l.credit) : '',
@@ -4580,7 +4656,7 @@ function exportWord() {
   ecritures.forEach((e) => {
     const lignesSorted = sortLignesDebitAvantCredit(e.lignes);
     lignesSorted.forEach((l) => {
-      jRows += `<tr><td>${e.date}</td><td>${e.journal}</td><td>${e.piece || ''}</td><td>${l.compte}</td><td>${(PC[l.compte] || '').substring(0, 28)}</td><td>${l.libelle || e.libelle || ''}</td><td style="text-align:right">${l.debit ? fn(l.debit) : ''}</td><td style="text-align:right">${l.credit ? fn(l.credit) : ''}</td></tr>`;
+      jRows += `<tr><td>${e.date}</td><td>${e.journal}</td><td>${e.piece || ''}</td><td>${l.compte}</td><td>${(libelleCompte(l.compte)).substring(0, 28)}</td><td>${l.libelle || e.libelle || ''}</td><td style="text-align:right">${l.debit ? fn(l.debit) : ''}</td><td style="text-align:right">${l.credit ? fn(l.credit) : ''}</td></tr>`;
       totalD += l.debit || 0;
       totalC += l.credit || 0;
     });
@@ -6543,7 +6619,7 @@ function showRobot3DJournal(ecrituresData) {
           <span style="flex:1;margin:0 8px;color:rgba(255,255,255,.7);
             font-family:var(--font-body);font-size:10px;
             white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
-            ${l.libelle || PC[l.compte] || ''}
+            ${l.libelle || libelleCompte(l.compte)}
           </span>
           <span style="color:#60a5fa;min-width:70px;text-align:right">
             ${l.debit ? fnPDF(l.debit) : ''}
@@ -6826,7 +6902,7 @@ async function handleRobotQuery(query) {
     .slice(0, 30)
     .map(([code, acc]) => {
       const s = acc.debit - acc.credit;
-      return `${code}(${(PC[code] || '').substring(0, 18)}):${s >= 0 ? 'Sd' : 'Sc'}${fnPDF(Math.abs(s))}FCFA`;
+      return `${code}(${(libelleCompte(code)).substring(0, 18)}):${s >= 0 ? 'Sd' : 'Sc'}${fnPDF(Math.abs(s))}FCFA`;
     })
     .join(' | ');
 
@@ -8491,7 +8567,7 @@ function exportPDFAvance() {
           e.journal,
           e.piece || '',
           l.compte,
-          (PC[l.compte] || '').substring(0, 24),
+          (libelleCompte(l.compte)).substring(0, 24),
           l.libelle || e.libelle || '',
           l.debit ? fn(l.debit) : '',
           l.credit ? fn(l.credit) : '',
@@ -8527,7 +8603,7 @@ function exportPDFAvance() {
       .sort()
       .map(([code, acc]) => {
         const s = acc.debit - acc.credit;
-        return [code, (PC[code] || '').substring(0, 40), fn(acc.debit), fn(acc.credit), s > 0 ? fn(s) : '', s < 0 ? fn(-s) : ''];
+        return [code, (libelleCompte(code)).substring(0, 40), fn(acc.debit), fn(acc.credit), s > 0 ? fn(s) : '', s < 0 ? fn(-s) : ''];
       });
     doc.autoTable({
       startY: 30,
@@ -8591,7 +8667,7 @@ function exportWordAvance() {
       rows = '';
     ecrs.forEach((e) => {
       sortLignesDebitAvantCredit(e.lignes).forEach((l) => {
-        rows += `<tr><td>${e.date}</td><td>${e.journal}</td><td>${e.piece || ''}</td><td>${l.compte}</td><td>${(PC[l.compte] || '').substring(0, 26)}</td><td>${l.libelle || e.libelle || ''}</td><td align="right">${l.debit ? fn(l.debit) : ''}</td><td align="right">${l.credit ? fn(l.credit) : ''}</td></tr>`;
+        rows += `<tr><td>${e.date}</td><td>${e.journal}</td><td>${e.piece || ''}</td><td>${l.compte}</td><td>${(libelleCompte(l.compte)).substring(0, 26)}</td><td>${l.libelle || e.libelle || ''}</td><td align="right">${l.debit ? fn(l.debit) : ''}</td><td align="right">${l.credit ? fn(l.credit) : ''}</td></tr>`;
         totalD += l.debit || 0;
         totalC += l.credit || 0;
       });
@@ -8605,7 +8681,7 @@ function exportWordAvance() {
       .sort()
       .forEach(([code, acc]) => {
         const s = acc.debit - acc.credit;
-        rows += `<tr><td>${code}</td><td>${(PC[code] || '').substring(0, 40)}</td><td align="right">${fn(acc.debit)}</td><td align="right">${fn(acc.credit)}</td><td align="right">${s > 0 ? fn(s) : ''}</td><td align="right">${s < 0 ? fn(-s) : ''}</td></tr>`;
+        rows += `<tr><td>${code}</td><td>${(libelleCompte(code)).substring(0, 40)}</td><td align="right">${fn(acc.debit)}</td><td align="right">${fn(acc.credit)}</td><td align="right">${s > 0 ? fn(s) : ''}</td><td align="right">${s < 0 ? fn(-s) : ''}</td></tr>`;
       });
     tableHTML = `<table><thead><tr><th>Compte</th><th>Libellé</th><th>Mvt Débit</th><th>Mvt Crédit</th><th>Solde Débiteur</th><th>Solde Créditeur</th></tr></thead><tbody>${rows}</tbody></table>`;
   } else if (docType === 'factures') {
@@ -8646,7 +8722,7 @@ function exportExcelAvance() {
           e.journal,
           e.piece || '',
           l.compte,
-          PC[l.compte] || '',
+          libelleCompte(l.compte),
           l.libelle || e.libelle || '',
           l.debit || 0,
           l.credit || 0,
@@ -8660,7 +8736,7 @@ function exportExcelAvance() {
       .sort()
       .forEach(([code, acc]) => {
         const s = acc.debit - acc.credit;
-        rows.push([code, PC[code] || '', acc.debit, acc.credit, s > 0 ? s : 0, s < 0 ? -s : 0]);
+        rows.push([code, libelleCompte(code), acc.debit, acc.credit, s > 0 ? s : 0, s < 0 ? -s : 0]);
       });
   } else if (docType === 'factures') {
     rows = [['N° Facture', 'Type', 'Date émission', 'Date échéance', 'Client', 'HT', 'TVA', 'TTC', 'Montant payé', 'Statut']];
@@ -8689,7 +8765,7 @@ function exportExcelAvance() {
           solde += m.debit - m.credit;
           rows.push([
             code,
-            PC[code] || '',
+            libelleCompte(code),
             m.date,
             m.journal,
             m.piece || '',
@@ -10983,6 +11059,28 @@ async function approuverModification(docId) {
   if (isCollabMode) { toast('Seul le propriétaire peut approuver une modification.', 'error'); return; }
   const mod = modifications.find((m) => m._docId === docId);
   if (!mod) return;
+
+  if (mod.type === 'creation') {
+    if (!confirm(`Approuver la création de cette écriture proposée par ${mod.requestedBy} (compte hors plan comptable) ?`)) return;
+    const nouvelleEcr = { ...mod.after };
+    const newDocId = await saveEcritureToFirestore(nouvelleEcr);
+    if (!newDocId) return;
+    ecritures.push(nouvelleEcr);
+    pieceCounter++;
+    mod.ecrDocId = nouvelleEcr._docId; // pour pouvoir annuler plus tard
+    mod.status = 'approuvee';
+    mod.decidedBy = currentProfile?.email || currentProfile?.company || 'Propriétaire';
+    mod.decidedTs = new Date().toISOString();
+    await updateModificationInFirestore(docId, { status: mod.status, decidedBy: mod.decidedBy, decidedTs: mod.decidedTs, ecrDocId: mod.ecrDocId });
+    auditLog('APPROUVER_CREATION', 'MODIFICATION', `Écriture de ${mod.requestedBy} créée (compte(s) hors plan : ${(mod.comptesInconnus || []).join(', ')})`);
+    updateModifPendingBadge();
+    renderModifications();
+    renderJournal();
+    updateStats();
+    toast('✓ Écriture créée et approuvée', 'success');
+    return;
+  }
+
   if (!confirm(`Approuver la modification proposée par ${mod.requestedBy} et l'appliquer à l'écriture ?`)) return;
   const ecr = ecritures.find((e) => e.id === mod.ecrId || e._docId === mod.ecrDocId);
   if (ecr) {
@@ -11020,6 +11118,26 @@ async function annulerModificationApprouvee(docId) {
   if (isCollabMode) { toast('Seul le propriétaire peut annuler une modification.', 'error'); return; }
   const mod = modifications.find((m) => m._docId === docId);
   if (!mod) return;
+
+  if (mod.type === 'creation') {
+    if (!confirm('Annuler cette écriture déjà créée ? Elle sera supprimée du journal.')) return;
+    const ecr = ecritures.find((e) => e.id === mod.ecrId || e._docId === mod.ecrDocId);
+    if (ecr) {
+      await deleteEcritureFromFirestore(ecr._docId);
+      ecritures = ecritures.filter((e) => e !== ecr);
+    }
+    mod.status = 'annulee';
+    mod.decidedBy = currentProfile?.email || currentProfile?.company || 'Propriétaire';
+    mod.decidedTs = new Date().toISOString();
+    await updateModificationInFirestore(docId, { status: mod.status, decidedBy: mod.decidedBy, decidedTs: mod.decidedTs });
+    auditLog('ANNULER_CREATION', 'MODIFICATION', `Écriture créée par ${mod.requestedBy} annulée et supprimée`);
+    renderModifications();
+    renderJournal();
+    updateStats();
+    toast('↩ Écriture annulée et supprimée', 'info');
+    return;
+  }
+
   if (!confirm('Annuler cette modification déjà approuvée ? L\'écriture reviendra à son état précédent.')) return;
   const ecr = ecritures.find((e) => e.id === mod.ecrId || e._docId === mod.ecrDocId);
   if (ecr) {
@@ -11043,7 +11161,26 @@ window.annulerModificationApprouvee = annulerModificationApprouvee;
 // ══════════════════════════════════════════════════════════════════
 // TAB "MODIFICATIONS" — historique des demandes des collaborateurs
 // ══════════════════════════════════════════════════════════════════
-function diffEcritureHtml(before, after) {
+function diffEcritureHtml(mod) {
+  const before = mod.before, after = mod.after || {};
+  const inconnus = new Set(mod.comptesInconnus || []);
+  const fmtLignes = (lignes) => (lignes || []).map((l) => {
+    const flag = inconnus.has(String(l.compte)) ? ' <span class="badge-status warn" style="padding:1px 5px">hors plan</span>' : '';
+    return `${l.compte || '—'} (D:${fn(l.debit || 0)} / C:${fn(l.credit || 0)})${flag}`;
+  }).join(', ');
+
+  if (mod.type === 'creation' || !before) {
+    const rows = [
+      `<div class="modif-diff-line"><strong>Date :</strong> ${after.date || '—'} · <strong>Journal :</strong> ${after.journal || '—'} · <strong>Pièce :</strong> ${after.piece || '—'}</div>`,
+      `<div class="modif-diff-line"><strong>Libellé :</strong> ${after.libelle || '—'}</div>`,
+      `<div class="modif-diff-line"><strong>Lignes proposées :</strong> ${fmtLignes(after.lignes)}</div>`,
+    ];
+    if (inconnus.size) {
+      rows.push(`<div class="modif-diff-line" style="color:var(--warm)">⚠ Compte(s) non répertorié(s) dans le Plan Comptable : ${[...inconnus].join(', ')}</div>`);
+    }
+    return rows.join('');
+  }
+
   const rows = [];
   const champs = [['date', 'Date'], ['journal', 'Journal'], ['piece', 'N° Pièce'], ['libelle', 'Libellé']];
   champs.forEach(([k, label]) => {
@@ -11052,7 +11189,6 @@ function diffEcritureHtml(before, after) {
     }
   });
   if (JSON.stringify(before.lignes || []) !== JSON.stringify(after.lignes || [])) {
-    const fmtLignes = (lignes) => (lignes || []).map((l) => `${l.compte || '—'} (D:${fn(l.debit || 0)} / C:${fn(l.credit || 0)})`).join(', ');
     rows.push(`<div class="modif-diff-line"><strong>Lignes avant :</strong> <span class="modif-diff-old">${fmtLignes(before.lignes) || '—'}</span></div>`);
     rows.push(`<div class="modif-diff-line"><strong>Lignes après :</strong> <span class="modif-diff-new">${fmtLignes(after.lignes) || '—'}</span></div>`);
   }
@@ -11083,15 +11219,18 @@ function renderModifications() {
 
   content.innerHTML = list.map((m) => {
     const st = MODIF_STATUS_LABELS[m.status] || MODIF_STATUS_LABELS.pending;
+    const titre = m.type === 'creation'
+      ? `🆕 ${MODULE_LABELS[m.module] || m.module} · Nouvelle écriture ${(m.after && m.after.piece) || ''}`
+      : `${MODULE_LABELS[m.module] || m.module} · Écriture ${(m.after && m.after.piece) || m.ecrId}`;
     return `<div class="card" style="margin-bottom:12px">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
         <div>
-          <div style="font-weight:700">${MODULE_LABELS[m.module] || m.module} · Écriture ${(m.after && m.after.piece) || m.ecrId}</div>
+          <div style="font-weight:700">${titre}</div>
           <div style="font-size:11px;color:var(--muted)">Proposée par ${m.requestedBy} · ${m.ts ? new Date(m.ts).toLocaleString('fr-FR') : '—'}</div>
         </div>
         <span class="badge-status ${st.cls}">${st.label}</span>
       </div>
-      <div style="margin-top:10px">${diffEcritureHtml(m.before || {}, m.after || {})}</div>
+      <div style="margin-top:10px">${diffEcritureHtml(m)}</div>
       ${m.status === 'pending' && !isCollabMode ? `
         <div class="modal-actions" style="margin-top:10px;justify-content:flex-start">
           <button class="btn btn-ink" onclick="approuverModification('${m._docId}')">✓ Approuver</button>
@@ -11099,7 +11238,7 @@ function renderModifications() {
         </div>` : ''}
       ${m.status === 'approuvee' && !isCollabMode ? `
         <div class="modal-actions" style="margin-top:10px;justify-content:flex-start">
-          <button class="btn btn-danger-outline" onclick="annulerModificationApprouvee('${m._docId}')">↩ Annuler cette modification</button>
+          <button class="btn btn-danger-outline" onclick="annulerModificationApprouvee('${m._docId}')">↩ Annuler ${m.type === 'creation' ? 'et supprimer cette écriture' : 'cette modification'}</button>
         </div>` : ''}
       ${m.decidedBy ? `<div style="font-size:11px;color:var(--muted);margin-top:6px">Décidé par ${m.decidedBy}${m.decidedTs ? ' le ' + new Date(m.decidedTs).toLocaleString('fr-FR') : ''}</div>` : ''}
     </div>`;
