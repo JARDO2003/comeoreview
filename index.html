@@ -589,6 +589,18 @@
   </div>
 </div>
 
+<!-- MODAL GUIDE — aide contextuelle pour débutants -->
+<div id="guideModal" class="modal-overlay" style="display:none">
+  <div class="modal-box" style="width:560px;max-height:85vh;overflow-y:auto">
+    <div class="modal-title" id="guideModalTitle">📘 Guide</div>
+    <div class="modal-sub" id="guideModalSub"></div>
+    <div id="guideModalBody" style="margin-top:14px;font-size:13px;line-height:1.7"></div>
+    <div class="modal-actions">
+      <button class="btn-modal-ok" onclick="closeGuideModal()" style="width:100%">Compris, fermer</button>
+    </div>
+  </div>
+</div>
+
 <!-- MODAL ÉDITION ÉCRITURE (Journal / Grand Livre) — avec circuit d'approbation collaborateur -->
 <div id="editEcritureModal" class="modal-overlay" style="display:none">
   <div class="modal-box" style="width:760px;max-width:100%;max-height:92vh;overflow-y:auto">
@@ -1067,6 +1079,7 @@
       <div class="ph">
         <div><h1>Lettrage & Échéances</h1><p>Comptes 401/411 · Balance âgée · Relances clients</p></div>
         <div class="ph-actions">
+          <button class="btn btn-sm-wire" onclick="openGuide('lettrage')" title="Guide débutant">❓ Guide</button>
           <button class="btn btn-sm-wire" onclick="exportBalanceAgeePDF()">↓ Balance âgée PDF</button>
           <button class="btn btn-ink" onclick="lancerLettrage()">⚡ Lettrage auto</button>
         </div>
@@ -1121,6 +1134,9 @@
     <div class="view" id="view-exercices">
       <div class="ph">
         <div><h1>Exercices comptables</h1><p>Clôture annuelle · Report à nouveau · Ouverture nouvel exercice</p></div>
+        <div class="ph-actions">
+          <button class="btn btn-sm-wire" onclick="openGuide('exercices')" title="Guide débutant">❓ Guide</button>
+        </div>
       </div>
       <div class="card" style="padding:28px">
         <h3 style="font-family:var(--font-display);font-size:18px;margin-bottom:20px;color:var(--ink)">Procédure de clôture</h3>
@@ -1189,6 +1205,7 @@
       <div class="ph">
         <div><h1>Comptabilité analytique</h1><p>Centres de coût · Axes analytiques · Ventilation par projet</p></div>
         <div class="ph-actions">
+          <button class="btn btn-sm-wire" onclick="openGuide('analytique')" title="Guide débutant">❓ Guide</button>
           <button class="btn btn-sm-wire" onclick="exportAnalytiquePDF()">↓ Rapport PDF</button>
           <button class="btn btn-ink" onclick="openCentreModal()">+ Nouveau centre</button>
         </div>
@@ -1209,6 +1226,7 @@
       <div class="ph">
         <div><h1>Gestion des sociétés</h1><p>Multi-entreprises · Multi-exercices · Basculement rapide</p></div>
         <div class="ph-actions">
+          <button class="btn btn-sm-wire" onclick="openGuide('societes')" title="Guide débutant">❓ Guide</button>
           <button class="btn btn-ink" onclick="openSocieteModal()">+ Nouvelle société</button>
         </div>
       </div>
@@ -1227,6 +1245,9 @@
     <div class="view" id="view-consolidation">
       <div class="ph">
         <div><h1>Consolidation groupe</h1><p>Cumul des soldes de toutes les sociétés du groupe</p></div>
+        <div class="ph-actions">
+          <button class="btn btn-sm-wire" onclick="openGuide('consolidation')" title="Guide débutant">❓ Guide</button>
+        </div>
       </div>
       <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
         <div class="kpi"><div class="kpi-label">Sociétés incluses</div><div class="kpi-value" id="conso-kpi-nb" style="color:var(--blue)">0</div><div class="kpi-sub">dans le groupe</div></div>
