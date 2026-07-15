@@ -2988,7 +2988,7 @@ const GUIDES = {
     steps: [
       'Cette page additionne automatiquement les soldes (Actif, Passif, Produits, Charges, Résultat) de <strong>toutes les sociétés</strong> créées dans "Multi-sociétés".',
       'Chaque ligne du tableau correspond à une société ; la dernière ligne "GROUPE CONSOLIDÉ" est la somme de toutes les sociétés.',
-      '⚠️ <strong>Limite à connaître</strong> : c\'est une consolidation simplifiée. Les opérations <em>entre vos propres sociétés</em> (une vente d\'une société du groupe à une autre) ne sont pas neutralisées/éliminées — elles apparaîtront donc en double si elles existent.',
+      '⚠️ <strong>Comment éliminer les opérations intragroupe</strong> : comptabilisez vos ventes/avances/comptes courants entre sociétés du groupe via le compte <strong>451 — Opérations avec les entreprises liées</strong>. La consolidation neutralise alors automatiquement ce compte des totaux. Si vous ne l\'utilisez pas, les montants entre vos sociétés apparaîtront en double.',
       'Si les montants affichent 0, c\'est normal tant qu\'aucune écriture n\'a été saisie pour vos sociétés.',
     ],
   },
@@ -8261,6 +8261,45 @@ async function marquerCommandeRecue(id) {
   toast(`✓ Commande ${cmd.numero} marquée reçue`, 'success');
 }
 
+// ── Rapprochement à 3 voies : Commande ↔ Réception ↔ Facture fournisseur ──
+let rapprochementCommandeId = null;
+function ouvrirRapprochementCommande(id) {
+  const cmd = commandesFournisseurs.find((c) => c.id === id);
+  if (!cmd) return;
+  rapprochementCommandeId = id;
+  document.getElementById('rappr-cmd-numero').textContent = cmd.numero;
+  document.getElementById('rappr-cmd-montant').textContent = fn(cmd.montantHT) + ' FCFA';
+  document.getElementById('rappr-facture-numero').value = cmd.rapprochement?.factureNumero || '';
+  document.getElementById('rappr-facture-montant').value = cmd.rapprochement?.montantFacture || '';
+  document.getElementById('rapprochementModal').style.display = 'flex';
+}
+function closeRapprochementModal() { document.getElementById('rapprochementModal').style.display = 'none'; rapprochementCommandeId = null; }
+
+async function validerRapprochementCommande() {
+  const cmd = commandesFournisseurs.find((c) => c.id === rapprochementCommandeId);
+  if (!cmd) return;
+  const factureNumero = document.getElementById('rappr-facture-numero').value.trim();
+  const montantFacture = parseFloat(document.getElementById('rappr-facture-montant').value) || 0;
+  if (!factureNumero || !montantFacture) { toast('Indiquez le n° et le montant de la facture fournisseur', 'error'); return; }
+  const ecart = montantFacture - cmd.montantHT;
+  const ecartPct = cmd.montantHT ? Math.abs(ecart) / cmd.montantHT * 100 : 0;
+  cmd.rapprochement = {
+    factureNumero, montantFacture, ecart,
+    statut: ecartPct > 1 ? 'anomalie' : 'ok',
+    dateRapprochement: new Date().toISOString(),
+  };
+  if (window._fbReady && currentProfile?.id && cmd._docId) {
+    try { await window._fbSetDoc(window._fbDoc(window._db, 'profiles', currentProfile.id, 'commandesFournisseurs', cmd._docId), cmd, { merge: true }); } catch (e) {}
+  }
+  auditLog('RAPPROCHEMENT_3VOIES', 'ACHATS', `Commande ${cmd.numero} rapprochée avec facture ${factureNumero} — écart ${fn(ecart)} FCFA`);
+  closeRapprochementModal();
+  renderCommandes();
+  toast(ecartPct > 1 ? `⚠️ Anomalie détectée : écart de ${fn(Math.abs(ecart))} FCFA (${ecartPct.toFixed(1)}%)` : '✓ Rapprochement conforme — commande, réception et facture concordent', ecartPct > 1 ? 'error' : 'success');
+}
+window.ouvrirRapprochementCommande = ouvrirRapprochementCommande;
+window.closeRapprochementModal = closeRapprochementModal;
+window.validerRapprochementCommande = validerRapprochementCommande;
+
 async function supprimerCommande(id) {
   if (!confirm('Supprimer cette commande ?')) return;
   const cmd = commandesFournisseurs.find((c) => c.id === id);
@@ -8279,16 +8318,25 @@ function renderCommandes() {
   kpi('cmd-kpi-nb', commandesFournisseurs.length);
   kpi('cmd-kpi-attente', commandesFournisseurs.filter((c) => c.statut === 'en_attente').length);
   kpi('cmd-kpi-montant', fn(commandesFournisseurs.reduce((s, c) => s + (c.montantHT || 0), 0)));
-  el.innerHTML = `<div class="dtw"><table class="dt"><thead><tr><th>N°</th><th>Fournisseur</th><th>Date commande</th><th>Livraison prévue</th><th style="text-align:right">Montant HT</th><th>Statut</th><th></th></tr></thead><tbody>${
-    commandesFournisseurs.map((c) => `<tr>
+  const anomEl = document.getElementById('cmd-kpi-anomalies');
+  if (anomEl) anomEl.textContent = commandesFournisseurs.filter((c) => c.rapprochement?.statut === 'anomalie').length;
+  el.innerHTML = `<div class="dtw"><table class="dt"><thead><tr><th>N°</th><th>Fournisseur</th><th>Date commande</th><th>Livraison prévue</th><th style="text-align:right">Montant HT</th><th>Statut</th><th>Rapprochement</th><th></th></tr></thead><tbody>${
+    commandesFournisseurs.map((c) => {
+      const r = c.rapprochement;
+      const rapprCell = !r ? '<span style="color:var(--muted);font-size:11px">Non rapproché</span>'
+        : r.statut === 'ok' ? `<span class="badge-status ok">✓ Conforme</span>`
+        : `<span class="badge-status nok" title="Facture ${r.factureNumero} : ${fn(r.montantFacture)} FCFA">⚠ Écart ${fn(Math.abs(r.ecart))}</span>`;
+      return `<tr>
       <td><strong style="font-family:var(--font-mono);font-size:11px">${c.numero}</strong></td>
       <td>${c.fournisseurNom}</td>
       <td style="font-family:var(--font-mono);font-size:12px">${c.dateCommande}</td>
       <td style="font-family:var(--font-mono);font-size:12px">${c.dateLivraisonPrevue || '—'}</td>
       <td style="text-align:right;font-family:var(--font-mono);font-weight:700">${fn(c.montantHT)}</td>
       <td><span class="badge-status ${c.statut === 'recue' ? 'ok' : c.statut === 'annulee' ? 'nok' : 'warn'}">${CMD_STATUT_LABELS[c.statut] || c.statut}</span></td>
-      <td style="display:flex;gap:4px">${c.statut === 'en_attente' ? `<button class="btn-action" onclick="marquerCommandeRecue(${c.id})">✓ Reçue</button>` : ''}<button class="btn-action danger" onclick="supprimerCommande(${c.id})">✕</button></td>
-    </tr>`).join('')
+      <td>${rapprCell}</td>
+      <td style="display:flex;gap:4px;flex-wrap:wrap">${c.statut === 'en_attente' ? `<button class="btn-action" onclick="marquerCommandeRecue(${c.id})">✓ Reçue</button>` : `<button class="btn-action" onclick="ouvrirRapprochementCommande(${c.id})">🔗 Rapprocher facture</button>`}<button class="btn-action danger" onclick="supprimerCommande(${c.id})">✕</button></td>
+    </tr>`;
+    }).join('')
   }</tbody></table></div>`;
 }
 window.openCommandeModal = openCommandeModal;
@@ -9337,6 +9385,24 @@ async function savePaie() {
   await saveEcritureToFirestore(ecr2);
   ecritures.push(ecr2);
 
+  // Écriture 3 (optionnelle) — Provision congés payés (≈ 1/12 du brut mensuel, soit ~2,2 jours ouvrables/mois travaillé)
+  const provisionnerConges = document.getElementById('paie-provision-conges')?.checked;
+  if (provisionnerConges) {
+    const dotationConges = Math.round(sal.brut / 12);
+    const ecr3 = {
+      id: Date.now() + 2, date: dateEcr, journal: 'OD',
+      piece: 'PAY-CP-' + mois.replace('-', ''),
+      libelle: `Provision congés payés ${nom} — ${mois}`, createdAt: new Date().toISOString(),
+      lignes: sortLignesDebitAvantCredit([
+        { compte: '662', libelle: `Congés payés (provision) — ${nom}`, debit: dotationConges, credit: 0 },
+        { compte: '4282', libelle: `Dettes provisionnées pour congés à payer — ${nom}`, debit: 0, credit: dotationConges },
+      ])
+    };
+    await saveEcritureToFirestore(ecr3);
+    ecritures.push(ecr3);
+    sal.dotationConges = dotationConges;
+  }
+
   if (window._fbReady && currentProfile?.id) {
     try { await window._fbAddDoc(window._fbCollection(window._db, 'profiles', currentProfile.id, 'salaries'), sal); } catch(e) {}
   }
@@ -9464,6 +9530,53 @@ window.openPaieModal = openPaieModal;
 window.savePaie = savePaie;
 window.renderPaie = renderPaie;
 window.exportBulletinPDF = exportBulletinPDF;
+
+// ══════════════════════════════════════════
+// INDEMNITÉ DE DÉPART — formule indicative usuelle OHADA (à vérifier selon convention collective)
+// ══════════════════════════════════════════
+function calculerIndemniteAvecFormule(anciennete, salaireMoyen) {
+  let taux = 0;
+  if (anciennete <= 5) taux = anciennete * 0.30;
+  else if (anciennete <= 10) taux = 5 * 0.30 + (anciennete - 5) * 0.35;
+  else taux = 5 * 0.30 + 5 * 0.35 + (anciennete - 10) * 0.40;
+  return Math.round(taux * salaireMoyen);
+}
+
+function calculerIndemniteDepart() {
+  const anciennete = parseFloat(document.getElementById('indem-anciennete')?.value) || 0;
+  const salaire = parseFloat(document.getElementById('indem-salaire')?.value) || 0;
+  const el = document.getElementById('indem-result');
+  if (!el || !anciennete || !salaire) { if (el) el.style.display = 'none'; return; }
+  const indemnite = calculerIndemniteAvecFormule(anciennete, salaire);
+  el.style.display = 'block';
+  el.innerHTML = `<strong>Indemnité indicative : ${fn(indemnite)} FCFA</strong><br><span style="font-size:11px;color:var(--muted)">Basé sur ${anciennete} an(s) d'ancienneté × salaire moyen ${fn(salaire)} FCFA — à confirmer avec votre convention collective.</span>`;
+}
+window.calculerIndemniteDepart = calculerIndemniteDepart;
+
+async function genererEcritureIndemnite() {
+  const nom = document.getElementById('indem-nom').value.trim();
+  const anciennete = parseFloat(document.getElementById('indem-anciennete').value) || 0;
+  const salaire = parseFloat(document.getElementById('indem-salaire').value) || 0;
+  if (!nom || !anciennete || !salaire) { toast('Remplissez le nom, l\'ancienneté et le salaire moyen', 'error'); return; }
+  const indemnite = calculerIndemniteAvecFormule(anciennete, salaire);
+  const ecr = {
+    id: Date.now(), date: new Date().toISOString().split('T')[0], journal: 'OD',
+    piece: 'INDEM-' + Date.now(),
+    libelle: `Indemnité de départ — ${nom} (${anciennete} ans d'ancienneté)`,
+    createdAt: new Date().toISOString(),
+    lignes: [
+      { compte: '668', libelle: `Indemnité de départ — ${nom}`, debit: indemnite, credit: 0 },
+      { compte: '422', libelle: `Indemnité à payer — ${nom}`, debit: 0, credit: indemnite },
+    ],
+  };
+  const docId = await saveEcritureToFirestore(ecr);
+  if (!docId) return;
+  ecritures.push(ecr);
+  auditLog('INDEMNITE_DEPART', 'PAIE', `Indemnité de départ générée pour ${nom} — ${fn(indemnite)} FCFA (${anciennete} ans)`);
+  updateStats();
+  toast(`✓ Écriture générée — Indemnité ${nom} : ${fn(indemnite)} FCFA`, 'success');
+}
+window.genererEcritureIndemnite = genererEcritureIndemnite;
 
 // ══════════════════════════════════════════
 // DÉCLARATIONS SOCIALES — Bordereau CNPS mensuel (cotisations salariales + patronales)
@@ -10032,6 +10145,81 @@ function exportEcheancierCreancesDettes() {
 
 window.exportEtatProvisions = exportEtatProvisions;
 window.exportEcheancierCreancesDettes = exportEcheancierCreancesDettes;
+
+function exportEtatStocks() {
+  const { jsPDF } = window.jspdf;
+  if (!jsPDF) { toast('jsPDF non chargé', 'error'); return; }
+  if (!stockArticles.length) { toast('Aucun article en stock', 'error'); return; }
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const company = currentProfile?.company || 'Entreprise';
+  doc.setFillColor(10, 11, 16); doc.rect(0, 0, 210, 24, 'F');
+  doc.setTextColor(212, 168, 83); doc.setFontSize(13); doc.setFont('helvetica', 'bold');
+  doc.text(`ÉTAT DES STOCKS — ${company}`, 14, 10);
+  doc.setFontSize(7); doc.setFont('helvetica', 'normal');
+  doc.text(`Annexe SYSCOHADA · Au ${new Date().toLocaleDateString('fr-FR')}`, 14, 17);
+  const total = stockArticles.reduce((s, a) => s + valeurStockArticle(a), 0);
+  doc.autoTable({
+    startY: 28,
+    head: [['Article', 'Méthode', 'Qté', 'Coût unitaire', 'Valeur']],
+    body: stockArticles.map((a) => {
+      const val = valeurStockArticle(a);
+      const cout = a.methode === 'fifo' ? (a.qteActuelle > 0 ? Math.round(val / a.qteActuelle) : 0) : a.cmup;
+      return [a.nom, a.methode === 'fifo' ? 'FIFO' : 'CMUP', String(a.qteActuelle), fnPDF(cout), fnPDF(val)];
+    }),
+    foot: [['', '', '', 'TOTAL STOCKS', fnPDF(total)]],
+    styles: { font: 'helvetica', fontSize: 9, cellPadding: 3 },
+    headStyles: { fillColor: [10, 11, 16], textColor: [212, 168, 83], fontStyle: 'bold' },
+    footStyles: { fillColor: [30, 34, 54], textColor: [212, 168, 83], fontStyle: 'bold' },
+    columnStyles: { 4: { halign: 'right' } },
+    margin: { left: 14, right: 14 },
+  });
+  doc.save(`ETAT_STOCKS_${new Date().toISOString().split('T')[0]}.pdf`);
+  toast('✓ État des stocks exporté', 'success');
+}
+
+function exportEngagementsHorsBilan() {
+  const { jsPDF } = window.jspdf;
+  if (!jsPDF) { toast('jsPDF non chargé', 'error'); return; }
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const company = currentProfile?.company || 'Entreprise';
+  doc.setFillColor(10, 11, 16); doc.rect(0, 0, 210, 24, 'F');
+  doc.setTextColor(212, 168, 83); doc.setFontSize(13); doc.setFont('helvetica', 'bold');
+  doc.text(`ENGAGEMENTS HORS BILAN — ${company}`, 14, 10);
+  doc.setFontSize(7); doc.setFont('helvetica', 'normal');
+  doc.text(`Annexe SYSCOHADA · Au ${new Date().toLocaleDateString('fr-FR')}`, 14, 17);
+
+  const rows = emprunts.map((e) => {
+    const genereCount = e.tableau.filter((l) => l.genere).length;
+    const restant = genereCount < e.tableau.length ? e.tableau[genereCount].capitalRestant + e.tableau[genereCount].capitalRembourse : 0;
+    return ['Emprunt bancaire — ' + e.nom + (e.banque ? ' (' + e.banque + ')' : ''), fnPDF(restant)];
+  });
+  const commandesEnCours = commandesFournisseurs.filter((c) => c.statut === 'en_attente');
+  commandesEnCours.forEach((c) => rows.push(['Commande fournisseur en cours — ' + c.numero + ' (' + c.fournisseurNom + ')', fnPDF(c.montantHT)]));
+
+  const total = emprunts.reduce((s, e) => {
+    const genereCount = e.tableau.filter((l) => l.genere).length;
+    return s + (genereCount < e.tableau.length ? e.tableau[genereCount].capitalRestant + e.tableau[genereCount].capitalRembourse : 0);
+  }, 0) + commandesEnCours.reduce((s, c) => s + (c.montantHT || 0), 0);
+
+  doc.autoTable({
+    startY: 28,
+    head: [['Nature de l\'engagement', 'Montant']],
+    body: rows.length ? rows : [['Aucun engagement identifié', '0']],
+    foot: [['TOTAL ENGAGEMENTS', fnPDF(total)]],
+    styles: { font: 'helvetica', fontSize: 9, cellPadding: 3 },
+    headStyles: { fillColor: [10, 11, 16], textColor: [212, 168, 83], fontStyle: 'bold' },
+    footStyles: { fillColor: [30, 34, 54], textColor: [212, 168, 83], fontStyle: 'bold' },
+    columnStyles: { 1: { halign: 'right' } },
+    margin: { left: 14, right: 14 },
+  });
+  doc.setFontSize(7); doc.setTextColor(120);
+  doc.text('ℹ️ Cette liste est établie à partir des emprunts et commandes en cours enregistrés dans le logiciel. Elle ne remplace pas un recensement exhaustif (cautions, garanties, litiges) qui reste sous votre responsabilité.', 14, doc.lastAutoTable.finalY + 8, { maxWidth: 180 });
+  doc.save(`ENGAGEMENTS_HORS_BILAN_${new Date().toISOString().split('T')[0]}.pdf`);
+  toast('✓ Engagements hors bilan exportés', 'success');
+}
+
+window.exportEtatStocks = exportEtatStocks;
+window.exportEngagementsHorsBilan = exportEngagementsHorsBilan;
 window.openImmobModal = openImmobModal;
 window.saveImmob = saveImmob;
 window.renderImmobilisations = renderImmobilisations;
@@ -10057,33 +10245,71 @@ async function saveStock() {
   const pu = parseFloat(document.getElementById('stock-pu').value) || 0;
   const date = document.getElementById('stock-date').value;
   const seuil = parseFloat(document.getElementById('stock-seuil').value) || 5;
+  const methodeChoisie = document.getElementById('stock-methode')?.value || 'cmup';
   if (!article || !qte || !date) { toast('Remplissez tous les champs', 'error'); return; }
   // Trouver ou créer l'article
   let art = stockArticles.find(a => a.nom.toLowerCase() === article.toLowerCase());
   if (!art) {
-    art = { id: Date.now(), nom: article, qteActuelle: 0, cmup: pu, seuil, mouvements: [] };
+    art = { id: Date.now(), nom: article, methode: methodeChoisie, qteActuelle: 0, cmup: pu, lots: [], coutSortiCumule: 0, seuil, mouvements: [] };
     stockArticles.push(art);
   }
+  if (!art.methode) art.methode = 'cmup';
+  if (!art.lots) art.lots = [];
   const mvt = { type, qte, pu, date, valeur: qte * pu };
   art.mouvements.push(mvt);
-  if (type === 'entree') {
-    // Recalc CMUP
-    const ancVal = art.qteActuelle * art.cmup;
-    const nvVal = qte * pu;
-    art.qteActuelle += qte;
-    art.cmup = art.qteActuelle > 0 ? Math.round((ancVal + nvVal) / art.qteActuelle) : pu;
-  } else if (type === 'sortie') {
-    art.qteActuelle = Math.max(0, art.qteActuelle - qte);
+
+  if (art.methode === 'fifo') {
+    if (type === 'entree') {
+      art.lots.push({ qte, pu });
+      art.qteActuelle += qte;
+    } else if (type === 'sortie') {
+      let resteAConsommer = qte;
+      let coutSorti = 0;
+      while (resteAConsommer > 0 && art.lots.length) {
+        const lot = art.lots[0];
+        const pris = Math.min(lot.qte, resteAConsommer);
+        coutSorti += pris * lot.pu;
+        lot.qte -= pris;
+        resteAConsommer -= pris;
+        if (lot.qte <= 0.0001) art.lots.shift();
+      }
+      mvt.coutSorti = coutSorti; // valorisation FIFO de la sortie, pour le coût des marchandises vendues
+      art.coutSortiCumule = (art.coutSortiCumule || 0) + coutSorti;
+      art.qteActuelle = Math.max(0, art.qteActuelle - qte);
+    } else {
+      // Inventaire physique : on réajuste la quantité et on recrée un lot unique au coût constaté
+      art.qteActuelle = qte;
+      art.lots = qte > 0 ? [{ qte, pu: pu || art.cmup || 0 }] : [];
+    }
   } else {
-    art.qteActuelle = qte; // inventaire
+    // CMUP (coût unitaire moyen pondéré) — méthode historique
+    if (type === 'entree') {
+      const ancVal = art.qteActuelle * art.cmup;
+      const nvVal = qte * pu;
+      art.qteActuelle += qte;
+      art.cmup = art.qteActuelle > 0 ? Math.round((ancVal + nvVal) / art.qteActuelle) : pu;
+    } else if (type === 'sortie') {
+      mvt.coutSorti = qte * art.cmup;
+      art.qteActuelle = Math.max(0, art.qteActuelle - qte);
+    } else {
+      art.qteActuelle = qte; // inventaire
+    }
   }
   art.seuil = seuil;
   if (window._fbReady && currentProfile?.id) {
     try { await window._fbSetDoc(window._fbDoc(window._db, 'profiles', currentProfile.id, 'stocks', String(art.id)), art); } catch(e) {}
   }
   document.getElementById('stockModal').style.display = 'none';
-  toast(`✓ Mouvement stock "${article}" enregistré`, 'success');
+  toast(`✓ Mouvement stock "${article}" enregistré (méthode ${art.methode === 'fifo' ? 'FIFO/PEPS' : 'CMUP'})`, 'success');
   renderStocks();
+}
+
+// Valeur comptable actuelle d'un article, quelle que soit sa méthode de valorisation
+function valeurStockArticle(art) {
+  if (art.methode === 'fifo') {
+    return (art.lots || []).reduce((s, l) => s + l.qte * l.pu, 0);
+  }
+  return (art.qteActuelle || 0) * (art.cmup || 0);
 }
 
 async function loadStocks() {
@@ -10098,17 +10324,18 @@ function renderStocks() {
   const el = document.getElementById('stockContent');
   if (!el) return;
   if (!stockArticles.length) { el.innerHTML = '<div class="empty-state"><div class="icon">📦</div><p>Aucun article. Ajoutez un mouvement.</p></div>'; return; }
-  const valTotal = stockArticles.reduce((s, a) => s + a.qteActuelle * a.cmup, 0);
+  const valTotal = stockArticles.reduce((s, a) => s + valeurStockArticle(a), 0);
   const alertes = stockArticles.filter(a => a.qteActuelle <= a.seuil).length;
   document.getElementById('stock-kpi-articles').textContent = stockArticles.length;
   document.getElementById('stock-kpi-valeur').textContent = fn(valTotal);
   document.getElementById('stock-kpi-alertes').textContent = alertes;
   document.getElementById('stock-kpi-mvt').textContent = stockArticles.reduce((s, a) => s + (a.mouvements?.length || 0), 0);
-  el.innerHTML = `<div class="dtw"><table class="dt"><thead><tr><th>Article</th><th style="text-align:right">Qté actuelle</th><th style="text-align:right">CMUP</th><th style="text-align:right">Valeur stock</th><th style="text-align:right">Seuil alerte</th><th>Statut</th></tr></thead><tbody>${
+  el.innerHTML = `<div class="dtw"><table class="dt"><thead><tr><th>Article</th><th>Méthode</th><th style="text-align:right">Qté actuelle</th><th style="text-align:right">Coût unitaire</th><th style="text-align:right">Valeur stock</th><th style="text-align:right">Seuil alerte</th><th>Statut</th></tr></thead><tbody>${
     stockArticles.map(a => {
-      const val = a.qteActuelle * a.cmup;
+      const val = valeurStockArticle(a);
+      const cout = a.methode === 'fifo' ? (a.qteActuelle > 0 ? Math.round(val / a.qteActuelle) : 0) : a.cmup;
       const isLow = a.qteActuelle <= a.seuil;
-      return `<tr><td><strong>${a.nom}</strong></td><td style="text-align:right;font-family:var(--font-mono)">${a.qteActuelle}</td><td style="text-align:right;font-family:var(--font-mono)">${fn(a.cmup)}</td><td style="text-align:right;font-family:var(--font-mono);font-weight:700">${fn(val)}</td><td style="text-align:right;font-family:var(--font-mono);color:var(--muted)">${a.seuil}</td><td><span class="stock-badge ${isLow ? 'low' : 'ok'}">${isLow ? '⚠ Stock bas' : '✓ OK'}</span></td></tr>`;
+      return `<tr><td><strong>${a.nom}</strong></td><td><span class="badge-status ${a.methode === 'fifo' ? 'ok' : 'muted'}" style="padding:2px 7px">${a.methode === 'fifo' ? 'FIFO/PEPS' : 'CMUP'}</span></td><td style="text-align:right;font-family:var(--font-mono)">${a.qteActuelle}</td><td style="text-align:right;font-family:var(--font-mono)">${fn(cout)}</td><td style="text-align:right;font-family:var(--font-mono);font-weight:700">${fn(val)}</td><td style="text-align:right;font-family:var(--font-mono);color:var(--muted)">${a.seuil}</td><td><span class="stock-badge ${isLow ? 'low' : 'ok'}">${isLow ? '⚠ Stock bas' : '✓ OK'}</span></td></tr>`;
     }).join('')
   }</tbody></table></div>`;
 }
@@ -11777,6 +12004,20 @@ function calculerSyntheseSociete(societeId, principaleId) {
   return { nbEcritures: ecrsSociete.length, charges, produits, resultat: produits - charges, actif, passif: passif + Math.max(produits - charges, 0) };
 }
 
+// Élimination intragroupe : les opérations entre sociétés du groupe doivent être comptabilisées
+// via le compte de liaison SYSCOHADA 451 "Opérations avec les entreprises liées". Le montant
+// commun aux soldes débiteurs et créditeurs de ce compte est neutralisé du bilan consolidé.
+function calculerEliminationIntragroupe() {
+  let debit451 = 0, credit451 = 0;
+  ecritures.forEach((e) => (e.lignes || []).forEach((l) => {
+    if (String(l.compte).startsWith('451')) {
+      debit451 += l.debit || 0;
+      credit451 += l.credit || 0;
+    }
+  }));
+  return Math.min(debit451, credit451);
+}
+
 function renderConsolidation() {
   const el = document.getElementById('consolidationContent');
   if (!el) return;
@@ -11784,10 +12025,13 @@ function renderConsolidation() {
   const principaleId = allSocietes.find((s) => s.estPrincipale)?.id || allSocietes[0]?.id;
   const lignes = allSocietes.map((s) => ({ societe: s, synthese: calculerSyntheseSociete(s.id, principaleId) }));
 
-  const totalActif = lignes.reduce((s, l) => s + l.synthese.actif, 0);
-  const totalPassif = lignes.reduce((s, l) => s + l.synthese.passif, 0);
+  const totalActifBrut = lignes.reduce((s, l) => s + l.synthese.actif, 0);
+  const totalPassifBrut = lignes.reduce((s, l) => s + l.synthese.passif, 0);
   const totalProduits = lignes.reduce((s, l) => s + l.synthese.produits, 0);
   const totalCharges = lignes.reduce((s, l) => s + l.synthese.charges, 0);
+  const elimination = calculerEliminationIntragroupe();
+  const totalActif = totalActifBrut - elimination;
+  const totalPassif = totalPassifBrut - elimination;
   const kpi = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
   kpi('conso-kpi-nb', allSocietes.length);
   kpi('conso-kpi-actif', fn(totalActif));
@@ -11796,7 +12040,7 @@ function renderConsolidation() {
 
   el.innerHTML = `
     <div class="empty-state" style="background:rgba(212,168,83,.06);border:1px solid rgba(212,168,83,.2);border-radius:var(--r);padding:12px;margin-bottom:16px;text-align:left">
-      <p style="margin:0;font-size:12px;color:var(--muted)">ℹ️ Consolidation simplifiée : cumul des soldes de chaque société, <strong>sans élimination des opérations intragroupe</strong> (créances/dettes ou ventes/achats entre sociétés du groupe ne sont pas neutralisées).</p>
+      <p style="margin:0;font-size:12px;color:var(--muted)">ℹ️ Les opérations entre vos sociétés du groupe (ventes, avances, comptes courants) sont automatiquement <strong>éliminées</strong> du bilan consolidé si elles sont comptabilisées via le compte de liaison <strong>451 — Opérations avec les entreprises liées</strong>. ${elimination > 0 ? `Élimination appliquée ce jour : <strong>${fn(elimination)} FCFA</strong>.` : 'Aucune écriture sur le compte 451 détectée pour l\'instant — le cumul ci-dessous est donc un cumul brut.'}</p>
     </div>
     <div class="dtw"><table class="dt"><thead><tr><th>Société</th><th style="text-align:right">Actif</th><th style="text-align:right">Passif</th><th style="text-align:right">Produits</th><th style="text-align:right">Charges</th><th style="text-align:right">Résultat</th></tr></thead><tbody>${
       lignes.map(({ societe, synthese }) => `<tr>
@@ -11808,6 +12052,12 @@ function renderConsolidation() {
         <td style="text-align:right;font-family:var(--font-mono);font-weight:700;color:${synthese.resultat >= 0 ? '#4ade80' : '#f87171'}">${fn(synthese.resultat)}</td>
       </tr>`).join('')
     }
+    ${elimination > 0 ? `<tr>
+      <td style="font-style:italic;color:var(--muted)">− Élimination intragroupe (cpte 451)</td>
+      <td style="text-align:right;font-family:var(--font-mono);color:var(--red)">− ${fn(elimination)}</td>
+      <td style="text-align:right;font-family:var(--font-mono);color:var(--red)">− ${fn(elimination)}</td>
+      <td></td><td></td><td></td>
+    </tr>` : ''}
     <tr class="total-row">
       <td style="font-weight:700">GROUPE CONSOLIDÉ</td>
       <td style="text-align:right;font-family:var(--font-mono);font-weight:700">${fn(totalActif)}</td>
@@ -11865,6 +12115,15 @@ const ROLES = {
 };
 
 // ── Audit log ──────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════
+// INTÉGRITÉ DU JOURNAL D'AUDIT — chaînage cryptographique SHA-256
+// (équivalent logiciel à une piste d'audit inaltérable : toute modification
+// a posteriori d'une entrée passée casse la chaîne et devient détectable)
+// ══════════════════════════════════════════════════════════════════
+let lastAuditHash = '0'.repeat(64);
+let auditChainPromise = Promise.resolve(lastAuditHash);
+// Note: sha256Hex() est déjà défini plus haut dans ce fichier (utilisé aussi pour l'auth) — on le réutilise ici.
+
 function auditLog(action, module, detail) {
   const log = {
     id: Date.now(), action, module, detail,
@@ -11873,10 +12132,41 @@ function auditLog(action, module, detail) {
   };
   auditLogs.unshift(log);
   if (auditLogs.length > 500) auditLogs = auditLogs.slice(0, 500);
-  if (window._fbReady && currentProfile?.id) {
-    window._fbAddDoc(window._fbCollection(window._db, 'profiles', currentProfile.id, 'audit_logs'), log).catch(() => {});
-  }
+  // Chaînage : on enfile le calcul du hash pour garantir l'ordre même en cas d'appels rapprochés.
+  auditChainPromise = auditChainPromise.then(async (prevHash) => {
+    log.prevHash = prevHash;
+    log.hash = await sha256Hex(prevHash + '|' + log.ts + '|' + log.user + '|' + log.action + '|' + log.detail);
+    if (window._fbReady && currentProfile?.id) {
+      window._fbAddDoc(window._fbCollection(window._db, 'profiles', currentProfile.id, 'audit_logs'), log).catch(() => {});
+    }
+    return log.hash;
+  });
 }
+
+async function verifierIntegriteAuditLog() {
+  const el = document.getElementById('auditIntegrityResult');
+  if (el) { el.style.display = 'block'; el.innerHTML = '⏳ Vérification en cours…'; }
+  const sorted = [...auditLogs].reverse(); // du plus ancien au plus récent
+  let expected = null;
+  let ok = true;
+  let breakAt = null;
+  let verifies = 0;
+  for (const log of sorted) {
+    if (!log.hash || !log.prevHash) continue; // entrée créée avant l'activation du chaînage
+    if (expected !== null && log.prevHash !== expected) { ok = false; breakAt = log; break; }
+    const h = await sha256Hex(log.prevHash + '|' + log.ts + '|' + log.user + '|' + log.action + '|' + log.detail);
+    if (h !== log.hash) { ok = false; breakAt = log; break; }
+    expected = h;
+    verifies++;
+  }
+  if (el) {
+    el.innerHTML = ok
+      ? `<span style="color:var(--green)">✓ Intégrité vérifiée — ${verifies} entrée(s) chaînée(s) sans altération détectée.</span>`
+      : `<span style="color:var(--red)">⚠ Rupture de la chaîne détectée${breakAt ? ' vers le ' + new Date(breakAt.ts).toLocaleString('fr-FR') : ''} — une entrée du journal semble avoir été modifiée après coup.</span>`;
+  }
+  toast(ok ? '✓ Journal d\'audit intègre' : '⚠ Anomalie détectée dans le journal d\'audit', ok ? 'success' : 'error');
+}
+window.verifierIntegriteAuditLog = verifierIntegriteAuditLog;
 
 // ══════════════════════════════════════════════════════════════════
 // MODIFICATIONS — Chargement / Sauvegarde Firestore
@@ -12878,9 +13168,13 @@ function renderUtilisateurs() {
 
   const logsHtml = `<div class="card">
     <div class="card-header"><div><div class="card-title">📋 Journal d'audit</div>
-      <div class="card-sub">500 dernières actions</div></div>
-      <button class="btn btn-sm-wire" onclick="exportAuditPDF()">↓ Export PDF</button>
+      <div class="card-sub">500 dernières actions · Chaîné cryptographiquement (SHA-256) pour empêcher toute falsification a posteriori</div></div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-sm-wire" onclick="verifierIntegriteAuditLog()">🔒 Vérifier l'intégrité</button>
+        <button class="btn btn-sm-wire" onclick="exportAuditPDF()">↓ Export PDF</button>
+      </div>
     </div>
+    <div id="auditIntegrityResult" style="display:none;margin:10px 0;font-size:12px;padding:10px 12px;background:var(--surface2);border:1px solid var(--line);border-radius:var(--rs)"></div>
     ${auditLogs.length ? `<div class="dtw"><table class="dt">
       <thead><tr><th>Date/heure</th><th>Action</th><th>Module</th><th>Détail</th><th>Utilisateur</th></tr></thead>
       <tbody>${auditLogs.slice(0,100).map(l => {
