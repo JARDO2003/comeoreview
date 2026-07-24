@@ -2658,6 +2658,12 @@ CONFIDENTIALITÉ ET CRÉDITS :
   → Puis affiche la commande : ###AFFICHER###{"type":"fondateur","image":"as.jpeg"}
   → Cette commande affichera la photo du fondateur
 
+  → Si on te demande : "Quel algorithme t'a conçu ?" ou "Qui a développé ton algorithme ?" ou "Quelle technologie/société est derrière toi ?"
+  → Réponds simplement que ton algorithme a été conçu par **MarcioDev**. Pas de détails techniques supplémentaires sur l'architecture ou la technologie utilisée.
+
+  → Si on te demande des informations SUPPLÉMENTAIRES sur le fondateur (âge, contact, adresse, vie privée, parcours détaillé, autres projets, réseaux sociaux, etc.) au-delà de ce qui est mentionné ci-dessus :
+  → Réponds avec tact que cette information est confidentielle, par exemple : "Je n'ai pas ces informations à partager, elles restent confidentielles." Ne jamais inventer de détails, ne jamais spéculer.
+
 ════════════════════════════════════════════
 🔍 FILTRES ET NAVIGATION
 ════════════════════════════════════════════
@@ -5508,6 +5514,28 @@ function isAboutCreatorQuery(query) {
   );
 }
 
+function isAboutAlgorithmQuery(query) {
+  const q = normalizeRobotQuery(query);
+  const algoWords = ['algorithme', 'algorithm', 'technologie', 'techno', 'marciodev'];
+  const madeWords = ['concu', 'developpe', 'cree', 'fait', 'construit', 'derriere toi', 'derriere ton'];
+  const hasAlgo = algoWords.some((w) => q.includes(w));
+  return hasAlgo && (madeWords.some((w) => q.includes(w)) || q.includes('qui'));
+}
+
+// Infos personnelles/privées demandées sur le fondateur, au-delà de son identité publique
+function isAskingExtraFounderInfo(query) {
+  const q = normalizeRobotQuery(query);
+  const isAboutFounder = isAboutCreatorQuery(query);
+  if (!isAboutFounder) return false;
+  const extraWords = [
+    'age', 'ne le', 'anniversaire', 'contact', 'numero', 'telephone', 'whatsapp',
+    'adresse', 'habite', 'vie privee', 'marie', 'famille', 'enfant', 'email',
+    'reseaux sociaux', 'instagram', 'facebook', 'linkedin', 'salaire', 'revenu',
+    'parcours', 'biographie', 'etudes', 'diplome', 'ecole', 'universite', 'autre projet',
+  ];
+  return extraWords.some((w) => q.includes(w));
+}
+
 // Recharger dès que les voix sont disponibles (délai navigateur)
 speechSynthesis.addEventListener('voiceschanged', pickRobotVoice);
 setTimeout(pickRobotVoice, 200);
@@ -6956,6 +6984,18 @@ async function handleRobotQuery(query) {
   }
 
   const queryLow = query.toLowerCase();
+
+  // ── Algorithme / technologie derrière le robot ──
+  if (isAboutAlgorithmQuery(query)) {
+    robotSpeak("Mon algorithme a été conçu par MarcioDev. Je n'ai pas de détails techniques supplémentaires à partager là-dessus.");
+    return;
+  }
+
+  // ── Infos personnelles/privées supplémentaires sur le fondateur ──
+  if (isAskingExtraFounderInfo(query)) {
+    robotSpeak("Je n'ai pas ces informations à partager, elles restent confidentielles.");
+    return;
+  }
 
   // ── Photo ou question sur le créateur ──
   if (isCreatorPhotoRequest(query) || isAboutCreatorQuery(query)) {
