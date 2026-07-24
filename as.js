@@ -5946,7 +5946,9 @@ function buildRobotRecognition(opts = {}) {
   recog.lang = 'fr-FR';
   recog.continuous = true;
   recog.interimResults = true;
-  recog.maxAlternatives = 1;
+  // 3 alternatives au lieu d'1 : améliore la reconnaissance quand la voix arrive faible
+  // (utilisateur à distance du micro), le moteur a plus de marge pour deviner juste.
+  recog.maxAlternatives = 3;
 
   let accumulated = initialTranscript || '';
   let latestInterim = '';
@@ -5986,7 +5988,10 @@ function buildRobotRecognition(opts = {}) {
       const t = e.results[i][0].transcript;
       const conf = e.results[i][0].confidence;
       if (e.results[i].isFinal) {
-        if (isMobileDevice || conf === undefined || conf >= 0.35) finalPart += t;
+        // Ne plus filtrer par score de confiance : une voix distante (3m et plus) est
+        // souvent captée avec une confidence basse par le moteur, mais le texte est
+        // quand même exploitable. Le rejeter faisait perdre l'unique passage capté.
+        finalPart += t;
       } else {
         interim += t;
       }
@@ -6042,6 +6047,14 @@ function buildRobotRecognition(opts = {}) {
       scheduleEndOfSpeech();
       return;
     }
+    // Note vocale : le bouton est encore maintenu mais le moteur a interprété
+    // une voix faible/distante comme un silence et a coupé tout seul.
+    // On relance immédiatement en gardant ce qui a déjà été capté.
+    if (pushToTalk && robotHoldActive && !submitted) {
+      const kept = getFullTranscript();
+      setTimeout(() => startRobotListening({ pushToTalk: true, initialTranscript: kept }), 120);
+      return;
+    }
     setRobotStatus('online');
     if (err !== 'no-speech' && err !== 'aborted') {
       setRobotBubble("Désolé, je n'ai pas bien entendu. Réessayez.");
@@ -6061,6 +6074,12 @@ function buildRobotRecognition(opts = {}) {
     }
     if (pushToTalk) {
       robotListening = false;
+      // Idem qu'onerror : si le bouton est encore maintenu et qu'on n'a pas
+      // encore envoyé la requête, on relance la capture sans perdre le texte déjà entendu.
+      if (robotHoldActive && !submitted) {
+        const kept = getFullTranscript();
+        setTimeout(() => startRobotListening({ pushToTalk: true, initialTranscript: kept }), 120);
+      }
       return;
     }
     robotListening = false;
@@ -6173,7 +6192,10 @@ function robotSpeakChunks(chunks, onDone) {
 }
 
 function robotSpeak(text, opts = {}) {
-  if (!opts.skipBubble) setRobotBubble(formatRobotBubbleHtml(text));
+  // Le texte de la réponse n'est plus affiché à l'écran par défaut : seule la voix le restitue.
+  // La bulle reste réservée aux présentations visuelles de travail terminé (facture créée, etc.)
+  // → passer { showBubble: true } explicitement si un appelant a besoin d'afficher le texte.
+  if (opts.showBubble) setRobotBubble(formatRobotBubbleHtml(text));
   const chunks = splitIntoNaturalChunks(text);
   if (!chunks.length) {
     robotSpeaking = false;
@@ -7242,6 +7264,7 @@ ANALYSE AUTOMATIQUE :
       if (cached && !cached.includes('###')) {
         console.log('[COMEO Robot] ✅ Cache hit');
         robotConvHistory.push({ role: 'assistant', content: cached });
+        setRobotBubble('');
         robotSpeak(stripRobotVoiceText(cached));
         return;
       }
@@ -7269,6 +7292,10 @@ ANALYSE AUTOMATIQUE :
       aiCacheSet(robotCacheKeyStr, reply).catch(() => {});
     }
     robotConvHistory.push({ role: 'assistant', content: reply });
+
+    // Réponse prête : on efface l'indicateur "…" de réflexion.
+    // Les actions ci-dessous (facture, etc.) réaffichent leur propre carte de résultat si besoin.
+    setRobotBubble('');
 
     // ── TRAITEMENT DES ACTIONS ──
 
