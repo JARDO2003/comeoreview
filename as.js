@@ -13163,14 +13163,16 @@ function toggleMic() {
   if (!localStream) return;
   micEnabled = !micEnabled;
   localStream.getAudioTracks().forEach(t => t.enabled = micEnabled);
-  document.getElementById('btnMicToggle').style.opacity = micEnabled ? '1' : '0.4';
+  const btn = document.getElementById('btnMicToggle');
+  if (btn) btn.style.opacity = micEnabled ? '1' : '0.4';
 }
 
 function toggleCam() {
   if (!localStream) return;
   camEnabled = !camEnabled;
   localStream.getVideoTracks().forEach(t => t.enabled = camEnabled);
-  document.getElementById('btnCamToggle').style.opacity = camEnabled ? '1' : '0.4';
+  const btn = document.getElementById('btnCamToggle');
+  if (btn) btn.style.opacity = camEnabled ? '1' : '0.4';
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -13794,63 +13796,94 @@ async function loadAppelsVideo() {
   } catch(e) { console.error('Erreur vidéo:', e); }
 }
 
-// Lancer un appel vidéo 3D
+// Lancer un appel vidéo 3D — recipientId optionnel (absent = appel/démo depuis la page Appels vidéo 3D)
 async function initAppel3D(recipientId) {
+  // 1. Caméra/micro — c'est la seule étape bloquante : si elle échoue, on arrête tout.
   try {
-    // Demander accès caméra/micro
     localStream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true },
       video: { width: 1280, height: 720 }
     });
-    
-    videoCallActive = true;
-    
-    // Configuration WebRTC
+  } catch (e) {
+    toast('Erreur accès caméra/micro : ' + e.message, 'error');
+    console.error(e);
+    return null;
+  }
+
+  videoCallActive = true;
+
+  // Afficher immédiatement le flux local, quoi qu'il arrive ensuite
+  const lv = document.getElementById('localVideo3D');
+  if (lv) lv.srcObject = localStream;
+
+  // 2. Connexion peer — best-effort, ne bloque pas l'affichage de la caméra si ça échoue
+  try {
     const servers = {
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
       ]
     };
-    
     peerConnection = new RTCPeerConnection(servers);
-    
-    // Ajouter stream local
     localStream.getTracks().forEach(track => {
       peerConnection.addTrack(track, localStream);
     });
-    
-    // Log appel
+  } catch (e) {
+    console.warn('Connexion peer non disponible :', e);
+  }
+
+  // 3. Log de l'appel dans Firestore — best-effort, ne doit jamais faire échouer l'appel lui-même
+  try {
     const appel = {
-      from: currentProfile.email,
-      to: recipientId,
+      from: currentProfile?.email || '',
+      to: recipientId || null,
       startTime: new Date().toISOString(),
       type: '3D_VIDEO',
     };
-    
     const ownerID = getOwnerProfileId();
     const ref = await window._fbAddDoc(
       window._fbCollection(window._db, 'profiles', ownerID, 'video_appels'),
       appel
     );
-    
-    toast('✓ Appel vidéo 3D initié', 'success');
     return ref.id;
-  } catch(e) {
-    toast('Erreur accès caméra: ' + e.message, 'error');
-    console.error(e);
+  } catch (e) {
+    console.warn('Log appel non enregistré (l\'appel continue quand même) :', e);
+    return 'local';
   }
 }
 
 async function terminerAppel() {
   try {
-    if (localStream) {
-      localStream.getTracks().forEach(track => track.stop());
-    }
-    if (peerConnection) {
-      peerConnection.close();
-    }
+    if (video3DTimer) { clearInterval(video3DTimer); video3DTimer = null; }
+    const durationSec = video3DStartedAt ? Math.floor((Date.now() - video3DStartedAt) / 1000) : 0;
+    video3DStartedAt = null;
+
+    if (localStream) { localStream.getTracks().forEach(track => track.stop()); localStream = null; }
+    if (peerConnection) { peerConnection.close(); peerConnection = null; }
     videoCallActive = false;
+
+    const lv = document.getElementById('localVideo3D'); if (lv) lv.srcObject = null;
+    const rv = document.getElementById('remoteVideo3D'); if (rv) rv.srcObject = null;
+
+    const panel = document.getElementById('videoCallPanel');
+    if (panel) panel.style.display = 'none';
+    const empty = document.querySelector('#appealsContent .empty-state');
+    if (empty) empty.style.display = '';
+    const durLabel = document.getElementById('video-duration');
+    if (durLabel) durLabel.textContent = '00:00';
+
+    // Stats de la page (total appels, durée moyenne, participants, session)
+    video3DHistory.push(durationSec);
+    const totalEl = document.getElementById('video-kpi-total');
+    if (totalEl) totalEl.textContent = String(video3DHistory.length);
+    const avgSec = Math.round(video3DHistory.reduce((a, b) => a + b, 0) / video3DHistory.length) || 0;
+    const durEl = document.getElementById('video-kpi-durée');
+    if (durEl) durEl.textContent = `${Math.floor(avgSec / 60)}:${String(avgSec % 60).padStart(2, '0')}`;
+    const usersEl = document.getElementById('video-kpi-users');
+    if (usersEl) usersEl.textContent = '0';
+    const sessEl = document.getElementById('video-kpi-session');
+    if (sessEl) sessEl.textContent = '—';
+
     toast('Appel terminé', 'info');
   } catch(e) {
     console.error('Erreur fermeture appel:', e);
@@ -13888,10 +13921,43 @@ function exportDeclFiscalePDF() { exportDeclarationPDF(); }
 
 function openDeclTaxeModal() { navigate('declarations'); toast('Sélectionnez le type de déclaration ci-dessous', 'info'); }
 
-function openNouveau3DCall() { 
+let video3DTimer = null;
+let video3DStartedAt = null;
+let video3DHistory = []; // durées (secondes) des appels terminés, en mémoire pour cette session
+
+async function openNouveau3DCall() {
+  if (videoCallActive) {
+    toast('Un appel est déjà en cours', 'info');
+    return;
+  }
+  const streamId = await initAppel3D();
+  if (!streamId) return; // échec déjà notifié par initAppel3D (ex: caméra refusée)
+
   const panel = document.getElementById('videoCallPanel');
   if (panel) panel.style.display = 'block';
-  toast('Appel 3D — Fonctionnalité WebRTC en cours d\'activation', 'info'); 
+  const empty = document.querySelector('#appealsContent .empty-state');
+  if (empty) empty.style.display = 'none';
+
+  video3DStartedAt = Date.now();
+  updateVideo3DTimer();
+  if (video3DTimer) clearInterval(video3DTimer);
+  video3DTimer = setInterval(updateVideo3DTimer, 1000);
+
+  const usersEl = document.getElementById('video-kpi-users');
+  if (usersEl) usersEl.textContent = '1';
+
+  toast('Caméra et micro activés', 'success');
+}
+
+function updateVideo3DTimer() {
+  if (!video3DStartedAt) return;
+  const sec = Math.floor((Date.now() - video3DStartedAt) / 1000);
+  const mm = String(Math.floor(sec / 60)).padStart(2, '0');
+  const ss = String(sec % 60).padStart(2, '0');
+  const durEl = document.getElementById('video-duration');
+  if (durEl) durEl.textContent = `${mm}:${ss}`;
+  const sessEl = document.getElementById('video-kpi-session');
+  if (sessEl) sessEl.textContent = `${mm}:${ss}`;
 }
 
 function exportHistoriqueAppels() {
@@ -13997,13 +14063,13 @@ const __scope = { addFacLigne, addLigne, afficherDeclaration, afficherLettrage,
     if (!document.getElementById('videoCallPanel') || navigator.mediaDevices?.getDisplayMedia === undefined) return;
     navigator.mediaDevices.getDisplayMedia({ video: true }).then(stream => {
       const track = stream.getVideoTracks()[0];
-      if (window._peerConn) {
-        const sender = window._peerConn.getSenders().find(s => s.track?.kind === 'video');
+      if (peerConnection) {
+        const sender = peerConnection.getSenders().find(s => s.track?.kind === 'video');
         if (sender) sender.replaceTrack(track);
       }
-      const vid = document.getElementById('localVideo');
+      const vid = document.getElementById('localVideo3D');
       if (vid) vid.srcObject = stream;
-      track.onended = () => { if (localStream) { const vid2 = document.getElementById('localVideo'); if (vid2) vid2.srcObject = localStream; } };
+      track.onended = () => { if (localStream) { const vid2 = document.getElementById('localVideo3D'); if (vid2) vid2.srcObject = localStream; } };
     }).catch(() => {});
   }, updateExportOptions,
   updateFacTotaux, updateImmobCompte, updateImputMontant,
