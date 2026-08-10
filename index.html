@@ -8,6 +8,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;0,900;1,400&family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <link rel="stylesheet" href="as.css">
 </head>
 <body>
@@ -197,12 +198,32 @@
       <div class="ex-pill">Exercice <input type="text" id="exerciceYear" value="2024" maxlength="4" onchange="updateStats()"></div>
       <div class="chip-badge">OHADA 2023</div>
       <span id="subscriptionBadge" class="sub-badge" style="display:none"></span>
+      <button class="btn btn-outline view-mode-switch" id="viewModeSwitchBtn" onclick="toggleAccountViewMode()">🧮 Session Comptable</button>
       <button class="btn btn-outline" onclick="openExportModal()">↓</button>
       <button class="btn btn-danger-outline" onclick="doLogout()">⏻</button>
     </div>
   </div>
 
   <div class="sidebar" id="mainSidebar">
+
+<!-- ═══ SIDEBAR SIMPLIFIÉE — CHEF D'ENTREPRISE ═══ -->
+<div id="sbDirigeantSection" style="display:none">
+  <div class="sb-section">
+    <div class="sb-title">Mon entreprise</div>
+    <div class="nav-item active" data-nav="dashboard-ceo" onclick="navigate('dashboard-ceo');closeMobileSidebar()"><span class="nav-icon">🏠</span> Vue d'ensemble</div>
+    <div class="nav-item" data-nav="factures" onclick="navigate('factures');closeMobileSidebar()"><span class="nav-icon">🧾</span> Mes factures</div>
+    <div class="nav-item" data-nav="clients" onclick="navigate('clients');closeMobileSidebar()"><span class="nav-icon">👥</span> Mes clients</div>
+    <div class="nav-item" data-nav="tresorerie" onclick="navigate('tresorerie');closeMobileSidebar()"><span class="nav-icon">💰</span> Trésorerie</div>
+  </div>
+  <button class="scan-cta-sidebar" onclick="openScanFactureModal()">
+    <span class="scan-cta-icon">📷</span>
+    <span>Scanner une facture</span>
+  </button>
+</div>
+
+<!-- ═══ SESSION COMPTABLE — TOUTES LES FONCTIONNALITÉS COMEO ═══ -->
+<div id="sbComptableSections">
+ <div class="sb-comptable-banner">🧮 SESSION COMPTABLE</div>
  <div class="sb-section">
   <div class="sb-title">Navigation</div>
   <div class="nav-item active" onclick="navigate('dashboard');closeMobileSidebar()"><span class="nav-icon">◈</span> Tableau de bord</div>
@@ -273,9 +294,72 @@
       <div class="stat-row"><span class="lbl">Équilibre</span><span class="val g" id="s-equil">✓</span></div>
     </div>
     <div class="nav-item" onclick="navigate('tafire');closeMobileSidebar()"><span class="nav-icon">📊</span> TAFIRE</div>
+</div><!-- end sbComptableSections -->
   </div><!-- end sidebar -->
 
   <div class="main">
+<!-- ═══════════════════ TABLEAU DE BORD DIRIGEANT ═══════════════════ -->
+<div class="view active" id="view-dashboard-ceo">
+  <div class="ceo-hero">
+    <div class="ceo-hero-text">
+      <div class="ceo-hero-greeting">Bonjour 👋</div>
+      <div class="ceo-hero-title" id="ceoCompanyName">Votre entreprise</div>
+      <div class="ceo-hero-sub">Voici comment se porte votre activité aujourd'hui</div>
+    </div>
+    <button class="scan-cta-hero" onclick="openScanFactureModal()">
+      <span class="scan-cta-icon">📷</span>
+      <span>
+        <span class="scan-cta-title">Scanner une facture</span>
+        <span class="scan-cta-desc">Photo → facture normalisée → transmission</span>
+      </span>
+    </button>
+  </div>
+
+  <div class="ceo-kpi-grid">
+    <div class="ceo-kpi-card ceo-kpi-ca">
+      <div class="ceo-kpi-icon">📈</div>
+      <div class="ceo-kpi-label">Chiffre d'affaires (exercice)</div>
+      <div class="ceo-kpi-value" id="ceoKpiCA">0 FCFA</div>
+      <div class="ceo-kpi-trend" id="ceoKpiCATrend"></div>
+    </div>
+    <div class="ceo-kpi-card ceo-kpi-in">
+      <div class="ceo-kpi-icon">⬇️</div>
+      <div class="ceo-kpi-label">Entrées d'argent</div>
+      <div class="ceo-kpi-value" id="ceoKpiEntrees">0 FCFA</div>
+      <div class="ceo-kpi-trend" id="ceoKpiEntreesSub">Encaissements clients</div>
+    </div>
+    <div class="ceo-kpi-card ceo-kpi-out">
+      <div class="ceo-kpi-icon">⬆️</div>
+      <div class="ceo-kpi-label">Sorties d'argent</div>
+      <div class="ceo-kpi-value" id="ceoKpiSorties">0 FCFA</div>
+      <div class="ceo-kpi-trend" id="ceoKpiSortiesSub">Paiements fournisseurs & charges</div>
+    </div>
+    <div class="ceo-kpi-card ceo-kpi-solde">
+      <div class="ceo-kpi-icon">🏦</div>
+      <div class="ceo-kpi-label">Solde de trésorerie</div>
+      <div class="ceo-kpi-value" id="ceoKpiSolde">0 FCFA</div>
+      <div class="ceo-kpi-trend" id="ceoKpiSoldeSub">Banque + caisse</div>
+    </div>
+  </div>
+
+  <div class="ceo-panels">
+    <div class="ceo-panel">
+      <div class="ceo-panel-title">📄 Dernières factures</div>
+      <div id="ceoRecentFactures" class="ceo-recent-list">
+        <div class="empty-state"><p>Aucune facture pour l'instant</p></div>
+      </div>
+      <button class="btn btn-outline" style="margin-top:10px;width:100%" onclick="navigate('factures')">Voir toutes mes factures</button>
+    </div>
+    <div class="ceo-panel">
+      <div class="ceo-panel-title">📬 Factures en attente de transmission</div>
+      <div id="ceoTransmissionQueue" class="ceo-recent-list">
+        <div class="empty-state"><p>Rien en attente</p></div>
+      </div>
+      <p class="ceo-panel-note">Les factures scannées sont normalisées puis mises en file de transmission vers la Direction Générale des Impôts (DGI) / Ministère de l'Économie et des Finances du Bénin. La connexion officielle à leur système de facturation électronique sera activée dès obtention des accès API — le pipeline de normalisation est déjà prêt.</p>
+    </div>
+  </div>
+</div>
+
 <!-- ═══════════════════ FACTURES ═══════════════════ -->
 <div class="view" id="view-factures">
   <div class="ph">
@@ -665,7 +749,7 @@
 </div>
 
     <!-- DASHBOARD -->
-    <div class="view active" id="view-dashboard">
+    <div class="view" id="view-dashboard">
       <div class="ph">
         <div><h1>Tableau de bord</h1><p>SYSCOHADA Révisé 2023 — Assistant comptable expert</p></div>
         <div class="ph-actions">
@@ -2028,6 +2112,49 @@
     <div class="rstat"><div class="rstat-dot" style="background:#8b5cf6"></div><span>Langue</span><span class="rstat-val">Français</span></div>
   </div>
 </div>
+<!-- ═══════════════════════════════════
+     MODAL SCAN FACTURE IA
+     ═══════════════════════════════════ -->
+<div id="scanFactureModal" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeScanFactureModal()">
+  <div class="modal-box scan-modal-box">
+    <div class="modal-title">📷 Scanner une facture</div>
+    <div class="modal-sub">Prenez une photo ou importez une facture — l'IA la lit et la normalise pour vous</div>
+
+    <div id="scanStepUpload">
+      <label class="scan-dropzone" for="scanFactureInput">
+        <div class="scan-dropzone-icon">📷</div>
+        <div class="scan-dropzone-text">Cliquez pour prendre une photo<br>ou importer une image de facture</div>
+        <input type="file" id="scanFactureInput" accept="image/*" capture="environment" style="display:none" onchange="handleFactureFileSelect(event)">
+      </label>
+    </div>
+
+    <div id="scanStepPreview" style="display:none">
+      <img id="scanImagePreview" class="scan-image-preview" alt="Facture scannée">
+      <div id="scanProgress" class="scan-progress">
+        <div class="scan-progress-spinner"></div>
+        <span id="scanProgressText">Lecture de l'image en cours…</span>
+      </div>
+      <div class="auth-err" id="scanErr"></div>
+    </div>
+
+    <div id="scanStepResult" style="display:none">
+      <div class="scan-result-badge">✓ Facture lue et normalisée</div>
+      <div class="scan-result-grid">
+        <div class="sr-field"><span class="sr-label">Fournisseur / Client</span><input class="af-input" id="sr-tiers"></div>
+        <div class="sr-field"><span class="sr-label">N° Facture</span><input class="af-input" id="sr-numero"></div>
+        <div class="sr-field"><span class="sr-label">Date</span><input class="af-input" type="date" id="sr-date"></div>
+        <div class="sr-field"><span class="sr-label">Montant HT</span><input class="af-input" type="number" id="sr-ht"></div>
+        <div class="sr-field"><span class="sr-label">TVA</span><input class="af-input" type="number" id="sr-tva"></div>
+        <div class="sr-field"><span class="sr-label">Montant TTC</span><input class="af-input" type="number" id="sr-ttc"></div>
+      </div>
+      <p class="scan-result-note">Vérifiez les champs détectés par l'IA avant confirmation. Une fois confirmée, la facture normalisée sera enregistrée et placée en file de transmission vers la DGI / Ministère de l'Économie et des Finances du Bénin (norme e-facturation). L'envoi effectif sera activé dès l'intégration de l'API officielle.</p>
+      <button class="btn btn-gold" style="width:100%" onclick="confirmerTransmissionFacture()">✓ Confirmer et transmettre</button>
+    </div>
+
+    <button class="premium-logout-btn" style="margin-top:10px" onclick="closeScanFactureModal()">Annuler</button>
+  </div>
+</div>
+
 <!-- ═══════════════════════════════════
      MODAL PLAN COMPTABLE 3D
      ═══════════════════════════════════ -->
