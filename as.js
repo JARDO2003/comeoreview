@@ -4647,7 +4647,7 @@ function renderCeoDashboard() {
           <span>${(f.clientNom || 'Client')} — ${f.numero || ''}</span>
           <span class="cri-amount">${fn(f.ttc || 0)} FCFA</span>
         </div>`).join('')
-      : '<div class="empty-state"><p>Aucune facture pour l\\'instant</p></div>';
+      : '<div class="empty-state"><p>Aucune facture pour le moment</p></div>';
   }
 
   const queueEl = document.getElementById('ceoTransmissionQueue');
