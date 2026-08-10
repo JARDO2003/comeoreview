@@ -2558,22 +2558,6 @@ Créance client    → 411
 8. Toujours justifier le choix des comptes non évidents
 
 ════════════════════════════════════════════
-🗣️ TON NATUREL — PARLER COMME UN HUMAIN, PAS COMME UN ROBOT
-════════════════════════════════════════════
-
-Tu n'es pas un moteur qui recrache du texte, tu es un expert-comptable qui discute avec un collègue. Applique ça systématiquement :
-
-- Phrases de longueur variable. Une courte pour trancher, une plus longue pour expliquer. Évite que toutes tes phrases fassent la même taille : ça sonne mécanique.
-- Utilise des connecteurs naturels à l'oral/écrit courant : "du coup", "en fait", "cela dit", "concrètement", "à noter que" — sans en abuser, juste assez pour que ça coule.
-- Contractions et tournures naturelles du français courant : "c'est", "il y a", "on dirait que", "ça veut dire que". Pas de style administratif figé.
-- Ne commence JAMAIS deux réponses de suite par la même formule ("Voici", "Pour cette opération", "Il convient de"). Varie les accroches.
-- Évite le jargon inutile de robot : jamais "En tant qu'assistant IA", jamais "Je vais maintenant procéder à l'analyse de...". Va directement au fait, comme le ferait un humain pressé mais compétent.
-- Une touche d'humanité est permise : une remarque brève ("bon réflexe de vérifier ça"), une nuance ("attention, ce point est souvent mal compris"). Pas de blabla, juste de la vraie conversation.
-- Ne répète jamais mécaniquement la question de l'utilisateur avant d'y répondre.
-- Adapte le registre à l'interlocuteur : un gérant de PME ne parle pas comme un contrôleur de gestion. Reste professionnel mais accessible, jamais pompeux.
-- Interdiction des tics robotiques : pas de "N'hésitez pas à me poser d'autres questions" en fin de chaque message, pas de récapitulatifs numérotés systématiques quand une phrase suffit.
-
-════════════════════════════════════════════
 🎯 STYLE DE RÉPONSE — DISCIPLINE STRICTE
 ════════════════════════════════════════════
 
@@ -2658,12 +2642,6 @@ CONFIDENTIALITÉ ET CRÉDITS :
   → Puis affiche la commande : ###AFFICHER###{"type":"fondateur","image":"as.jpeg"}
   → Cette commande affichera la photo du fondateur
 
-  → Si on te demande : "Quel algorithme t'a conçu ?" ou "Qui a développé ton algorithme ?" ou "Quelle technologie/société est derrière toi ?"
-  → Réponds simplement que ton algorithme a été conçu par **MarcioDev**. Pas de détails techniques supplémentaires sur l'architecture ou la technologie utilisée.
-
-  → Si on te demande des informations SUPPLÉMENTAIRES sur le fondateur (âge, contact, adresse, vie privée, parcours détaillé, autres projets, réseaux sociaux, etc.) au-delà de ce qui est mentionné ci-dessus :
-  → Réponds avec tact que cette information est confidentielle, par exemple : "Je n'ai pas ces informations à partager, elles restent confidentielles." Ne jamais inventer de détails, ne jamais spéculer.
-
 ════════════════════════════════════════════
 🔍 FILTRES ET NAVIGATION
 ════════════════════════════════════════════
@@ -2681,6 +2659,12 @@ function switchTab(t) {
   document.getElementById('tab-register').classList.toggle('active', t === 'register');
   document.getElementById('form-login').style.display = t === 'login' ? 'flex' : 'none';
   document.getElementById('form-register').style.display = t === 'register' ? 'flex' : 'none';
+}
+
+function selectAccountRole(role) {
+  document.getElementById('r-accountRole').value = role;
+  document.getElementById('rc-dirigeant').classList.toggle('active', role === 'dirigeant');
+  document.getElementById('rc-comptable').classList.toggle('active', role === 'comptable');
 }
 
 async function doRegister() {
@@ -2848,6 +2832,34 @@ async function loadApp() {
   renderPlanComptable();
   initSaisie();
   ecouterModificationsTempsReel(); // 🔔 Notifie le propriétaire en temps réel des nouvelles demandes
+
+  applyAccountViewMode(window.accountViewMode || 'dirigeant');
+}
+
+// ══════════════════════════════════════════
+// MODE DE VUE — Dirigeant (par défaut, tout le monde) vs Session Comptable
+// ══════════════════════════════════════════
+function applyAccountViewMode(mode) {
+  window.accountViewMode = mode;
+  const sbDir = document.getElementById('sbDirigeantSection');
+  const sbComp = document.getElementById('sbComptableSections');
+  const switchBtn = document.getElementById('viewModeSwitchBtn');
+  if (mode === 'dirigeant') {
+    if (sbDir) sbDir.style.display = 'block';
+    if (sbComp) sbComp.style.display = 'none';
+    if (switchBtn) switchBtn.textContent = '🧮 Session Comptable';
+    navigate('dashboard-ceo');
+    renderCeoDashboard();
+  } else {
+    if (sbDir) sbDir.style.display = 'none';
+    if (sbComp) sbComp.style.display = 'block';
+    if (switchBtn) switchBtn.textContent = "👔 Retour Vue Dirigeant";
+    navigate('dashboard');
+  }
+}
+
+function toggleAccountViewMode() {
+  applyAccountViewMode(window.accountViewMode === 'dirigeant' ? 'comptable' : 'dirigeant');
 }
 
 // ══════════════════════════════════════════
@@ -2931,6 +2943,7 @@ async function deleteEcritureFromFirestore(docId) {
 // ══════════════════════════════════════════
 const VIEW_KEYS = {
   dashboard: 'tableau',
+  'dashboard-ceo': "d'ensemble",
   saisie: 'saisie',
   journal: 'journal',
   grandlivre: 'grand',
@@ -2954,6 +2967,7 @@ const VIEW_KEYS = {
   modifications: 'modificat',
 };
 const RENDERERS = {
+  'dashboard-ceo': renderCeoDashboard,
   journal: renderJournal,
   grandlivre: renderGrandLivre,
   balance: renderBalance,
@@ -4599,6 +4613,214 @@ function renderTresorerie() {
 }
 
 // ══════════════════════════════════════════
+// TABLEAU DE BORD DIRIGEANT — vue par défaut
+// ══════════════════════════════════════════
+function renderCeoDashboard() {
+  const nameEl = document.getElementById('ceoCompanyName');
+  if (nameEl) nameEl.textContent = currentProfile?.company || 'Votre entreprise';
+
+  const all = (ecritures || []).flatMap((e) => e.lignes);
+  const ca = all.filter((l) => l.compte?.[0] === '7').reduce((s, l) => s + (l.credit || 0), 0);
+  const entrees = all.filter((l) => l.compte?.[0] === '5').reduce((s, l) => s + (l.debit || 0), 0);
+  const sorties = all.filter((l) => l.compte?.[0] === '5').reduce((s, l) => s + (l.credit || 0), 0);
+  const solde = entrees - sorties;
+
+  const setTxt = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+  setTxt('ceoKpiCA', fn(ca) + ' FCFA');
+  setTxt('ceoKpiEntrees', fn(entrees) + ' FCFA');
+  setTxt('ceoKpiSorties', fn(sorties) + ' FCFA');
+  setTxt('ceoKpiSolde', fn(solde) + ' FCFA');
+  const soldeSub = document.getElementById('ceoKpiSoldeSub');
+  if (soldeSub) {
+    soldeSub.textContent = solde >= 0 ? 'Banque + caisse — solde positif' : '⚠ Banque + caisse — solde négatif';
+    soldeSub.style.color = solde >= 0 ? 'var(--green)' : 'var(--rust)';
+  }
+
+  const recentEl = document.getElementById('ceoRecentFactures');
+  if (recentEl) {
+    const recent = [...(facturesList || [])]
+      .sort((a, b) => (b.dateEmission || '').localeCompare(a.dateEmission || ''))
+      .slice(0, 5);
+    recentEl.innerHTML = recent.length
+      ? recent.map((f) => `
+        <div class="ceo-recent-item">
+          <span>${(f.clientNom || 'Client')} — ${f.numero || ''}</span>
+          <span class="cri-amount">${fn(f.ttc || 0)} FCFA</span>
+        </div>`).join('')
+      : '<div class="empty-state"><p>Aucune facture pour l\\'instant</p></div>';
+  }
+
+  const queueEl = document.getElementById('ceoTransmissionQueue');
+  if (queueEl) {
+    const enAttente = (facturesList || []).filter((f) => f.transmissionStatut === 'en_attente' || f.transmissionStatut === 'transmise');
+    queueEl.innerHTML = enAttente.length
+      ? enAttente.slice(0, 5).map((f) => `
+        <div class="ceo-recent-item">
+          <span>${f.numero || 'Facture'} — ${(f.clientNom || '')}</span>
+          <span class="transmission-badge ${f.transmissionStatut === 'transmise' ? 'sent' : 'pending'}">${f.transmissionStatut === 'transmise' ? '✓ Transmise' : '⏳ En attente'}</span>
+        </div>`).join('')
+      : '<div class="empty-state"><p>Rien en attente</p></div>';
+  }
+}
+
+// ══════════════════════════════════════════
+// SCAN DE FACTURE PAR IA — OCR + normalisation + transmission
+// ══════════════════════════════════════════
+let scanFactureImageDataUrl = null;
+let scanFactureExtracted = null;
+
+function openScanFactureModal() {
+  document.getElementById('scanFactureModal').style.display = 'flex';
+  document.getElementById('scanStepUpload').style.display = 'block';
+  document.getElementById('scanStepPreview').style.display = 'none';
+  document.getElementById('scanStepResult').style.display = 'none';
+  document.getElementById('scanFactureInput').value = '';
+  scanFactureImageDataUrl = null;
+  scanFactureExtracted = null;
+}
+function closeScanFactureModal() {
+  document.getElementById('scanFactureModal').style.display = 'none';
+}
+
+async function handleFactureFileSelect(e) {
+  const file = e.target.files?.[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = async (ev) => {
+    scanFactureImageDataUrl = ev.target.result;
+    document.getElementById('scanStepUpload').style.display = 'none';
+    document.getElementById('scanStepPreview').style.display = 'block';
+    document.getElementById('scanImagePreview').src = scanFactureImageDataUrl;
+    document.getElementById('scanProgress').style.display = 'flex';
+    document.getElementById('scanErr').textContent = '';
+    await analyserFactureScan(scanFactureImageDataUrl);
+  };
+  reader.readAsDataURL(file);
+}
+
+async function analyserFactureScan(imageDataUrl) {
+  const progressText = document.getElementById('scanProgressText');
+  const errEl = document.getElementById('scanErr');
+  try {
+    // 1) OCR côté client (Tesseract.js) — lit le texte brut de la facture photographiée
+    if (progressText) progressText.textContent = 'Lecture du texte de la facture (OCR)…';
+    let rawText = '';
+    if (window.Tesseract) {
+      const ocrResult = await window.Tesseract.recognize(imageDataUrl, 'fra');
+      rawText = ocrResult?.data?.text || '';
+    }
+    if (!rawText.trim()) {
+      throw new Error("Impossible de lire le texte de l'image. Réessayez avec une photo plus nette et bien éclairée.");
+    }
+
+    // 2) Normalisation par IA — transforme le texte brut OCR en facture structurée SYSCOHADA
+    if (progressText) progressText.textContent = "L'IA normalise la facture…";
+    const systemPrompt = `Tu es un module de normalisation de factures pour un logiciel comptable SYSCOHADA (Bénin/OHADA).
+On te donne le texte brut extrait par OCR d'une photo de facture, potentiellement bruité ou mal formaté.
+Réponds UNIQUEMENT avec un objet JSON valide (aucun texte avant/après, aucun markdown), avec exactement ces clés :
+{"tiers": string (nom du client ou fournisseur), "numero": string, "date": string (format YYYY-MM-DD, déduis une date plausible si absente), "ht": number, "tva": number, "ttc": number}
+Si un montant est absent, déduis-le par calcul (ex: ttc = ht + tva) ou mets 0. Les montants sont en FCFA, sans espaces ni symboles.`;
+    const result = await callGroqQueued(
+      [{ role: 'user', content: `Texte OCR brut de la facture :\n\n${rawText}` }],
+      systemPrompt,
+      500,
+      0.0,
+    );
+    if (!result || result.error) {
+      throw new Error(result?.msg || "L'IA n'a pas pu normaliser la facture. Réessayez.");
+    }
+    const content = result.data.choices?.[0]?.message?.content?.trim() || '';
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error("Réponse IA illisible. Réessayez.");
+    const parsed = JSON.parse(jsonMatch[0]);
+
+    scanFactureExtracted = parsed;
+    document.getElementById('sr-tiers').value = parsed.tiers || '';
+    document.getElementById('sr-numero').value = parsed.numero || ('FAC-' + Date.now());
+    document.getElementById('sr-date').value = parsed.date || new Date().toISOString().split('T')[0];
+    document.getElementById('sr-ht').value = parsed.ht || 0;
+    document.getElementById('sr-tva').value = parsed.tva || 0;
+    document.getElementById('sr-ttc').value = parsed.ttc || (Number(parsed.ht || 0) + Number(parsed.tva || 0));
+
+    document.getElementById('scanStepPreview').style.display = 'none';
+    document.getElementById('scanStepResult').style.display = 'block';
+  } catch (e) {
+    errEl.textContent = '❌ ' + e.message;
+    document.getElementById('scanProgress').style.display = 'none';
+  }
+}
+
+async function confirmerTransmissionFacture() {
+  const tiers = document.getElementById('sr-tiers').value.trim();
+  const numero = document.getElementById('sr-numero').value.trim();
+  const date = document.getElementById('sr-date').value;
+  const ht = parseFloat(document.getElementById('sr-ht').value) || 0;
+  const tva = parseFloat(document.getElementById('sr-tva').value) || 0;
+  const ttc = parseFloat(document.getElementById('sr-ttc').value) || (ht + tva);
+  if (!tiers) { toast('Le nom du client/fournisseur est requis', 'error'); return; }
+
+  const facture = {
+    id: Date.now(),
+    numero,
+    type: 'facture',
+    dateEmission: date,
+    clientNom: tiers,
+    ht,
+    tva,
+    ttc,
+    statut: 'envoyee',
+    montantPaye: 0,
+    origine: 'scan_ia',
+    transmissionStatut: 'en_attente',
+    createdAt: new Date().toISOString(),
+  };
+
+  try {
+    const col = window._fbCollection(window._db, 'profiles', getOwnerProfileId(), 'factures');
+    const ref = await window._fbAddDoc(col, facture);
+    facturesList.push({ ...facture, _docId: ref.id });
+    await autoComptabiliserFacture(facture);
+    await transmettreFactureAuTresor(facture);
+
+    closeScanFactureModal();
+    renderCeoDashboard();
+    toast(`✓ Facture ${numero} normalisée et mise en file de transmission`, 'success');
+  } catch (e) {
+    toast('Erreur : ' + e.message, 'error');
+  }
+}
+
+/**
+ * Transmission de la facture normalisée vers la DGI / Ministère de l'Économie
+ * et des Finances du Bénin (norme de facturation électronique nationale).
+ *
+ * ⚠️ SIMULATION ACTUELLE : le pipeline complet (scan → OCR → normalisation IA →
+ * facture conforme SYSCOHADA) est opérationnel. L'envoi réel vers le système
+ * officiel du Ministère est branché ici et sera activé dès obtention des
+ * identifiants API officiels — il suffira alors de remplacer le corps de
+ * cette fonction par l'appel HTTP réel (fetch vers l'endpoint officiel).
+ */
+async function transmettreFactureAuTresor(facture) {
+  console.log('[COMEO → DGI Bénin] Facture prête à transmettre :', facture);
+  // TODO (branchement futur) :
+  // const res = await fetch('https://api.dgi.finances.bj/e-facturation/v1/factures', {
+  //   method: 'POST',
+  //   headers: { 'Authorization': 'Bearer ' + DGI_API_KEY, 'Content-Type': 'application/json' },
+  //   body: JSON.stringify(facture),
+  // });
+  return Promise.resolve({ simulated: true });
+}
+
+window.renderCeoDashboard = renderCeoDashboard;
+window.openScanFactureModal = openScanFactureModal;
+window.closeScanFactureModal = closeScanFactureModal;
+window.handleFactureFileSelect = handleFactureFileSelect;
+window.confirmerTransmissionFacture = confirmerTransmissionFacture;
+window.applyAccountViewMode = applyAccountViewMode;
+window.toggleAccountViewMode = toggleAccountViewMode;
+
+// ══════════════════════════════════════════
 // PLAN COMPTABLE
 // ══════════════════════════════════════════
 function renderPlanComptable() {
@@ -5514,28 +5736,6 @@ function isAboutCreatorQuery(query) {
   );
 }
 
-function isAboutAlgorithmQuery(query) {
-  const q = normalizeRobotQuery(query);
-  const algoWords = ['algorithme', 'algorithm', 'technologie', 'techno', 'marciodev'];
-  const madeWords = ['concu', 'developpe', 'cree', 'fait', 'construit', 'derriere toi', 'derriere ton'];
-  const hasAlgo = algoWords.some((w) => q.includes(w));
-  return hasAlgo && (madeWords.some((w) => q.includes(w)) || q.includes('qui'));
-}
-
-// Infos personnelles/privées demandées sur le fondateur, au-delà de son identité publique
-function isAskingExtraFounderInfo(query) {
-  const q = normalizeRobotQuery(query);
-  const isAboutFounder = isAboutCreatorQuery(query);
-  if (!isAboutFounder) return false;
-  const extraWords = [
-    'age', 'ne le', 'anniversaire', 'contact', 'numero', 'telephone', 'whatsapp',
-    'adresse', 'habite', 'vie privee', 'marie', 'famille', 'enfant', 'email',
-    'reseaux sociaux', 'instagram', 'facebook', 'linkedin', 'salaire', 'revenu',
-    'parcours', 'biographie', 'etudes', 'diplome', 'ecole', 'universite', 'autre projet',
-  ];
-  return extraWords.some((w) => q.includes(w));
-}
-
 // Recharger dès que les voix sont disponibles (délai navigateur)
 speechSynthesis.addEventListener('voiceschanged', pickRobotVoice);
 setTimeout(pickRobotVoice, 200);
@@ -5946,9 +6146,7 @@ function buildRobotRecognition(opts = {}) {
   recog.lang = 'fr-FR';
   recog.continuous = true;
   recog.interimResults = true;
-  // 3 alternatives au lieu d'1 : améliore la reconnaissance quand la voix arrive faible
-  // (utilisateur à distance du micro), le moteur a plus de marge pour deviner juste.
-  recog.maxAlternatives = 3;
+  recog.maxAlternatives = 1;
 
   let accumulated = initialTranscript || '';
   let latestInterim = '';
@@ -5988,10 +6186,7 @@ function buildRobotRecognition(opts = {}) {
       const t = e.results[i][0].transcript;
       const conf = e.results[i][0].confidence;
       if (e.results[i].isFinal) {
-        // Ne plus filtrer par score de confiance : une voix distante (3m et plus) est
-        // souvent captée avec une confidence basse par le moteur, mais le texte est
-        // quand même exploitable. Le rejeter faisait perdre l'unique passage capté.
-        finalPart += t;
+        if (isMobileDevice || conf === undefined || conf >= 0.35) finalPart += t;
       } else {
         interim += t;
       }
@@ -6047,14 +6242,6 @@ function buildRobotRecognition(opts = {}) {
       scheduleEndOfSpeech();
       return;
     }
-    // Note vocale : le bouton est encore maintenu mais le moteur a interprété
-    // une voix faible/distante comme un silence et a coupé tout seul.
-    // On relance immédiatement en gardant ce qui a déjà été capté.
-    if (pushToTalk && robotHoldActive && !submitted) {
-      const kept = getFullTranscript();
-      setTimeout(() => startRobotListening({ pushToTalk: true, initialTranscript: kept }), 120);
-      return;
-    }
     setRobotStatus('online');
     if (err !== 'no-speech' && err !== 'aborted') {
       setRobotBubble("Désolé, je n'ai pas bien entendu. Réessayez.");
@@ -6074,12 +6261,6 @@ function buildRobotRecognition(opts = {}) {
     }
     if (pushToTalk) {
       robotListening = false;
-      // Idem qu'onerror : si le bouton est encore maintenu et qu'on n'a pas
-      // encore envoyé la requête, on relance la capture sans perdre le texte déjà entendu.
-      if (robotHoldActive && !submitted) {
-        const kept = getFullTranscript();
-        setTimeout(() => startRobotListening({ pushToTalk: true, initialTranscript: kept }), 120);
-      }
       return;
     }
     robotListening = false;
@@ -6192,10 +6373,7 @@ function robotSpeakChunks(chunks, onDone) {
 }
 
 function robotSpeak(text, opts = {}) {
-  // Le texte de la réponse n'est plus affiché à l'écran par défaut : seule la voix le restitue.
-  // La bulle reste réservée aux présentations visuelles de travail terminé (facture créée, etc.)
-  // → passer { showBubble: true } explicitement si un appelant a besoin d'afficher le texte.
-  if (opts.showBubble) setRobotBubble(formatRobotBubbleHtml(text));
+  if (!opts.skipBubble) setRobotBubble(formatRobotBubbleHtml(text));
   const chunks = splitIntoNaturalChunks(text);
   if (!chunks.length) {
     robotSpeaking = false;
@@ -7007,18 +7185,6 @@ async function handleRobotQuery(query) {
 
   const queryLow = query.toLowerCase();
 
-  // ── Algorithme / technologie derrière le robot ──
-  if (isAboutAlgorithmQuery(query)) {
-    robotSpeak("Mon algorithme a été conçu par MarcioDev. Je n'ai pas de détails techniques supplémentaires à partager là-dessus.");
-    return;
-  }
-
-  // ── Infos personnelles/privées supplémentaires sur le fondateur ──
-  if (isAskingExtraFounderInfo(query)) {
-    robotSpeak("Je n'ai pas ces informations à partager, elles restent confidentielles.");
-    return;
-  }
-
   // ── Photo ou question sur le créateur ──
   if (isCreatorPhotoRequest(query) || isAboutCreatorQuery(query)) {
     const showPhoto = isCreatorPhotoRequest(query) || /photo|image|portrait|selfie|montre|voir|affiche/i.test(queryLow);
@@ -7203,18 +7369,15 @@ Tu es l'IA la plus avancée de comptabilité SYSCOHADA au monde. Tu raisonnes, t
 - Jamais de markdown, listes à puces ou "en tant qu'IA".
 - 2 à 5 phrases ; précis sur les chiffres.
 
-PERSONNALITÉ VOCALE — Parle comme un vrai humain au téléphone avec un collègue, pas comme un assistant vocal générique.
+PERSONNALITÉ VOCALE — Parle comme OpenRouter ou ChatGPT Voice : fluide, intelligente, chaleureuse.
 - Raisonne en profondeur avant de répondre, puis exprime une réponse claire et pertinente.
-- Phrases complètes et naturelles, jamais télégraphiques ni mécaniques. Varie la longueur des phrases d'une réponse à l'autre.
+- Phrases complètes et naturelles, jamais télégraphiques ni mécaniques.
 - Rythme oral humain : virgules pour enchaîner une idée, point pour conclure une pensée.
 - Orthographe orale correcte : apostrophes obligatoires (l'entreprise, d'un, j'ai, c'est, qu'il, n'est).
 - 2 à 5 phrases selon la question ; sois précise sur les chiffres et comptes.
 - Jamais de markdown, listes à puces, symboles, ni « en tant qu'IA ».
 - Avant une action : une phrase courte annonçant ce que tu fais. Après : confirme le résultat avec clarté.
 - Ne répète pas la question. Ne dis pas « Je réfléchis » ou des formules vides.
-- Ne commence pas systématiquement de la même façon ("Alors", "Donc", "Très bien") : varie tes accroches comme le ferait un humain qui ne récite pas un script.
-- Utilise des connecteurs naturels ("du coup", "en fait", "cela dit", "au fait") avec parcimonie pour donner un vrai rythme de conversation, pas une liste de faits énoncés froidement.
-- Pas de politesse creuse en fin de réponse ("n'hésitez pas à demander") : termine simplement quand tu as répondu, comme le ferait un collègue compétent.
 
 DONNÉES EN TEMPS RÉEL — ${company} (exercice ${yr}) :
 Date : ${today}
@@ -7264,7 +7427,6 @@ ANALYSE AUTOMATIQUE :
       if (cached && !cached.includes('###')) {
         console.log('[COMEO Robot] ✅ Cache hit');
         robotConvHistory.push({ role: 'assistant', content: cached });
-        setRobotBubble('');
         robotSpeak(stripRobotVoiceText(cached));
         return;
       }
@@ -7292,10 +7454,6 @@ ANALYSE AUTOMATIQUE :
       aiCacheSet(robotCacheKeyStr, reply).catch(() => {});
     }
     robotConvHistory.push({ role: 'assistant', content: reply });
-
-    // Réponse prête : on efface l'indicateur "…" de réflexion.
-    // Les actions ci-dessous (facture, etc.) réaffichent leur propre carte de résultat si besoin.
-    setRobotBubble('');
 
     // ── TRAITEMENT DES ACTIONS ──
 
@@ -13163,16 +13321,14 @@ function toggleMic() {
   if (!localStream) return;
   micEnabled = !micEnabled;
   localStream.getAudioTracks().forEach(t => t.enabled = micEnabled);
-  const btn = document.getElementById('btnMicToggle');
-  if (btn) btn.style.opacity = micEnabled ? '1' : '0.4';
+  document.getElementById('btnMicToggle').style.opacity = micEnabled ? '1' : '0.4';
 }
 
 function toggleCam() {
   if (!localStream) return;
   camEnabled = !camEnabled;
   localStream.getVideoTracks().forEach(t => t.enabled = camEnabled);
-  const btn = document.getElementById('btnCamToggle');
-  if (btn) btn.style.opacity = camEnabled ? '1' : '0.4';
+  document.getElementById('btnCamToggle').style.opacity = camEnabled ? '1' : '0.4';
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -13796,94 +13952,63 @@ async function loadAppelsVideo() {
   } catch(e) { console.error('Erreur vidéo:', e); }
 }
 
-// Lancer un appel vidéo 3D — recipientId optionnel (absent = appel/démo depuis la page Appels vidéo 3D)
+// Lancer un appel vidéo 3D
 async function initAppel3D(recipientId) {
-  // 1. Caméra/micro — c'est la seule étape bloquante : si elle échoue, on arrête tout.
   try {
+    // Demander accès caméra/micro
     localStream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true },
       video: { width: 1280, height: 720 }
     });
-  } catch (e) {
-    toast('Erreur accès caméra/micro : ' + e.message, 'error');
-    console.error(e);
-    return null;
-  }
-
-  videoCallActive = true;
-
-  // Afficher immédiatement le flux local, quoi qu'il arrive ensuite
-  const lv = document.getElementById('localVideo3D');
-  if (lv) lv.srcObject = localStream;
-
-  // 2. Connexion peer — best-effort, ne bloque pas l'affichage de la caméra si ça échoue
-  try {
+    
+    videoCallActive = true;
+    
+    // Configuration WebRTC
     const servers = {
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
       ]
     };
+    
     peerConnection = new RTCPeerConnection(servers);
+    
+    // Ajouter stream local
     localStream.getTracks().forEach(track => {
       peerConnection.addTrack(track, localStream);
     });
-  } catch (e) {
-    console.warn('Connexion peer non disponible :', e);
-  }
-
-  // 3. Log de l'appel dans Firestore — best-effort, ne doit jamais faire échouer l'appel lui-même
-  try {
+    
+    // Log appel
     const appel = {
-      from: currentProfile?.email || '',
-      to: recipientId || null,
+      from: currentProfile.email,
+      to: recipientId,
       startTime: new Date().toISOString(),
       type: '3D_VIDEO',
     };
+    
     const ownerID = getOwnerProfileId();
     const ref = await window._fbAddDoc(
       window._fbCollection(window._db, 'profiles', ownerID, 'video_appels'),
       appel
     );
+    
+    toast('✓ Appel vidéo 3D initié', 'success');
     return ref.id;
-  } catch (e) {
-    console.warn('Log appel non enregistré (l\'appel continue quand même) :', e);
-    return 'local';
+  } catch(e) {
+    toast('Erreur accès caméra: ' + e.message, 'error');
+    console.error(e);
   }
 }
 
 async function terminerAppel() {
   try {
-    if (video3DTimer) { clearInterval(video3DTimer); video3DTimer = null; }
-    const durationSec = video3DStartedAt ? Math.floor((Date.now() - video3DStartedAt) / 1000) : 0;
-    video3DStartedAt = null;
-
-    if (localStream) { localStream.getTracks().forEach(track => track.stop()); localStream = null; }
-    if (peerConnection) { peerConnection.close(); peerConnection = null; }
+    if (localStream) {
+      localStream.getTracks().forEach(track => track.stop());
+    }
+    if (peerConnection) {
+      peerConnection.close();
+    }
     videoCallActive = false;
-
-    const lv = document.getElementById('localVideo3D'); if (lv) lv.srcObject = null;
-    const rv = document.getElementById('remoteVideo3D'); if (rv) rv.srcObject = null;
-
-    const panel = document.getElementById('videoCallPanel');
-    if (panel) panel.style.display = 'none';
-    const empty = document.querySelector('#appealsContent .empty-state');
-    if (empty) empty.style.display = '';
-    const durLabel = document.getElementById('video-duration');
-    if (durLabel) durLabel.textContent = '00:00';
-
-    // Stats de la page (total appels, durée moyenne, participants, session)
-    video3DHistory.push(durationSec);
-    const totalEl = document.getElementById('video-kpi-total');
-    if (totalEl) totalEl.textContent = String(video3DHistory.length);
-    const avgSec = Math.round(video3DHistory.reduce((a, b) => a + b, 0) / video3DHistory.length) || 0;
-    const durEl = document.getElementById('video-kpi-durée');
-    if (durEl) durEl.textContent = `${Math.floor(avgSec / 60)}:${String(avgSec % 60).padStart(2, '0')}`;
-    const usersEl = document.getElementById('video-kpi-users');
-    if (usersEl) usersEl.textContent = '0';
-    const sessEl = document.getElementById('video-kpi-session');
-    if (sessEl) sessEl.textContent = '—';
-
     toast('Appel terminé', 'info');
   } catch(e) {
     console.error('Erreur fermeture appel:', e);
@@ -13921,43 +14046,10 @@ function exportDeclFiscalePDF() { exportDeclarationPDF(); }
 
 function openDeclTaxeModal() { navigate('declarations'); toast('Sélectionnez le type de déclaration ci-dessous', 'info'); }
 
-let video3DTimer = null;
-let video3DStartedAt = null;
-let video3DHistory = []; // durées (secondes) des appels terminés, en mémoire pour cette session
-
-async function openNouveau3DCall() {
-  if (videoCallActive) {
-    toast('Un appel est déjà en cours', 'info');
-    return;
-  }
-  const streamId = await initAppel3D();
-  if (!streamId) return; // échec déjà notifié par initAppel3D (ex: caméra refusée)
-
+function openNouveau3DCall() { 
   const panel = document.getElementById('videoCallPanel');
   if (panel) panel.style.display = 'block';
-  const empty = document.querySelector('#appealsContent .empty-state');
-  if (empty) empty.style.display = 'none';
-
-  video3DStartedAt = Date.now();
-  updateVideo3DTimer();
-  if (video3DTimer) clearInterval(video3DTimer);
-  video3DTimer = setInterval(updateVideo3DTimer, 1000);
-
-  const usersEl = document.getElementById('video-kpi-users');
-  if (usersEl) usersEl.textContent = '1';
-
-  toast('Caméra et micro activés', 'success');
-}
-
-function updateVideo3DTimer() {
-  if (!video3DStartedAt) return;
-  const sec = Math.floor((Date.now() - video3DStartedAt) / 1000);
-  const mm = String(Math.floor(sec / 60)).padStart(2, '0');
-  const ss = String(sec % 60).padStart(2, '0');
-  const durEl = document.getElementById('video-duration');
-  if (durEl) durEl.textContent = `${mm}:${ss}`;
-  const sessEl = document.getElementById('video-kpi-session');
-  if (sessEl) sessEl.textContent = `${mm}:${ss}`;
+  toast('Appel 3D — Fonctionnalité WebRTC en cours d\'activation', 'info'); 
 }
 
 function exportHistoriqueAppels() {
@@ -14063,13 +14155,13 @@ const __scope = { addFacLigne, addLigne, afficherDeclaration, afficherLettrage,
     if (!document.getElementById('videoCallPanel') || navigator.mediaDevices?.getDisplayMedia === undefined) return;
     navigator.mediaDevices.getDisplayMedia({ video: true }).then(stream => {
       const track = stream.getVideoTracks()[0];
-      if (peerConnection) {
-        const sender = peerConnection.getSenders().find(s => s.track?.kind === 'video');
+      if (window._peerConn) {
+        const sender = window._peerConn.getSenders().find(s => s.track?.kind === 'video');
         if (sender) sender.replaceTrack(track);
       }
-      const vid = document.getElementById('localVideo3D');
+      const vid = document.getElementById('localVideo');
       if (vid) vid.srcObject = stream;
-      track.onended = () => { if (localStream) { const vid2 = document.getElementById('localVideo3D'); if (vid2) vid2.srcObject = localStream; } };
+      track.onended = () => { if (localStream) { const vid2 = document.getElementById('localVideo'); if (vid2) vid2.srcObject = localStream; } };
     }).catch(() => {});
   }, updateExportOptions,
   updateFacTotaux, updateImmobCompte, updateImputMontant,
