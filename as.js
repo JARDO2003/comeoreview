@@ -4680,6 +4680,12 @@ let _ceoChartComptes = null;
 
 function dessinerGraphiquesCeoDashboard(all) {
   if (!window.Chart) return; // Chart.js non chargé (ex: hors-ligne) → on n'affiche pas de graphique fictif
+  // Le conteneur .view vient tout juste de passer à display:block : on attend une frame
+  // pour que le canvas ait une taille mesurable, sinon Chart.js dessine un graphe vide.
+  requestAnimationFrame(() => dessinerGraphiquesCeoDashboardImpl(all));
+}
+
+function dessinerGraphiquesCeoDashboardImpl(all) {
   const buckets = getLast6MonthsBuckets();
 
   // ── Graphique 1 : CA mensuel + solde de trésorerie cumulé (données réelles issues des écritures) ──
@@ -4700,27 +4706,60 @@ function dessinerGraphiquesCeoDashboard(all) {
     return cumulSolde;
   });
 
+  const aucuneDonnee1 = caParMois.every((v) => !v) && soldeParMois.every((v) => !v);
   const ctx1 = document.getElementById('ceoChartCaSolde');
   if (ctx1) {
     if (_ceoChartCaSolde) _ceoChartCaSolde.destroy();
-    _ceoChartCaSolde = new Chart(ctx1, {
-      type: 'bar',
-      data: {
-        labels: buckets.map((b) => b.label),
-        datasets: [
-          { type: 'bar', label: "Chiffre d'affaires", data: caParMois, backgroundColor: 'rgba(212,168,83,.55)', borderRadius: 4, order: 2 },
-          { type: 'line', label: 'Solde de trésorerie cumulé', data: soldeParMois, borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,.12)', tension: .3, fill: true, order: 1, yAxisID: 'y' },
-        ],
-      },
-      options: {
-        responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { labels: { color: 'rgba(255,255,255,.7)', font: { size: 10.5 } } } },
-        scales: {
-          x: { ticks: { color: 'rgba(255,255,255,.5)' }, grid: { display: false } },
-          y: { ticks: { color: 'rgba(255,255,255,.5)' }, grid: { color: 'rgba(255,255,255,.06)' } },
+    const wrapC1 = ctx1.parentElement;
+    const oldBadgeC1 = wrapC1.querySelector('.chart-placeholder-badge');
+    if (oldBadgeC1) oldBadgeC1.remove();
+
+    if (aucuneDonnee1) {
+      // Aucune donnée réelle → courbe décorative en attendant les premières écritures
+      const demo = genererCourbeDemo(buckets.length);
+      const g = ctx1.getContext('2d');
+      const gradient = g.createLinearGradient(0, 0, 0, ctx1.clientHeight || 220);
+      gradient.addColorStop(0, 'rgba(212,168,83,.5)');
+      gradient.addColorStop(1, 'rgba(212,168,83,0)');
+      _ceoChartCaSolde = new Chart(ctx1, {
+        type: 'line',
+        data: {
+          labels: buckets.map((b) => b.label),
+          datasets: [{ data: demo, borderColor: 'rgba(212,168,83,.85)', backgroundColor: gradient, borderWidth: 2, fill: true, tension: .45, pointRadius: 0 }],
         },
-      },
-    });
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { display: false }, tooltip: { enabled: false } },
+          scales: {
+            x: { ticks: { color: 'rgba(255,255,255,.3)' }, grid: { display: false } },
+            y: { display: false },
+          },
+        },
+      });
+      const badgeC1 = document.createElement('div');
+      badgeC1.className = 'chart-placeholder-badge';
+      badgeC1.textContent = "Aucune donnée pour l'instant";
+      wrapC1.appendChild(badgeC1);
+    } else {
+      _ceoChartCaSolde = new Chart(ctx1, {
+        type: 'bar',
+        data: {
+          labels: buckets.map((b) => b.label),
+          datasets: [
+            { type: 'bar', label: "Chiffre d'affaires", data: caParMois, backgroundColor: 'rgba(212,168,83,.55)', borderRadius: 4, order: 2 },
+            { type: 'line', label: 'Solde de trésorerie cumulé', data: soldeParMois, borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,.12)', tension: .3, fill: true, order: 1, yAxisID: 'y' },
+          ],
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { labels: { color: 'rgba(255,255,255,.7)', font: { size: 10.5 } } } },
+          scales: {
+            x: { ticks: { color: 'rgba(255,255,255,.5)' }, grid: { display: false } },
+            y: { ticks: { color: 'rgba(255,255,255,.5)' }, grid: { color: 'rgba(255,255,255,.06)' } },
+          },
+        },
+      });
+    }
   }
 
   // ── Graphique 2 : mouvements par compte de trésorerie (classe 5) — débit vs crédit réels ──
@@ -4729,9 +4768,11 @@ function dessinerGraphiquesCeoDashboard(all) {
   const ctx2 = document.getElementById('ceoChartComptes');
   if (ctx2) {
     if (_ceoChartComptes) _ceoChartComptes.destroy();
-    if (!comptesTreso.length) {
-      ctx2.parentElement.innerHTML = '<div class="empty-state"><p>Aucun mouvement de compte pour l\'instant</p></div>';
-    } else {
+    const wrapC2 = ctx2.parentElement;
+    const oldBadgeC2 = wrapC2.querySelector('.chart-placeholder-badge');
+    if (oldBadgeC2) oldBadgeC2.remove();
+
+    if (comptesTreso.length) {
       _ceoChartComptes = new Chart(ctx2, {
         type: 'bar',
         data: {
@@ -4750,6 +4791,23 @@ function dessinerGraphiquesCeoDashboard(all) {
           },
         },
       });
+    } else {
+      // Aucun compte mouvementé → anneau décoratif en attendant les premières écritures
+      _ceoChartComptes = new Chart(ctx2, {
+        type: 'doughnut',
+        data: {
+          labels: [''],
+          datasets: [{ data: [1], backgroundColor: ['rgba(212,168,83,.18)'], borderWidth: 0, hoverBackgroundColor: ['rgba(212,168,83,.18)'] }],
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false, cutout: '72%',
+          plugins: { legend: { display: false }, tooltip: { enabled: false } },
+        },
+      });
+      const badgeC2 = document.createElement('div');
+      badgeC2.className = 'chart-placeholder-badge chart-placeholder-badge-center';
+      badgeC2.textContent = "Aucun mouvement de compte pour l'instant";
+      wrapC2.appendChild(badgeC2);
     }
   }
 }
@@ -4801,6 +4859,12 @@ function renderCompteBanque() {
   }
 
   if (!window.Chart) return;
+  // Le conteneur .view vient tout juste de passer à display:block : on attend une frame
+  // pour que le canvas ait une taille mesurable, sinon Chart.js dessine un graphe vide.
+  requestAnimationFrame(() => renderCompteBanqueCharts(comptes));
+}
+
+function renderCompteBanqueCharts(comptes) {
   const buckets = getLast6MonthsBuckets();
   const entreesParMois = buckets.map((b) =>
     (ecritures || []).filter((e) => (e.date || '').startsWith(b.key)).flatMap((e) => e.lignes).filter((l) => l.compte?.[0] === '5').reduce((s, l) => s + (l.debit || 0), 0),
@@ -4904,6 +4968,7 @@ function renderCompteBanque() {
     }
   }
 }
+window.renderCompteBanqueCharts = renderCompteBanqueCharts;
 
 // Génère une courbe lisse et organique (superposition de sinusoïdes) pour servir
 // d'aperçu décoratif tant qu'aucun mouvement réel n'existe sur le compte.
