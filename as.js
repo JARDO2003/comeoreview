@@ -4873,6 +4873,15 @@ function closeScanFactureModal() {
   document.getElementById('scanFactureModal').style.display = 'none';
 }
 
+// Recalcule automatiquement le TTC quand l'utilisateur modifie HT ou TVA à la main
+function recalculerTTCScan() {
+  const parseNum = (v) => parseFloat(String(v).replace(/\s/g, '').replace(',', '.')) || 0;
+  const ht = parseNum(document.getElementById('sr-ht').value);
+  const tva = parseNum(document.getElementById('sr-tva').value);
+  document.getElementById('sr-ttc').value = ht + tva;
+}
+window.recalculerTTCScan = recalculerTTCScan;
+
 async function handleFactureFileSelect(e) {
   const file = e.target.files?.[0];
   if (!file) return;
@@ -5070,12 +5079,13 @@ Les montants sont en FCFA, en nombres purs (sans espaces ni symboles).`;
 }
 
 async function confirmerTransmissionFacture() {
+  const parseNum = (v) => parseFloat(String(v).replace(/\s/g, '').replace(',', '.')) || 0;
   const tiers = document.getElementById('sr-tiers').value.trim();
   const numero = document.getElementById('sr-numero').value.trim();
   const date = document.getElementById('sr-date').value;
-  const ht = parseFloat(document.getElementById('sr-ht').value) || 0;
-  const tva = parseFloat(document.getElementById('sr-tva').value) || 0;
-  const ttc = parseFloat(document.getElementById('sr-ttc').value) || (ht + tva);
+  const ht = parseNum(document.getElementById('sr-ht').value);
+  const tva = parseNum(document.getElementById('sr-tva').value);
+  const ttc = parseNum(document.getElementById('sr-ttc').value) || (ht + tva);
   if (!tiers) { toast('Le nom du client/fournisseur est requis', 'error'); return; }
 
   const facture = {
