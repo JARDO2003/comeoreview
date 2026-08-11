@@ -2016,6 +2016,7 @@ mark.hl { background:rgba(212,168,83,.3); color:var(--warm); border-radius:2px; 
 .scan-result-grid .af-input,
 .scan-modal-box .af-input {
   background:var(--surface2); border:1.5px solid var(--line); color:var(--ink);
+  pointer-events:auto !important; user-select:text !important; cursor:text;
 }
 .scan-result-grid .af-input::placeholder,
 .scan-modal-box .af-input::placeholder { color:var(--muted); }
