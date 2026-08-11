@@ -4808,33 +4808,70 @@ function renderCompteBanque() {
   const sortiesParMois = buckets.map((b) =>
     (ecritures || []).filter((e) => (e.date || '').startsWith(b.key)).flatMap((e) => e.lignes).filter((l) => l.compte?.[0] === '5').reduce((s, l) => s + (l.credit || 0), 0),
   );
+  const aucunMouvement = entreesParMois.every((v) => !v) && sortiesParMois.every((v) => !v);
 
   const ctx1 = document.getElementById('cbChartInOut');
   if (ctx1) {
     if (_cbChartInOut) _cbChartInOut.destroy();
-    _cbChartInOut = new Chart(ctx1, {
-      type: 'bar',
-      data: {
-        labels: buckets.map((b) => b.label),
-        datasets: [
-          { label: 'Entrées', data: entreesParMois, backgroundColor: 'rgba(34,197,94,.6)', borderRadius: 4 },
-          { label: 'Sorties', data: sortiesParMois, backgroundColor: 'rgba(239,68,68,.6)', borderRadius: 4 },
-        ],
-      },
-      options: {
-        responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { labels: { color: 'rgba(255,255,255,.7)', font: { size: 10.5 } } } },
-        scales: {
-          x: { ticks: { color: 'rgba(255,255,255,.5)' }, grid: { display: false } },
-          y: { ticks: { color: 'rgba(255,255,255,.5)' }, grid: { color: 'rgba(255,255,255,.06)' } },
+    const wrap1 = ctx1.parentElement;
+    const oldBadge1 = wrap1.querySelector('.chart-placeholder-badge');
+    if (oldBadge1) oldBadge1.remove();
+
+    if (aucunMouvement) {
+      // Aucune donnée réelle → courbe décorative en attendant les premiers mouvements
+      const demo = genererCourbeDemo(buckets.length);
+      const g = ctx1.getContext('2d');
+      const gradient = g.createLinearGradient(0, 0, 0, ctx1.clientHeight || 220);
+      gradient.addColorStop(0, 'rgba(212,168,83,.5)');
+      gradient.addColorStop(1, 'rgba(212,168,83,0)');
+      _cbChartInOut = new Chart(ctx1, {
+        type: 'line',
+        data: {
+          labels: buckets.map((b) => b.label),
+          datasets: [{ data: demo, borderColor: 'rgba(212,168,83,.85)', backgroundColor: gradient, borderWidth: 2, fill: true, tension: .45, pointRadius: 0 }],
         },
-      },
-    });
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { display: false }, tooltip: { enabled: false } },
+          scales: {
+            x: { ticks: { color: 'rgba(255,255,255,.3)' }, grid: { display: false } },
+            y: { display: false },
+          },
+        },
+      });
+      const badge1 = document.createElement('div');
+      badge1.className = 'chart-placeholder-badge';
+      badge1.textContent = "Aucun mouvement pour l'instant";
+      wrap1.appendChild(badge1);
+    } else {
+      _cbChartInOut = new Chart(ctx1, {
+        type: 'bar',
+        data: {
+          labels: buckets.map((b) => b.label),
+          datasets: [
+            { label: 'Entrées', data: entreesParMois, backgroundColor: 'rgba(34,197,94,.6)', borderRadius: 4 },
+            { label: 'Sorties', data: sortiesParMois, backgroundColor: 'rgba(239,68,68,.6)', borderRadius: 4 },
+          ],
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { labels: { color: 'rgba(255,255,255,.7)', font: { size: 10.5 } } } },
+          scales: {
+            x: { ticks: { color: 'rgba(255,255,255,.5)' }, grid: { display: false } },
+            y: { ticks: { color: 'rgba(255,255,255,.5)' }, grid: { color: 'rgba(255,255,255,.06)' } },
+          },
+        },
+      });
+    }
   }
 
   const ctx2 = document.getElementById('cbChartRepartition');
   if (ctx2) {
     if (_cbChartRepartition) _cbChartRepartition.destroy();
+    const wrap2 = ctx2.parentElement;
+    const oldBadge2 = wrap2.querySelector('.chart-placeholder-badge');
+    if (oldBadge2) oldBadge2.remove();
+
     if (comptes.length) {
       _cbChartRepartition = new Chart(ctx2, {
         type: 'doughnut',
@@ -4848,9 +4885,36 @@ function renderCompteBanque() {
         },
       });
     } else {
-      ctx2.parentElement.innerHTML = '<div class="empty-state"><p>Aucune donnée pour l\'instant</p></div>';
+      // Aucun compte mouvementé → anneau décoratif en attendant les premières écritures
+      _cbChartRepartition = new Chart(ctx2, {
+        type: 'doughnut',
+        data: {
+          labels: [''],
+          datasets: [{ data: [1], backgroundColor: ['rgba(212,168,83,.18)'], borderWidth: 0, hoverBackgroundColor: ['rgba(212,168,83,.18)'] }],
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false, cutout: '72%',
+          plugins: { legend: { display: false }, tooltip: { enabled: false } },
+        },
+      });
+      const badge2 = document.createElement('div');
+      badge2.className = 'chart-placeholder-badge chart-placeholder-badge-center';
+      badge2.textContent = "Aucune donnée pour l'instant";
+      wrap2.appendChild(badge2);
     }
   }
+}
+
+// Génère une courbe lisse et organique (superposition de sinusoïdes) pour servir
+// d'aperçu décoratif tant qu'aucun mouvement réel n'existe sur le compte.
+function genererCourbeDemo(n) {
+  const vals = [];
+  for (let i = 0; i < n; i++) {
+    const t = i / Math.max(1, n - 1);
+    const v = 55 + 30 * Math.sin(t * Math.PI * 1.6) + 15 * Math.sin(t * Math.PI * 4.3 + 1.2);
+    vals.push(Math.max(8, Math.round(v)));
+  }
+  return vals;
 }
 window.renderCompteBanque = renderCompteBanque;
 
