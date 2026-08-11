@@ -2661,12 +2661,6 @@ function switchTab(t) {
   document.getElementById('form-register').style.display = t === 'register' ? 'flex' : 'none';
 }
 
-function selectAccountRole(role) {
-  document.getElementById('r-accountRole').value = role;
-  document.getElementById('rc-dirigeant').classList.toggle('active', role === 'dirigeant');
-  document.getElementById('rc-comptable').classList.toggle('active', role === 'comptable');
-}
-
 async function doRegister() {
   const company = document.getElementById('r-company').value.trim();
   const email = document.getElementById('r-email').value.trim();
@@ -2944,6 +2938,7 @@ async function deleteEcritureFromFirestore(docId) {
 const VIEW_KEYS = {
   dashboard: 'tableau',
   'dashboard-ceo': "d'ensemble",
+  'compte-banque': 'banque',
   saisie: 'saisie',
   journal: 'journal',
   grandlivre: 'grand',
@@ -2968,6 +2963,7 @@ const VIEW_KEYS = {
 };
 const RENDERERS = {
   'dashboard-ceo': renderCeoDashboard,
+  'compte-banque': renderCompteBanque,
   journal: renderJournal,
   grandlivre: renderGrandLivre,
   balance: renderBalance,
@@ -4652,16 +4648,211 @@ function renderCeoDashboard() {
 
   const queueEl = document.getElementById('ceoTransmissionQueue');
   if (queueEl) {
-    const enAttente = (facturesList || []).filter((f) => f.transmissionStatut === 'en_attente' || f.transmissionStatut === 'transmise');
+    const enAttente = (facturesList || []).filter((f) => f.emecefStatut === 'en_attente' || f.emecefStatut === 'validee');
     queueEl.innerHTML = enAttente.length
       ? enAttente.slice(0, 5).map((f) => `
         <div class="ceo-recent-item">
-          <span>${f.numero || 'Facture'} — ${(f.clientNom || '')}</span>
-          <span class="transmission-badge ${f.transmissionStatut === 'transmise' ? 'sent' : 'pending'}">${f.transmissionStatut === 'transmise' ? '✓ Transmise' : '⏳ En attente'}</span>
+          <span>${f.numero || 'Facture'} — ${(f.clientNom || '')}${f.nim ? `<br><span style="font-size:9.5px;color:var(--muted)">NIM ${f.nim}</span>` : ''}</span>
+          <span class="transmission-badge ${f.emecefStatut === 'validee' ? 'sent' : 'pending'}">${f.emecefStatut === 'validee' ? '✓ Validée e-MECeF' : '⏳ En attente e-MECeF'}</span>
         </div>`).join('')
       : '<div class="empty-state"><p>Rien en attente</p></div>';
   }
+
+  dessinerGraphiquesCeoDashboard(all);
 }
+
+// ── Fenêtre glissante des 6 derniers mois (labels + clé YYYY-MM) ──
+function getLast6MonthsBuckets() {
+  const buckets = [];
+  const now = new Date();
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    buckets.push({
+      key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`,
+      label: d.toLocaleDateString('fr-FR', { month: 'short' }),
+    });
+  }
+  return buckets;
+}
+
+let _ceoChartCaSolde = null;
+let _ceoChartComptes = null;
+
+function dessinerGraphiquesCeoDashboard(all) {
+  if (!window.Chart) return; // Chart.js non chargé (ex: hors-ligne) → on n'affiche pas de graphique fictif
+  const buckets = getLast6MonthsBuckets();
+
+  // ── Graphique 1 : CA mensuel + solde de trésorerie cumulé (données réelles issues des écritures) ──
+  const caParMois = buckets.map((b) =>
+    (ecritures || [])
+      .filter((e) => (e.date || '').startsWith(b.key))
+      .flatMap((e) => e.lignes)
+      .filter((l) => l.compte?.[0] === '7')
+      .reduce((s, l) => s + (l.credit || 0), 0),
+  );
+  let cumulSolde = 0;
+  const soldeParMois = buckets.map((b) => {
+    const mvts = (ecritures || [])
+      .filter((e) => (e.date || '').startsWith(b.key))
+      .flatMap((e) => e.lignes)
+      .filter((l) => l.compte?.[0] === '5');
+    cumulSolde += mvts.reduce((s, l) => s + (l.debit || 0) - (l.credit || 0), 0);
+    return cumulSolde;
+  });
+
+  const ctx1 = document.getElementById('ceoChartCaSolde');
+  if (ctx1) {
+    if (_ceoChartCaSolde) _ceoChartCaSolde.destroy();
+    _ceoChartCaSolde = new Chart(ctx1, {
+      type: 'bar',
+      data: {
+        labels: buckets.map((b) => b.label),
+        datasets: [
+          { type: 'bar', label: "Chiffre d'affaires", data: caParMois, backgroundColor: 'rgba(212,168,83,.55)', borderRadius: 4, order: 2 },
+          { type: 'line', label: 'Solde de trésorerie cumulé', data: soldeParMois, borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,.12)', tension: .3, fill: true, order: 1, yAxisID: 'y' },
+        ],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: 'rgba(255,255,255,.7)', font: { size: 10.5 } } } },
+        scales: {
+          x: { ticks: { color: 'rgba(255,255,255,.5)' }, grid: { display: false } },
+          y: { ticks: { color: 'rgba(255,255,255,.5)' }, grid: { color: 'rgba(255,255,255,.06)' } },
+        },
+      },
+    });
+  }
+
+  // ── Graphique 2 : mouvements par compte de trésorerie (classe 5) — débit vs crédit réels ──
+  const map = getMap();
+  const comptesTreso = Object.entries(map).filter(([c]) => c.startsWith('5')).slice(0, 8);
+  const ctx2 = document.getElementById('ceoChartComptes');
+  if (ctx2) {
+    if (_ceoChartComptes) _ceoChartComptes.destroy();
+    if (!comptesTreso.length) {
+      ctx2.parentElement.innerHTML = '<div class="empty-state"><p>Aucun mouvement de compte pour l\'instant</p></div>';
+    } else {
+      _ceoChartComptes = new Chart(ctx2, {
+        type: 'bar',
+        data: {
+          labels: comptesTreso.map(([c]) => libelleCompte(c).substring(0, 16)),
+          datasets: [
+            { label: 'Entrées', data: comptesTreso.map(([, a]) => a.debit), backgroundColor: 'rgba(34,197,94,.6)', borderRadius: 4 },
+            { label: 'Sorties', data: comptesTreso.map(([, a]) => a.credit), backgroundColor: 'rgba(239,68,68,.6)', borderRadius: 4 },
+          ],
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false, indexAxis: 'y',
+          plugins: { legend: { labels: { color: 'rgba(255,255,255,.7)', font: { size: 10.5 } } } },
+          scales: {
+            x: { ticks: { color: 'rgba(255,255,255,.5)' }, grid: { color: 'rgba(255,255,255,.06)' } },
+            y: { ticks: { color: 'rgba(255,255,255,.5)', font: { size: 10 } }, grid: { display: false } },
+          },
+        },
+      });
+    }
+  }
+}
+
+// ══════════════════════════════════════════
+// BANQUE & TRÉSORERIE — vue simplifiée (session dirigeant)
+// ══════════════════════════════════════════
+let _cbChartInOut = null;
+let _cbChartRepartition = null;
+
+function renderCompteBanque() {
+  const map = getMap();
+  const comptes = Object.entries(map).filter(([c]) => c.startsWith('5'));
+
+  // Cartes par compte (banque, caisse, mobile money…)
+  const grid = document.getElementById('cbAccountsGrid');
+  if (grid) {
+    grid.innerHTML = comptes.length
+      ? comptes.map(([code, acc]) => {
+          const solde = acc.debit - acc.credit;
+          return `<div class="cb-account-card">
+            <div class="cb-acc-name">${libelleCompte(code)}</div>
+            <div class="cb-acc-amount" style="color:${solde >= 0 ? 'var(--green)' : 'var(--rust)'}">${fn(Math.abs(solde))} FCFA${solde < 0 ? ' (déficit)' : ''}</div>
+          </div>`;
+        }).join('')
+      : '<div class="empty-state"><p>Aucun compte de trésorerie mouvementé pour l\'instant</p></div>';
+  }
+
+  // Liste des derniers mouvements réels (classe 5), triés du plus récent au plus ancien
+  const mvts = [];
+  (ecritures || []).forEach((e) => {
+    (e.lignes || []).forEach((l) => {
+      if (l.compte?.[0] === '5' && (l.debit || l.credit)) {
+        mvts.push({ date: e.date, libelle: l.libelle || e.libelle, compte: l.compte, montant: l.debit || -l.credit });
+      }
+    });
+  });
+  mvts.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+
+  const listEl = document.getElementById('cbMouvementsList');
+  if (listEl) {
+    listEl.innerHTML = mvts.length
+      ? mvts.slice(0, 15).map((m) => `
+        <div class="ceo-recent-item">
+          <span>${m.date || ''} — ${(m.libelle || '').substring(0, 40)}</span>
+          <span class="cri-amount" style="color:${m.montant >= 0 ? 'var(--green)' : 'var(--rust)'}">${m.montant >= 0 ? '+' : ''}${fn(m.montant)} FCFA</span>
+        </div>`).join('')
+      : '<div class="empty-state"><p>Aucun mouvement pour l\'instant</p></div>';
+  }
+
+  if (!window.Chart) return;
+  const buckets = getLast6MonthsBuckets();
+  const entreesParMois = buckets.map((b) =>
+    (ecritures || []).filter((e) => (e.date || '').startsWith(b.key)).flatMap((e) => e.lignes).filter((l) => l.compte?.[0] === '5').reduce((s, l) => s + (l.debit || 0), 0),
+  );
+  const sortiesParMois = buckets.map((b) =>
+    (ecritures || []).filter((e) => (e.date || '').startsWith(b.key)).flatMap((e) => e.lignes).filter((l) => l.compte?.[0] === '5').reduce((s, l) => s + (l.credit || 0), 0),
+  );
+
+  const ctx1 = document.getElementById('cbChartInOut');
+  if (ctx1) {
+    if (_cbChartInOut) _cbChartInOut.destroy();
+    _cbChartInOut = new Chart(ctx1, {
+      type: 'bar',
+      data: {
+        labels: buckets.map((b) => b.label),
+        datasets: [
+          { label: 'Entrées', data: entreesParMois, backgroundColor: 'rgba(34,197,94,.6)', borderRadius: 4 },
+          { label: 'Sorties', data: sortiesParMois, backgroundColor: 'rgba(239,68,68,.6)', borderRadius: 4 },
+        ],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: 'rgba(255,255,255,.7)', font: { size: 10.5 } } } },
+        scales: {
+          x: { ticks: { color: 'rgba(255,255,255,.5)' }, grid: { display: false } },
+          y: { ticks: { color: 'rgba(255,255,255,.5)' }, grid: { color: 'rgba(255,255,255,.06)' } },
+        },
+      },
+    });
+  }
+
+  const ctx2 = document.getElementById('cbChartRepartition');
+  if (ctx2) {
+    if (_cbChartRepartition) _cbChartRepartition.destroy();
+    if (comptes.length) {
+      _cbChartRepartition = new Chart(ctx2, {
+        type: 'doughnut',
+        data: {
+          labels: comptes.map(([c]) => libelleCompte(c).substring(0, 18)),
+          datasets: [{ data: comptes.map(([, a]) => Math.abs(a.debit - a.credit)), backgroundColor: ['#d4a853', '#3b82f6', '#22c55e', '#ef4444', '#8b5cf6', '#14b8a6', '#f97316', '#ec4899'] }],
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { position: 'bottom', labels: { color: 'rgba(255,255,255,.7)', font: { size: 9.5 } } } },
+        },
+      });
+    } else {
+      ctx2.parentElement.innerHTML = '<div class="empty-state"><p>Aucune donnée pour l\'instant</p></div>';
+    }
+  }
+}
+window.renderCompteBanque = renderCompteBanque;
 
 // ══════════════════════════════════════════
 // SCAN DE FACTURE PAR IA — OCR + normalisation + transmission
@@ -4699,32 +4890,145 @@ async function handleFactureFileSelect(e) {
   reader.readAsDataURL(file);
 }
 
-async function analyserFactureScan(imageDataUrl) {
+// ── Charge une image (data URL) dans un <canvas> ──
+function _chargerImageDansCanvas(imageDataUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = imageDataUrl;
+  });
+}
+
+/**
+ * Prétraitement d'image pour maximiser la lecture OCR, même sur photo floue/mal éclairée :
+ *  - agrandissement (les petits chiffres flous deviennent lisibles une fois agrandis)
+ *  - niveaux de gris
+ *  - étirement de contraste (histogram stretch) — fait ressortir les chiffres pâles
+ *  - accentuation (unsharp mask léger) — mode 'sharpen'
+ *  - binarisation adaptative (noir/blanc pur) — mode 'binarize', idéale pour les tickets/factures
+ */
+function pretraiterImageOCR(img, mode) {
+  const scale = mode === 'binarize' ? 2.4 : 2.0;
+  const w = Math.round(img.width * scale);
+  const h = Math.round(img.height * scale);
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(img, 0, 0, w, h);
+
+  const imgData = ctx.getImageData(0, 0, w, h);
+  const d = imgData.data;
+  const n = d.length;
+
+  // 1) Niveaux de gris + recherche min/max pour l'étirement de contraste
+  const gray = new Uint8ClampedArray(n / 4);
+  let min = 255, max = 0;
+  for (let i = 0, p = 0; i < n; i += 4, p++) {
+    const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+    gray[p] = g;
+    if (g < min) min = g;
+    if (g > max) max = g;
+  }
+  const range = Math.max(max - min, 1);
+
+  if (mode === 'binarize') {
+    // 2) Seuillage adaptatif simple (moyenne globale pondérée) après étirement de contraste
+    let sum = 0;
+    for (let p = 0; p < gray.length; p++) sum += ((gray[p] - min) * 255) / range;
+    const seuil = sum / gray.length;
+    for (let i = 0, p = 0; i < n; i += 4, p++) {
+      const stretched = ((gray[p] - min) * 255) / range;
+      const v = stretched > seuil - 12 ? 255 : 0; // léger biais pour préserver les traits fins des chiffres
+      d[i] = d[i + 1] = d[i + 2] = v;
+    }
+  } else {
+    // Mode 'contrast' : étirement de contraste + léger renforcement de netteté
+    for (let i = 0, p = 0; i < n; i += 4, p++) {
+      const stretched = ((gray[p] - min) * 255) / range;
+      const v = Math.max(0, Math.min(255, (stretched - 128) * 1.35 + 128)); // contraste renforcé
+      d[i] = d[i + 1] = d[i + 2] = v;
+    }
+  }
+  ctx.putImageData(imgData, 0, 0);
+  return canvas.toDataURL('image/png');
+}
+
+// ── Une passe OCR Tesseract avec configuration donnée ──
+async function _ocrPass(dataUrl, config) {
+  if (!window.Tesseract) return '';
+  try {
+    const res = await window.Tesseract.recognize(dataUrl, config.lang || 'fra', {
+      tessedit_char_whitelist: config.whitelist || undefined,
+    });
+    return res?.data?.text || '';
+  } catch (e) {
+    console.warn('[OCR] passe échouée', e);
+    return '';
+  }
+}
+
+async function analyserFactureScan(imageDataUrl, tentative = 1) {
   const progressText = document.getElementById('scanProgressText');
   const errEl = document.getElementById('scanErr');
+  errEl.textContent = '';
   try {
-    // 1) OCR côté client (Tesseract.js) — lit le texte brut de la facture photographiée
-    if (progressText) progressText.textContent = 'Lecture du texte de la facture (OCR)…';
-    let rawText = '';
-    if (window.Tesseract) {
-      const ocrResult = await window.Tesseract.recognize(imageDataUrl, 'fra');
-      rawText = ocrResult?.data?.text || '';
-    }
-    if (!rawText.trim()) {
-      throw new Error("Impossible de lire le texte de l'image. Réessayez avec une photo plus nette et bien éclairée.");
+    const img = await _chargerImageDansCanvas(imageDataUrl);
+
+    // ── PASSE 1 : image contrastée/agrandie — lecture générale (texte + chiffres) ──
+    if (progressText) progressText.textContent = `Analyse approfondie de l'image (passe 1/3)…`;
+    const imgContrast = pretraiterImageOCR(img, 'contrast');
+    const texteGeneral = await _ocrPass(imgContrast, { lang: 'fra' });
+
+    // ── PASSE 2 : image binarisée — spécialisée sur les tickets/factures nettes ──
+    if (progressText) progressText.textContent = `Analyse approfondie de l'image (passe 2/3)…`;
+    const imgBinaire = pretraiterImageOCR(img, 'binarize');
+    const texteBinaire = await _ocrPass(imgBinaire, { lang: 'fra' });
+
+    // ── PASSE 3 : passe dédiée aux CHIFFRES uniquement (biaise fortement la reconnaissance vers les montants) ──
+    if (progressText) progressText.textContent = `Analyse approfondie de l'image (passe 3/3 — montants)…`;
+    const texteChiffres = await _ocrPass(imgBinaire, { lang: 'fra', whitelist: '0123456789.,%FCFAfcfa ' });
+
+    const rawTextCombine = [
+      '--- LECTURE GÉNÉRALE ---',
+      texteGeneral,
+      '--- LECTURE VERSION CONTRASTÉE (noir/blanc) ---',
+      texteBinaire,
+      '--- LECTURE SPÉCIALISÉE CHIFFRES/MONTANTS (peut contenir du bruit, mais isole les nombres) ---',
+      texteChiffres,
+    ].join('\n');
+
+    if (!texteGeneral.trim() && !texteBinaire.trim() && !texteChiffres.trim()) {
+      if (tentative < 2) {
+        // Aucun texte détecté du tout → on retente automatiquement avec un traitement plus agressif
+        if (progressText) progressText.textContent = 'Aucun texte détecté — nouvelle tentative avec traitement renforcé…';
+        return analyserFactureScan(imageDataUrl, tentative + 1);
+      }
+      throw new Error("Impossible de lire le moindre texte sur cette image. Reprenez la photo avec plus de lumière et en évitant le flou de mouvement.");
     }
 
-    // 2) Normalisation par IA — transforme le texte brut OCR en facture structurée SYSCOHADA
-    if (progressText) progressText.textContent = "L'IA normalise la facture…";
-    const systemPrompt = `Tu es un module de normalisation de factures pour un logiciel comptable SYSCOHADA (Bénin/OHADA).
-On te donne le texte brut extrait par OCR d'une photo de facture, potentiellement bruité ou mal formaté.
+    // ── Normalisation par IA — reconstruit les montants même à partir d'un OCR bruité/flou ──
+    if (progressText) progressText.textContent = "L'IA reconstitue et normalise la facture…";
+    const systemPrompt = `Tu es un module de normalisation de factures pour un logiciel comptable SYSCOHADA (Bénin/OHADA), spécialisé dans la reconstruction de montants à partir d'OCR de mauvaise qualité (photo floue, mal éclairée, angle imparfait).
+
+On te donne TROIS lectures OCR de la MÊME facture (une lecture générale, une version contrastée, et une version spécialisée chiffres). Elles peuvent chacune contenir des erreurs différentes — utilise-les ensemble pour reconstituer le texte réel le plus probable, comme un expert qui recoupe plusieurs indices imparfaits.
+
+RÈGLES IMPORTANTES POUR LES MONTANTS :
+- Ne rends JAMAIS 0 pour un montant si le texte contient des chiffres à proximité de mots comme "Total", "TTC", "Net à payer", "Montant", "HT", "TVA" — dans ce cas, reconstitue ta meilleure estimation plausible plutôt que de mettre 0.
+- Vérifie la cohérence arithmétique : TTC doit être proche de HT + TVA. Si un des trois est manquant ou visiblement corrompu par l'OCR (ex: chiffres illisibles, mélangés), recalcule-le à partir des deux autres.
+- Les erreurs OCR fréquentes sur les chiffres : 0↔O, 1↔l/I, 5↔S, 8↔B, virgule/point confondus, espaces insérés au milieu d'un nombre (ex: "12 500" = 12500). Corrige ces confusions en te basant sur le contexte (montant plausible en FCFA).
+- Le plus grand montant net proche des mots "Total"/"TTC"/"Net à payer" est presque toujours le TTC.
+
 Réponds UNIQUEMENT avec un objet JSON valide (aucun texte avant/après, aucun markdown), avec exactement ces clés :
-{"tiers": string (nom du client ou fournisseur), "numero": string, "date": string (format YYYY-MM-DD, déduis une date plausible si absente), "ht": number, "tva": number, "ttc": number}
-Si un montant est absent, déduis-le par calcul (ex: ttc = ht + tva) ou mets 0. Les montants sont en FCFA, sans espaces ni symboles.`;
+{"tiers": string (nom du client ou fournisseur), "numero": string, "date": string (format YYYY-MM-DD, déduis une date plausible si absente), "ht": number, "tva": number, "ttc": number, "confiance": "haute"|"moyenne"|"faible"}
+Les montants sont en FCFA, en nombres purs (sans espaces ni symboles).`;
     const result = await callGroqQueued(
-      [{ role: 'user', content: `Texte OCR brut de la facture :\n\n${rawText}` }],
+      [{ role: 'user', content: `Voici les 3 lectures OCR de la facture :\n\n${rawTextCombine}` }],
       systemPrompt,
-      500,
+      600,
       0.0,
     );
     if (!result || result.error) {
@@ -4734,6 +5038,13 @@ Si un montant est absent, déduis-le par calcul (ex: ttc = ht + tva) ou mets 0. 
     const jsonMatch = content.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error("Réponse IA illisible. Réessayez.");
     const parsed = JSON.parse(jsonMatch[0]);
+
+    // Si tout est resté à 0 malgré la présence de texte → on retente une fois avec traitement renforcé
+    const toutAZero = !parsed.ht && !parsed.tva && !parsed.ttc;
+    if (toutAZero && tentative < 2) {
+      if (progressText) progressText.textContent = 'Montants non détectés — nouvelle tentative avec traitement renforcé…';
+      return analyserFactureScan(imageDataUrl, tentative + 1);
+    }
 
     scanFactureExtracted = parsed;
     document.getElementById('sr-tiers').value = parsed.tiers || '';
@@ -4745,6 +5056,13 @@ Si un montant est absent, déduis-le par calcul (ex: ttc = ht + tva) ou mets 0. 
 
     document.getElementById('scanStepPreview').style.display = 'none';
     document.getElementById('scanStepResult').style.display = 'block';
+
+    if (parsed.confiance === 'faible' || toutAZero) {
+      const noteEl = document.querySelector('.scan-result-note');
+      if (noteEl) {
+        noteEl.innerHTML = `⚠️ <strong>Lecture incertaine</strong> (photo floue/peu lisible) — vérifiez attentivement les montants ci-dessus avant de confirmer. ` + noteEl.innerHTML;
+      }
+    }
   } catch (e) {
     errEl.textContent = '❌ ' + e.message;
     document.getElementById('scanProgress').style.display = 'none';
@@ -4772,7 +5090,9 @@ async function confirmerTransmissionFacture() {
     statut: 'envoyee',
     montantPaye: 0,
     origine: 'scan_ia',
-    transmissionStatut: 'en_attente',
+    emecefStatut: 'en_attente', // en_attente | validee | rejetee
+    nim: null,        // Numéro d'Identification de la Machine — attribué par e-MECeF à la validation
+    sceauFiscal: null, // Sceau fiscal électronique (QR code) — attribué par e-MECeF à la validation
     createdAt: new Date().toISOString(),
   };
 
@@ -4781,35 +5101,68 @@ async function confirmerTransmissionFacture() {
     const ref = await window._fbAddDoc(col, facture);
     facturesList.push({ ...facture, _docId: ref.id });
     await autoComptabiliserFacture(facture);
-    await transmettreFactureAuTresor(facture);
+    const emecefResult = await validerFactureEMECeF(facture);
+
+    // Mise à jour du statut + NIM/sceau fiscal une fois la validation e-MECeF obtenue
+    const idxF = facturesList.findIndex((f) => f.id === facture.id);
+    if (idxF > -1) {
+      facturesList[idxF].emecefStatut = emecefResult.statut;
+      facturesList[idxF].nim = emecefResult.nim;
+      facturesList[idxF].sceauFiscal = emecefResult.sceauFiscal;
+      if (facturesList[idxF]._docId) {
+        await window._fbSetDoc(window._fbDoc(window._db, 'profiles', getOwnerProfileId(), 'factures', facturesList[idxF]._docId), facturesList[idxF]);
+      }
+    }
 
     closeScanFactureModal();
     renderCeoDashboard();
-    toast(`✓ Facture ${numero} normalisée et mise en file de transmission`, 'success');
+    toast(`✓ Facture ${numero} normalisée — en attente de validation e-MECeF (DGI Bénin)`, 'success');
   } catch (e) {
     toast('Erreur : ' + e.message, 'error');
   }
 }
 
 /**
- * Transmission de la facture normalisée vers la DGI / Ministère de l'Économie
- * et des Finances du Bénin (norme de facturation électronique nationale).
+ * Validation de la facture normalisée auprès du système e-MECeF de la DGI Bénin
+ * (Système dématérialisé des Machines Électroniques Certifiées de Facturation).
  *
- * ⚠️ SIMULATION ACTUELLE : le pipeline complet (scan → OCR → normalisation IA →
- * facture conforme SYSCOHADA) est opérationnel. L'envoi réel vers le système
- * officiel du Ministère est branché ici et sera activé dès obtention des
- * identifiants API officiels — il suffira alors de remplacer le corps de
- * cette fonction par l'appel HTTP réel (fetch vers l'endpoint officiel).
+ * Fonctionnement réel du système officiel (modèle "clearance") :
+ *  1. La facture normalisée est envoyée EN TEMPS RÉEL au serveur e-MECeF, AVANT
+ *     d'être remise au client.
+ *  2. La DGI valide la facture et lui attribue :
+ *       - un NIM (Numéro d'Identification de la Machine)
+ *       - un sceau fiscal électronique, matérialisé par un QR code imprimé sur la facture.
+ *  3. Ce n'est qu'après cette validation que la facture est juridiquement valide.
+ *
+ * Portail officiel : https://e-mecef.impots.bj/ (une plateforme de test/développeur
+ * avec documentation API est disponible pour les éditeurs de logiciels de facturation
+ * — c'est via cette voie que COMEO doit être certifié comme Système de Facturation
+ * d'Entreprise (SFE) agréé par la DGI).
+ *
+ * ⚠️ SIMULATION ACTUELLE : le pipeline (scan → OCR → normalisation IA → facture
+ * conforme SYSCOHADA) est opérationnel de bout en bout. Cette fonction simule la
+ * réponse du serveur e-MECeF (NIM + sceau fiscal factices) en attendant :
+ *   1. la certification de COMEO comme SFE agréé par la DGI,
+ *   2. l'obtention d'un jeton d'accès API e-MECeF (test puis production).
+ * Il suffira alors de remplacer le corps de cette fonction par l'appel réel
+ * (voir squelette ci-dessous, à adapter selon la doc API officielle).
  */
-async function transmettreFactureAuTresor(facture) {
-  console.log('[COMEO → DGI Bénin] Facture prête à transmettre :', facture);
-  // TODO (branchement futur) :
-  // const res = await fetch('https://api.dgi.finances.bj/e-facturation/v1/factures', {
+async function validerFactureEMECeF(facture) {
+  console.log('[COMEO → e-MECeF DGI Bénin] Facture envoyée pour validation (clearance) :', facture);
+
+  // TODO (branchement futur, dès obtention du jeton API e-MECeF) :
+  // const res = await fetch('https://e-mecef.impots.bj/api/v1/factures', {
   //   method: 'POST',
-  //   headers: { 'Authorization': 'Bearer ' + DGI_API_KEY, 'Content-Type': 'application/json' },
+  //   headers: { 'Authorization': 'Bearer ' + EMECEF_API_TOKEN, 'Content-Type': 'application/json' },
   //   body: JSON.stringify(facture),
   // });
-  return Promise.resolve({ simulated: true });
+  // const data = await res.json();
+  // return { statut: data.statut, nim: data.nim, sceauFiscal: data.qrCode };
+
+  // Simulation en attendant la certification SFE / le jeton d'accès e-MECeF réel :
+  await new Promise((r) => setTimeout(r, 400));
+  const nimSimule = 'SIMU-' + Math.random().toString(36).slice(2, 10).toUpperCase();
+  return { statut: 'en_attente', nim: nimSimule, sceauFiscal: null };
 }
 
 window.renderCeoDashboard = renderCeoDashboard;
@@ -5556,2091 +5909,6 @@ function fmt(text) {
     .replace(/&lt;br\/&gt;/gi, '<br>');
 }
 
-// ══════════════════════════════════════════════════════════
-// COMEO ROBOT — Assistant Vocal IA
-// STT (Web Speech API) → Groq LLM → TTS (Web Speech API)
-// ══════════════════════════════════════════════════════════
-
-let robotOpen = false;
-let robotListening = false;
-let robotSpeaking = false;
-let robotRecog = null;
-let robotSynth = window.speechSynthesis;
-let robotVoice = null;
-let robotConvHistory = [];
-const robotMemoryCache = new Map();
-const CREATOR_IMAGE = 'images/MarcioAI.jpg';
-const ROBOT_TTS = { rate: 0.97, pitch: 1.0, volume: 1.0 };
-const ROBOT_SPEECH_PAUSE_MS = { none: 160, comma: 320, sentence: 540 };
-const isMobileDevice =
-  /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ||
-  (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-let robotQueryPending = false;
-let robotSTTSilenceTimer = null;
-let lastRobotQuery = '';
-let lastRobotQueryTime = 0;
-let robotBargeRecog = null;
-let robotBargeListening = false;
-let robotSpeakSessionId = 0;
-let robotCurrentSpeechFull = '';
-let robotSpeechChunkStartedAt = 0;
-const ROBOT_BARGEIN_GRACE_MS = 500;
-const ROBOT_BARGEIN_MIN_CHARS = 4;
-let robotHoldActive = false;
-let robotHoldStartY = 0;
-let robotHoldCancelled = false;
-const ROBOT_HOLD_CANCEL_PX = 70;
-let robotMicHoldInit = false;
-// Délai de silence avant d'envoyer la requête — laisser l'utilisateur finir sa phrase
-const ROBOT_END_OF_SPEECH_MS = isMobileDevice ? 3200 : 2800;
-
-// ── Initialiser les barres visualiseur ──
-function ensureRobotViz() {
-  let viz = document.getElementById('robotViz');
-  if (viz) return viz;
-  const avatarWrap = document.querySelector('.avatar-rings-wrap');
-  if (!avatarWrap) return null;
-  viz = document.createElement('div');
-  viz.id = 'robotViz';
-  viz.className = 'robot-viz';
-  avatarWrap.insertAdjacentElement('afterend', viz);
-  let caption = document.getElementById('robotSpeechCaption');
-  if (!caption) {
-    caption = document.createElement('div');
-    caption.id = 'robotSpeechCaption';
-    caption.className = 'robot-speech-caption';
-    caption.setAttribute('aria-live', 'polite');
-    viz.insertAdjacentElement('afterend', caption);
-  }
-  return viz;
-}
-
-function setRobotVizMode(mode) {
-  const viz = document.getElementById('robotViz');
-  if (viz) viz.className = 'robot-viz' + (mode && mode !== 'idle' ? ' ' + mode : '');
-}
-
-function setRobotSpeechCaption(text) {
-  const el = document.getElementById('robotSpeechCaption');
-  if (!el) return;
-  el.textContent = text || '';
-  el.classList.toggle('visible', !!text);
-}
-
-function initRobotVisualizer() {
-  const viz = ensureRobotViz();
-  if (!viz || viz.children.length > 0) return;
-  const count = 40;
-  const peaks = [
-    3, 5, 8, 12, 16, 20, 26, 32, 36, 40, 42, 44, 44, 42, 40, 36, 32, 26, 20, 16, 12, 8, 5, 3, 3, 5, 8, 12, 16, 20, 26, 32, 36, 40, 42, 44,
-    44, 42, 40, 36,
-  ];
-  for (let i = 0; i < count; i++) {
-    const b = document.createElement('div');
-    b.className = 'rv-bar';
-    b.style.animationDelay = i * 0.025 + 's';
-    viz.appendChild(b);
-  }
-
-  let t0 = performance.now();
-  function animBars(now) {
-    const avatar = document.getElementById('robotAvatar');
-    const state = avatar?.classList.contains('speaking') ? 'speaking' : avatar?.classList.contains('listening') ? 'listening' : 'idle';
-    setRobotVizMode(state === 'idle' ? 'idle' : state);
-    const active = state !== 'idle';
-    const elapsed = (now - t0) / 1000;
-    document.querySelectorAll('.rv-bar').forEach((bar, i) => {
-      const peak = peaks[i % peaks.length] || 20;
-      const center = Math.abs(i - count / 2) / (count / 2);
-      const envelope = 1 - center * 0.35;
-      let h = 4;
-      if (active) {
-        const wave = Math.sin(elapsed * (state === 'speaking' ? 5.5 : 4) + i * 0.42);
-        const wave2 = Math.sin(elapsed * 3.1 + i * 0.18) * 0.35;
-        const amp = state === 'speaking' ? peak * envelope : peak * 0.55 * envelope;
-        h = Math.max(4, amp * (0.55 + 0.45 * Math.abs(wave + wave2)));
-      }
-      bar.style.height = h + 'px';
-      bar.style.opacity = active ? 0.45 + 0.55 * (h / 44) : 0.22;
-    });
-    requestAnimationFrame(animBars);
-  }
-  requestAnimationFrame(animBars);
-}
-
-// ── Fond particules ──
-function initRobotBg() {
-  const bg = document.getElementById('robotBg');
-  if (!bg || bg.children.length > 0) return;
-  for (let i = 0; i < 14; i++) {
-    const d = document.createElement('div');
-    const sz = 40 + Math.random() * 120;
-    d.className = 'robot-bg-dot';
-    d.style.cssText = `width:${sz}px;height:${sz}px;left:${Math.random() * 100}%;top:${Math.random() * 100}%;--spd:${8 + Math.random() * 14}s;animation-delay:${Math.random() * 8}s`;
-    bg.appendChild(d);
-  }
-}
-
-// ── Choisir meilleure voix française (style OpenRouter : claire, naturelle) ──
-function pickRobotVoice() {
-  const voices = robotSynth.getVoices();
-  if (!voices.length) return;
-  const prefer = [
-    (v) => v.lang.startsWith('fr') && v.name.includes('Google') && /natural|neural|network|fr-fr/i.test(v.name),
-    (v) => v.lang.startsWith('fr') && v.name.includes('Google'),
-    (v) => v.lang.startsWith('fr') && (v.name.includes('Neural') || v.name.includes('Premium') || v.name.includes('Enhanced')),
-    (v) => v.name.includes('Microsoft') && v.lang.startsWith('fr') && v.name.includes('Natural'),
-    (v) => v.name.includes('Microsoft') && v.lang.startsWith('fr'),
-    (v) => v.lang.startsWith('fr'),
-  ];
-  for (const test of prefer) {
-    const found = voices.find(test);
-    if (found) {
-      robotVoice = found;
-      return;
-    }
-  }
-  robotVoice = voices[0] || null;
-}
-
-function applyRobotVoice(utter) {
-  if (robotVoice) utter.voice = robotVoice;
-  utter.lang = 'fr-FR';
-  utter.rate = ROBOT_TTS.rate;
-  utter.pitch = ROBOT_TTS.pitch;
-  utter.volume = ROBOT_TTS.volume;
-}
-
-function normalizeRobotQuery(q) {
-  return q
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '');
-}
-
-function isCreatorPhotoRequest(query) {
-  const q = normalizeRobotQuery(query);
-  const photoWords = ['photo', 'image', 'portrait', 'selfie', 'picture'];
-  const creatorWords = ['createur', 'concepteur', 'developpeur', 'fondateur', 'marcio', 'zinzindohoue', 'inventeur'];
-  const hasPhoto = photoWords.some((w) => q.includes(w));
-  const hasCreator = creatorWords.some((w) => q.includes(w)) || q.includes('qui ta cree') || q.includes('qui t a cree');
-  if (hasPhoto && hasCreator) return true;
-  return /(?:montre|voir|affiche|donne|envoie).*(?:photo|image|portrait)/.test(q) && hasCreator;
-}
-
-function isAboutCreatorQuery(query) {
-  const q = normalizeRobotQuery(query);
-  return ['createur', 'marcio', 'zinzindohoue', 'qui ta ', 'qui t a ', 'concepteur', 'developpeur', 'fondateur', 'inventeur'].some((k) =>
-    q.includes(k),
-  );
-}
-
-// Recharger dès que les voix sont disponibles (délai navigateur)
-speechSynthesis.addEventListener('voiceschanged', pickRobotVoice);
-setTimeout(pickRobotVoice, 200);
-setTimeout(pickRobotVoice, 800);
-pickRobotVoice();
-
-// ── Ouvrir / Fermer le robot ──
-function openRobot() {
-  const panel = document.getElementById('robotPanel');
-  if (!panel) return;
-  panel.classList.add('open');
-  robotOpen = true;
-  document.body.style.overflow = 'hidden';
-  ensureRobotViz();
-  initRobotVisualizer();
-  initRobotBg();
-  initRobotMicHold();
-  setTimeout(() => {
-    robotSpeak('Bonjour ! Je suis COMEO, votre assistante comptable. Que puis-je faire pour vous ?');
-  }, 150);
-}
-
-function closeRobot() {
-  const panel = document.getElementById('robotPanel');
-  if (!panel) return;
-  closeRobotLinkOverlay();
-  if (robotHoldActive) endRobotHoldTalk(true);
-  stopRobotBargeIn();
-  stopRobotListening();
-  robotSpeakSessionId++;
-  robotSynth.cancel();
-  stopRobotLights();
-  setRobotSpeechCaption('');
-  setRobotVizMode('idle');
-  panel.classList.remove('open');
-  robotOpen = false;
-  document.body.style.overflow = '';
-  robotSpeaking = false;
-  setRobotStatus('online');
-}
-// ── Statuts visuels ──
-function setRobotStatus(state) {
-  const pill = document.getElementById('robotStatusPill');
-  const avatar = document.getElementById('robotAvatar');
-  const hint = document.getElementById('robotHint');
-  const mic = document.getElementById('robotMicBtn');
-  const bars = document.querySelectorAll('.rv-bar');
-  if (!pill) return;
-
-  const cfg = {
-    online: { text: 'En ligne', cls: '', hint: 'Maintenez le micro pour parler', micOn: false },
-    listening: { text: 'Écoute…', cls: 'listening', hint: 'Parlez… relâchez pour envoyer', micOn: true },
-    thinking: { text: 'Réflexion…', cls: 'thinking', hint: 'Analyse en cours…', micOn: false },
-    speaking: { text: 'Répond…', cls: 'speaking', hint: 'Maintenez le micro pour interrompre', micOn: false },
-  };
-  const s = cfg[state] || cfg.online;
-  pill.textContent = s.text;
-  pill.className = 'robot-status-pill ' + s.cls;
-  if (avatar) avatar.className = 'robot-avatar-main ' + (state !== 'online' ? state : '');
-  if (hint) hint.textContent = robotHoldActive ? (robotHoldCancelled ? 'Relâchez pour annuler' : 'Relâchez pour envoyer') : s.hint;
-  if (mic) mic.classList.toggle('active', s.micOn || robotHoldActive);
-
-  // Animer les barres
-  if (bars.length) {
-    bars.forEach((b) => {
-      b.style.opacity = state === 'online' ? '.3' : '.85';
-    });
-  }
-}
-
-function setRobotBubble(text) {
-  const bubble = document.getElementById('robotBubble');
-  const inner = document.getElementById('robotBubbleText');
-  const target = inner || bubble;
-  if (!target) return;
-  if (bubble) bubble.classList.add('fading');
-  setTimeout(() => {
-    target.innerHTML = text + '<span class="blink-cur"></span>';
-    if (bubble) bubble.classList.remove('fading');
-    if (bubble) bubble.scrollTop = bubble.scrollHeight;
-  }, 180);
-}
-// ── Synthèse vocale (TTS) ──
-// ── Jeux de lumière du fond robot pendant la parole ──
-let robotLightInterval = null;
-const ROBOT_LIGHT_COLORS = [
-  ['#d4a853', '#8b5cf6'], // or + violet
-  ['#3b82f6', '#22c55e'], // bleu + vert
-  ['#f59e0b', '#ec4899'], // ambre + rose
-  ['#06b6d4', '#d4a853'], // cyan + or
-  ['#8b5cf6', '#3b82f6'], // violet + bleu
-  ['#22c55e', '#f59e0b'], // vert + ambre
-  ['#ec4899', '#06b6d4'], // rose + cyan
-  ['#d4a853', '#22c55e'], // or + vert
-];
-let robotLightIdx = 0;
-
-function startRobotLights() {
-  stopRobotLights();
-  const orb1 = document.querySelector('.r-orb1');
-  const orb2 = document.querySelector('.r-orb2');
-  const orb3 = document.querySelector('.r-orb3');
-  const panel = document.getElementById('robotPanel');
-  if (!orb1 || !panel) return;
-
-  robotLightInterval = setInterval(() => {
-    const [c1, c2] = ROBOT_LIGHT_COLORS[robotLightIdx % ROBOT_LIGHT_COLORS.length];
-    const c3 = ROBOT_LIGHT_COLORS[(robotLightIdx + 3) % ROBOT_LIGHT_COLORS.length][0];
-    robotLightIdx++;
-
-    // Changer les orbes
-    if (orb1) orb1.style.background = `radial-gradient(circle, ${c1}, transparent 70%)`;
-    if (orb2) orb2.style.background = `radial-gradient(circle, ${c2}, transparent 70%)`;
-    if (orb3) orb3.style.background = `radial-gradient(circle, ${c3}, transparent 70%)`;
-
-    // Changer la grille de fond
-    const grid = document.querySelector('.r-grid');
-    if (grid) {
-      grid.style.backgroundImage = `
-        linear-gradient(${c1}22 1px, transparent 1px),
-        linear-gradient(90deg, ${c1}22 1px, transparent 1px)`;
-    }
-
-    // Lueur sur l'avatar
-    const avatar = document.getElementById('robotAvatar');
-    if (avatar) {
-      avatar.style.boxShadow = `0 0 0 4px ${c1}33, 0 0 60px ${c2}44`;
-      avatar.style.borderColor = c1;
-    }
-
-    // Fond général pulsé
-    if (panel) {
-      panel.style.background = `radial-gradient(ellipse at 30% 20%, ${c1}18 0%, transparent 50%),
-        radial-gradient(ellipse at 70% 80%, ${c2}14 0%, transparent 50%),
-        #06070f`;
-    }
-  }, 600);
-}
-
-function stopRobotLights() {
-  if (robotLightInterval) {
-    clearInterval(robotLightInterval);
-    robotLightInterval = null;
-  }
-  // Restaurer couleurs par défaut
-  const orb1 = document.querySelector('.r-orb1');
-  const orb2 = document.querySelector('.r-orb2');
-  const orb3 = document.querySelector('.r-orb3');
-  const panel = document.getElementById('robotPanel');
-  const avatar = document.getElementById('robotAvatar');
-  const grid = document.querySelector('.r-grid');
-  if (orb1) orb1.style.background = 'radial-gradient(circle,#d4a853,transparent 70%)';
-  if (orb2) orb2.style.background = 'radial-gradient(circle,#8b5cf6,transparent 70%)';
-  if (orb3) orb3.style.background = 'radial-gradient(circle,#3b82f6,transparent 70%)';
-  if (grid) grid.style.backgroundImage = '';
-  if (panel) panel.style.background = '';
-  if (avatar) {
-    avatar.style.boxShadow = '';
-    avatar.style.borderColor = '';
-  }
-}
-
-// ── Préparation TTS : ponctuation = pauses naturelles (sans lire « point » / « virgule ») ──
-function normalizeFrenchElisions(text) {
-  if (!text) return '';
-  let t = String(text)
-    .replace(/[\u2018\u2019\u02BC\u00B4]/g, "'")
-    .replace(/\s*'\s*/g, "'");
-
-  const fixes = [
-    [/\baujourd\s+hui\b/gi, "aujourd'hui"],
-    [/\bquelqu\s+un\b/gi, "quelqu'un"],
-    [/\bpuisqu\s+(?=[aeiouhàâäéèêëîïôùûü])/gi, "puisqu'"],
-    [/\bquoiqu\s+(?=[aeiouhàâäéèêëîïôùûü])/gi, "quoiqu'"],
-    [/\blorsqu\s+(?=[aeiouhàâäéèêëîïôùûü])/gi, "lorsqu'"],
-    [/\bqu\s+(?=[aeiouhàâäéèêëîïôùûü])/gi, "qu'"],
-    [/\bl\s+(?=[aeiouhàâäéèêëîïôùûü])/gi, "l'"],
-    [/\bd\s+(?=[aeiouhàâäéèêëîïôùûü])/gi, "d'"],
-    [/\bj\s+(?=[aeiouhàâäéèêëîïôùûü])/gi, "j'"],
-    [/\bn\s+(?=[aeiouhàâäéèêëîïôùûü])/gi, "n'"],
-    [/\bs\s+(?=[aeiouhàâäéèêëîïôùûü])/gi, "s'"],
-    [/\bc\s+(?=[aeiouhàâäéèêëîïôùûü])/gi, "c'"],
-    [/\bm\s+(?=[aeiouhàâäéèêëîïôùûü])/gi, "m'"],
-    [/\bt\s+(?=[aeiouhàâäéèêëîïôùûü])/gi, "t'"],
-  ];
-  fixes.forEach(([re, rep]) => {
-    t = t.replace(re, rep);
-  });
-
-  return t.replace(/'{2,}/g, "'");
-}
-
-function preprocessTextForSpeech(text) {
-  return normalizeFrenchElisions(
-    (text || '')
-      .replace(/\*\*(.*?)\*\*/g, '$1')
-      .replace(/\*(.*?)\*/g, '$1')
-      .replace(/#{1,6}\s?/g, '')
-      .replace(/###[\w_]+###[\s\S]*/g, ' ')
-      .replace(/```[\s\S]*?```/g, ' ')
-      .replace(/\bFCFA\b/g, 'francs CFA')
-      .replace(/\bTVA\b/g, 'taxe sur la valeur ajoutée')
-      .replace(/\bHT\b/g, 'hors taxe')
-      .replace(/\bTTC\b/g, 'toutes taxes comprises')
-      .replace(/\bSYSCOHADA\b/gi, 'système comptable ohada')
-      .replace(/\bOHADA\b/gi, 'ohada')
-      .replace(/\bONECCA\b/gi, 'ordre national des experts comptables')
-      .replace(/\bCNPS\b/gi, 'caisse nationale de prévoyance sociale')
-      .replace(/\bN°\s*\d+/g, (m) => 'numéro ' + m.replace(/\D/g, ''))
-      .replace(/(\d{1,3})(?=(\d{3})+(?!\d))/g, '$1 ')
-      .replace(/\s{2,}/g, ' ')
-      .trim(),
-  );
-}
-
-function stripSpokenPunctuation(text) {
-  const APOS = '\u0007';
-  const safe = (text || '').replace(/'/g, APOS);
-  return safe
-    .replace(/[.,!?;:…—–\-–"«»""`~_^|\\/<>@&%=+#*\[\]{}()[\]•●▪◦·]/g, ' ')
-    .replace(/\u0007/g, "'")
-    .replace(/\s{2,}/g, ' ')
-    .trim();
-}
-
-function cleanTextForSpeech(text) {
-  return stripSpokenPunctuation(preprocessTextForSpeech(text));
-}
-
-function splitLongSpeechPart(text, maxLen) {
-  const words = text.split(/(\s+)/).filter(Boolean);
-  const parts = [];
-  let buf = '';
-  for (let i = 0; i < words.length; i++) {
-    const word = words[i];
-    if (/^\s+$/.test(word)) {
-      if (buf) buf += word;
-      continue;
-    }
-    const next = buf.trim() ? buf + word : word;
-    if (next.length > maxLen && buf.trim()) {
-      parts.push(buf.trim());
-      buf = word;
-    } else buf = next;
-  }
-  if (buf.trim()) parts.push(buf.trim());
-  return parts;
-}
-
-function splitIntoNaturalChunks(text) {
-  const preprocessed = preprocessTextForSpeech(text);
-  if (!preprocessed) return [];
-
-  const sentences = preprocessed
-    .split(/(?<=[.!?…])\s+|\n+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const chunks = [];
-
-  sentences.forEach((sentence, si) => {
-    const isLastSentence = si === sentences.length - 1;
-    const clauses = sentence
-      .split(/(?<=[,;:])\s+/)
-      .map((c) => c.trim())
-      .filter(Boolean);
-
-    clauses.forEach((clause, ci) => {
-      const isLastClause = ci === clauses.length - 1;
-      let spoken = stripSpokenPunctuation(clause);
-      if (!spoken || spoken.length < 2) return;
-
-      let pauseAfter = 'comma';
-      if (isLastClause) pauseAfter = isLastSentence ? 'none' : 'sentence';
-
-      if (spoken.length > 88) {
-        const subParts = splitLongSpeechPart(spoken, 78);
-        subParts.forEach((part, pi) => {
-          chunks.push({
-            text: part,
-            pauseAfter: pi === subParts.length - 1 ? pauseAfter : 'comma',
-          });
-        });
-      } else {
-        chunks.push({ text: spoken, pauseAfter });
-      }
-    });
-  });
-
-  if (!chunks.length) {
-    const fallback = cleanTextForSpeech(preprocessed);
-    if (fallback.length > 2) chunks.push({ text: fallback, pauseAfter: 'none' });
-  }
-
-  return chunks.filter((c) => c.text.length > 1);
-}
-
-function stripRobotVoiceText(text) {
-  return preprocessTextForSpeech(text)
-    .replace(/###(?:CREATE_FACTURE|SHOW_3D_JOURNAL|NAVIGATE|OPEN_URL)###[\s\S]*/gi, '')
-    .trim();
-}
-
-function formatRobotBubbleHtml(text) {
-  return text
-    .replace(/\*\*(.*?)\*\*/g, '<strong style="color:var(--warm)">$1</strong>')
-    .replace(/\*(.*?)\*/g, '$1')
-    .replace(/\n/g, '<br>');
-}
-
-function primeRobotSpeech() {
-  if (!robotSynth) return;
-  try {
-    if (robotSynth.paused) robotSynth.resume();
-  } catch (e) {}
-}
-
-function submitRobotQuery(query) {
-  const q = (query || '').trim();
-  if (q.length < 2 || robotQueryPending) return;
-  const now = Date.now();
-  if (q === lastRobotQuery && now - lastRobotQueryTime < 2500) return;
-  lastRobotQuery = q;
-  lastRobotQueryTime = now;
-  robotQueryPending = true;
-  if (robotSTTSilenceTimer) {
-    clearTimeout(robotSTTSilenceTimer);
-    robotSTTSilenceTimer = null;
-  }
-  stopRobotBargeIn();
-  stopRobotListening();
-  handleRobotQuery(q).finally(() => {
-    robotQueryPending = false;
-  });
-}
-
-// ── Saisie texte — alternative au micro dans open-space ──
-function sendRobotText() {
-  const input = document.getElementById('robotTextInput');
-  if (!input) return;
-  const q = input.value.trim();
-  if (!q) return;
-  input.value = '';
-  submitRobotQuery(q);
-}
-
-function normalizeForEchoCompare(s) {
-  return normalizeRobotQuery(String(s || ''))
-    .replace(/[^a-z0-9\s]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function isLikelyRobotEcho(userText) {
-  const u = normalizeForEchoCompare(userText);
-  if (!u || u.length < 3) return true;
-  const robot = normalizeForEchoCompare(robotCurrentSpeechFull);
-  if (!robot) return false;
-  if (robot.includes(u)) return true;
-  const tail = robot.slice(-Math.min(robot.length, u.length + 24));
-  if (tail.includes(u)) return true;
-  const uWords = u.split(' ').filter((w) => w.length > 2);
-  if (!uWords.length) return u.length < ROBOT_BARGEIN_MIN_CHARS;
-  const robotWords = new Set(robot.split(' '));
-  const overlap = uWords.filter((w) => robotWords.has(w)).length / uWords.length;
-  return overlap > 0.8 && uWords.length <= 4;
-}
-
-function stopRobotSpeech() {
-  robotSpeakSessionId++;
-  robotSpeaking = false;
-  robotCurrentSpeechFull = '';
-  try {
-    robotSynth.cancel();
-  } catch (e) {}
-  stopRobotLights();
-  setRobotSpeechCaption('');
-  setRobotVizMode('idle');
-}
-
-function interruptRobotSpeechAndListen(initialTranscript) {
-  if (!robotOpen) return;
-  const t = (initialTranscript || '').trim();
-  stopRobotSpeech();
-  stopRobotBargeIn();
-  setRobotBubble(
-    `<span class="robot-listening-label">Je vous écoute</span>` + (t ? `<span class="robot-listening-text">${escapeHtml(t)}</span>` : ''),
-  );
-  setRobotStatus('listening');
-  setTimeout(() => startRobotListening({ initialTranscript: t, fromBargeIn: true }), isMobileDevice ? 180 : 80);
-}
-
-function handleRobotBargeIn(transcript) {
-  if (!robotSpeaking || robotQueryPending) return;
-  if (Date.now() - robotSpeechChunkStartedAt < ROBOT_BARGEIN_GRACE_MS) return;
-  const t = (transcript || '').trim();
-  if (t.length < ROBOT_BARGEIN_MIN_CHARS) return;
-  if (isLikelyRobotEcho(t)) return;
-  const words = t.split(/\s+/).filter(Boolean);
-  if (words.length < 2 && t.length < 6) return;
-  interruptRobotSpeechAndListen(t);
-}
-
-function buildRobotRecognition(opts = {}) {
-  const { bargeIn = false, initialTranscript = '', pushToTalk = false } = opts;
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SpeechRecognition) return null;
-  const recog = new SpeechRecognition();
-  recog.lang = 'fr-FR';
-  recog.continuous = true;
-  recog.interimResults = true;
-  recog.maxAlternatives = 1;
-
-  let accumulated = initialTranscript || '';
-  let latestInterim = '';
-  let submitted = false;
-
-  const getFullTranscript = () => (accumulated + latestInterim).trim();
-
-  const flushQuery = () => {
-    if (bargeIn) return;
-    const query = getFullTranscript();
-    if (query.length < 2 || submitted) return;
-    submitted = true;
-    if (robotSTTSilenceTimer) {
-      clearTimeout(robotSTTSilenceTimer);
-      robotSTTSilenceTimer = null;
-    }
-    accumulated = '';
-    latestInterim = '';
-    submitRobotQuery(query);
-  };
-
-  // Relancer le compte à rebours à chaque mot entendu (final ou provisoire)
-  const scheduleEndOfSpeech = () => {
-    if (bargeIn || pushToTalk || submitted || getFullTranscript().length < 2) return;
-    if (robotSTTSilenceTimer) clearTimeout(robotSTTSilenceTimer);
-    robotSTTSilenceTimer = setTimeout(() => {
-      robotSTTSilenceTimer = null;
-      flushQuery();
-    }, ROBOT_END_OF_SPEECH_MS);
-  };
-
-  recog.onresult = (e) => {
-    let interim = '';
-    let finalPart = '';
-    let hadActivity = false;
-    for (let i = e.resultIndex; i < e.results.length; i++) {
-      const t = e.results[i][0].transcript;
-      const conf = e.results[i][0].confidence;
-      if (e.results[i].isFinal) {
-        if (isMobileDevice || conf === undefined || conf >= 0.35) finalPart += t;
-      } else {
-        interim += t;
-      }
-    }
-    if (finalPart) {
-      accumulated += finalPart;
-      hadActivity = true;
-    }
-    if (interim) {
-      latestInterim = interim;
-      hadActivity = true;
-    } else if (finalPart) latestInterim = '';
-
-    const display = getFullTranscript();
-
-    if (bargeIn) {
-      if (hadActivity && display) handleRobotBargeIn(display);
-      return;
-    }
-
-    if (display) {
-      const pttHint = pushToTalk
-        ? `<span class="robot-ptt-hint${robotHoldCancelled ? ' cancel' : ''}">${robotHoldCancelled ? 'Relâchez pour annuler' : 'Relâchez pour envoyer · Glissez ↑ pour annuler'}</span>`
-        : '';
-      setRobotBubble(
-        `<span class="robot-listening-label">${pushToTalk ? '🎙 Enregistrement…' : "J'écoute"}</span>` +
-          `<span class="robot-listening-text">${escapeHtml(display)}</span>` +
-          pttHint,
-      );
-    }
-
-    if (hadActivity) scheduleEndOfSpeech();
-  };
-
-  recog.onerror = (e) => {
-    if (bargeIn) {
-      robotBargeListening = false;
-      robotBargeRecog = null;
-      if (robotSpeaking && robotOpen && !robotQueryPending) {
-        setTimeout(() => startRobotBargeIn(), 400);
-      }
-      return;
-    }
-    if (robotSTTSilenceTimer) clearTimeout(robotSTTSilenceTimer);
-    robotListening = false;
-    const err = e.error || '';
-    if (err === 'not-allowed') {
-      setRobotStatus('online');
-      setRobotBubble('Autorisez le microphone dans les paramètres de votre navigateur.');
-      return;
-    }
-    if (!submitted && getFullTranscript().length > 2) {
-      scheduleEndOfSpeech();
-      return;
-    }
-    setRobotStatus('online');
-    if (err !== 'no-speech' && err !== 'aborted') {
-      setRobotBubble("Désolé, je n'ai pas bien entendu. Réessayez.");
-    } else if (!pushToTalk && robotOpen && !robotSpeaking && !robotQueryPending) {
-      setTimeout(() => startRobotListening(), 900);
-    }
-  };
-
-  recog.onend = () => {
-    if (bargeIn) {
-      robotBargeListening = false;
-      robotBargeRecog = null;
-      if (robotSpeaking && robotOpen && !robotQueryPending) {
-        setTimeout(() => startRobotBargeIn(), 250);
-      }
-      return;
-    }
-    if (pushToTalk) {
-      robotListening = false;
-      return;
-    }
-    robotListening = false;
-    // Ne pas couper : attendre le délai complet même si le micro s'est arrêté (iOS/Android)
-    if (!submitted && getFullTranscript().length > 2) {
-      scheduleEndOfSpeech();
-      return;
-    }
-    if (robotOpen && !robotSpeaking && !robotQueryPending && !submitted && !pushToTalk) {
-      setTimeout(() => startRobotListening(), 700);
-    }
-  };
-
-  recog._getTranscript = getFullTranscript;
-  recog._scheduleEnd = scheduleEndOfSpeech;
-  recog._flushNow = flushQuery;
-  return recog;
-}
-
-function showCreatorCard(showPhoto = true) {
-  const inner = document.getElementById('robotBubbleText');
-  if (!inner) return;
-  const photoHtml = showPhoto
-    ? `
-    <div class="creator-photo-frame">
-      <img src="${CREATOR_IMAGE}" alt="Marcio Jardel Zinzindohoue" class="creator-photo-img"
-        onerror="this.onerror=null;this.src='images/marcioAI.jpg'">
-    </div>`
-    : '';
-  inner.innerHTML = `
-    <div class="creator-card">
-      ${photoHtml}
-      <div class="creator-card-info">
-        <strong>Marcio Jardel ZINZINDOHOUE</strong>
-        <span>Jeune entrepreneur · Cofondateur Groupe Express · Créateur COMEO AI</span>
-      </div>
-    </div><span class="blink-cur"></span>`;
-}
-
-function robotSpeakChunks(chunks, onDone) {
-  robotSynth.cancel();
-  primeRobotSpeech();
-  const sessionId = ++robotSpeakSessionId;
-  robotSpeaking = true;
-  robotCurrentSpeechFull = chunks.map((c) => (typeof c === 'string' ? c : c.text)).join(' ');
-  setRobotStatus('speaking'); // MOTS-CLÉS IMMOBILISATIONS → codes SYSCOHADA
-  startRobotLights();
-  let idx = 0;
-  let spokenSoFar = '';
-
-  function speakNext() {
-    if (sessionId !== robotSpeakSessionId || idx >= chunks.length || !robotSpeaking) {
-      if (sessionId === robotSpeakSessionId) {
-        robotSpeaking = false;
-        robotCurrentSpeechFull = '';
-        stopRobotLights();
-        setRobotStatus('online');
-        setRobotSpeechCaption('');
-        setRobotVizMode('idle');
-        if (onDone) onDone();
-      }
-      return;
-    }
-
-    const item = chunks[idx];
-    const chunk = (typeof item === 'string' ? item : item.text).trim();
-    if (!chunk) {
-      idx++;
-      speakNext();
-      return;
-    }
-
-    robotSpeechChunkStartedAt = Date.now();
-    spokenSoFar += (spokenSoFar ? ' ' : '') + chunk;
-    setRobotSpeechCaption(spokenSoFar);
-
-    primeRobotSpeech();
-    const utter = new SpeechSynthesisUtterance(chunk);
-    applyRobotVoice(utter);
-    const pauseType = typeof item === 'string' ? (idx < chunks.length - 1 ? 'comma' : 'none') : item.pauseAfter || 'none';
-    const pauseMs = ROBOT_SPEECH_PAUSE_MS[pauseType] ?? ROBOT_SPEECH_PAUSE_MS.comma;
-    let advanced = false;
-
-    const advance = () => {
-      if (advanced || sessionId !== robotSpeakSessionId) return;
-      advanced = true;
-      idx++;
-      setTimeout(speakNext, pauseMs);
-    };
-
-    utter.onend = advance;
-    utter.onerror = advance;
-
-    // iOS/Android : onend parfois absent après un appel async — timeout de secours
-    const safetyMs = Math.min(18000, Math.max(4000, chunk.length * 140));
-    setTimeout(advance, safetyMs);
-
-    robotSynth.speak(utter);
-    if (isIOS) {
-      setTimeout(() => {
-        try {
-          if (robotSynth.paused) robotSynth.resume();
-        } catch (e) {}
-      }, 120);
-    }
-  }
-
-  if (isMobileDevice) setTimeout(speakNext, 80);
-  else speakNext();
-}
-
-function robotSpeak(text, opts = {}) {
-  if (!opts.skipBubble) setRobotBubble(formatRobotBubbleHtml(text));
-  const chunks = splitIntoNaturalChunks(text);
-  if (!chunks.length) {
-    robotSpeaking = false;
-    setRobotStatus('online');
-    return;
-  }
-  primeRobotSpeech();
-  robotSpeakChunks(chunks);
-}
-
-// ── Reconnaissance vocale (STT) ──
-function initRobotSTT() {
-  return buildRobotRecognition();
-}
-
-function startRobotBargeIn() {
-  if (!robotOpen || !robotSpeaking || robotQueryPending || robotBargeListening) return;
-  stopRobotBargeIn();
-  robotBargeRecog = buildRobotRecognition({ bargeIn: true });
-  if (!robotBargeRecog) return;
-  try {
-    robotBargeRecog.start();
-    robotBargeListening = true;
-  } catch (e) {
-    robotBargeListening = false;
-    robotBargeRecog = null;
-  }
-}
-
-function stopRobotBargeIn() {
-  if (robotBargeRecog) {
-    try {
-      robotBargeRecog.stop();
-    } catch (e) {}
-    robotBargeRecog = null;
-  }
-  robotBargeListening = false;
-}
-
-function startRobotListening(opts = {}) {
-  if (robotQueryPending) return;
-  if (robotSpeaking && !opts.fromBargeIn && !opts.pushToTalk) return;
-  if (robotListening && !opts.fromBargeIn && !opts.pushToTalk) return;
-  stopRobotBargeIn();
-  if (robotRecog && robotListening) {
-    try {
-      robotRecog.stop();
-    } catch (e) {}
-  }
-  robotListening = false;
-  robotRecog = buildRobotRecognition({
-    initialTranscript: opts.initialTranscript || '',
-    bargeIn: false,
-    pushToTalk: !!opts.pushToTalk,
-  });
-  if (!robotRecog) {
-    setRobotBubble('Votre navigateur ne supporte pas la reconnaissance vocale.');
-    return;
-  }
-  try {
-    robotRecog.start();
-    robotListening = true;
-    setRobotStatus('listening');
-    if (opts.initialTranscript) {
-      setRobotBubble(
-        `<span class="robot-listening-label">J'écoute — finissez votre phrase</span>` +
-          `<span class="robot-listening-text">${escapeHtml(opts.initialTranscript)}</span>`,
-      );
-      if (robotRecog._scheduleEnd) robotRecog._scheduleEnd();
-    }
-  } catch (e) {
-    robotListening = false;
-    robotRecog = null;
-    setRobotStatus('online');
-    setRobotBubble('Micro indisponible. Appuyez à nouveau sur le micro.');
-  }
-}
-
-function stopRobotListening() {
-  if (robotSTTSilenceTimer) {
-    clearTimeout(robotSTTSilenceTimer);
-    robotSTTSilenceTimer = null;
-  }
-  if (robotRecog && robotListening) {
-    try {
-      robotRecog.stop();
-    } catch (e) {}
-  }
-  robotListening = false;
-}
-
-function beginRobotHoldTalk() {
-  if (robotHoldActive || robotQueryPending) return;
-  robotHoldActive = true;
-  robotHoldCancelled = false;
-  const btn = document.getElementById('robotMicBtn');
-  btn?.classList.add('holding');
-  btn?.classList.remove('cancel');
-
-  if (robotSpeaking) {
-    stopRobotSpeech();
-    stopRobotBargeIn();
-  }
-
-  primeRobotSpeech();
-  startRobotListening({ pushToTalk: true });
-  setRobotBubble(
-    `<span class="robot-listening-label">🎙 Maintenez et parlez…</span>` +
-      `<span class="robot-ptt-hint">Relâchez pour envoyer · Glissez ↑ pour annuler</span>`,
-  );
-  setRobotStatus('listening');
-}
-
-function endRobotHoldTalk(cancelled) {
-  robotHoldActive = false;
-  robotHoldCancelled = false;
-  const btn = document.getElementById('robotMicBtn');
-  btn?.classList.remove('holding', 'cancel');
-
-  const transcript = robotRecog?._getTranscript?.() || '';
-  if (robotSTTSilenceTimer) {
-    clearTimeout(robotSTTSilenceTimer);
-    robotSTTSilenceTimer = null;
-  }
-  if (robotRecog && robotListening) {
-    try {
-      robotRecog.stop();
-    } catch (e) {}
-  }
-  robotListening = false;
-
-  setTimeout(
-    () => {
-      if (cancelled) {
-        setRobotStatus('online');
-        setRobotBubble('Message vocal annulé.');
-        return;
-      }
-      const q = transcript.trim();
-      if (q.length >= 2) submitRobotQuery(q);
-      else {
-        setRobotStatus('online');
-        setRobotBubble("Je n'ai rien entendu. Maintenez le micro et parlez clairement.");
-      }
-    },
-    isMobileDevice ? 400 : 280,
-  );
-}
-
-function initRobotMicHold() {
-  if (robotMicHoldInit) return;
-  const btn = document.getElementById('robotMicBtn');
-  if (!btn) return;
-  robotMicHoldInit = true;
-
-  const onHoldStart = (e) => {
-    if (e.button !== undefined && e.button !== 0) return;
-    e.preventDefault();
-    if (robotQueryPending) return;
-    robotHoldStartY = e.clientY ?? 0;
-    robotHoldCancelled = false;
-    beginRobotHoldTalk();
-    try {
-      btn.setPointerCapture(e.pointerId);
-    } catch (_) {}
-  };
-
-  const onHoldMove = (e) => {
-    if (!robotHoldActive) return;
-    const dy = robotHoldStartY - (e.clientY ?? 0);
-    const cancel = dy > ROBOT_HOLD_CANCEL_PX;
-    if (cancel !== robotHoldCancelled) {
-      robotHoldCancelled = cancel;
-      btn.classList.toggle('cancel', cancel);
-      const hint = document.getElementById('robotHint');
-      if (hint) hint.textContent = cancel ? 'Relâchez pour annuler' : 'Relâchez pour envoyer';
-      const pttEl = document.querySelector('.robot-ptt-hint');
-      if (pttEl) {
-        pttEl.textContent = cancel ? 'Relâchez pour annuler' : 'Relâchez pour envoyer · Glissez ↑ pour annuler';
-        pttEl.classList.toggle('cancel', cancel);
-      }
-    }
-  };
-
-  const onHoldEnd = (e) => {
-    if (!robotHoldActive) return;
-    e.preventDefault();
-    try {
-      btn.releasePointerCapture(e.pointerId);
-    } catch (_) {}
-    endRobotHoldTalk(robotHoldCancelled);
-  };
-
-  btn.addEventListener('pointerdown', onHoldStart);
-  btn.addEventListener('pointermove', onHoldMove);
-  btn.addEventListener('pointerup', onHoldEnd);
-  btn.addEventListener('pointercancel', onHoldEnd);
-  btn.addEventListener('contextmenu', (e) => e.preventDefault());
-}
-
-function toggleRobotMic() {
-  /* Remplacé par initRobotMicHold — maintien du micro */
-}
-
-// ── Envoi à Groq avec contexte comptable ──
-// ── Afficher image du créateur dans la bulle ──
-function escapeHtml(s) {
-  return String(s || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
-function getLinkBrand(url, label) {
-  const u = (url || '').toLowerCase();
-  const l = (label || '').toLowerCase();
-  if (u.includes('youtube') || u.includes('youtu.be') || l.includes('youtube')) {
-    return {
-      id: 'youtube',
-      name: 'YouTube',
-      color: '#ff0033',
-      ctaText: '#ffffff',
-      logo: '<svg class="rl-logo" viewBox="0 0 24 24" aria-hidden="true"><path fill="#FF0000" d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.5 12 3.5 12 3.5s-7.5 0-9.4.6A3 3 0 0 0 .5 6.2 31 31 0 0 0 0 12a31 31 0 0 0 .6 5.8 3 3 0 0 0 2.1 2.1c1.9.6 9.4.6 9.4.6s7.5 0 9.4-.6a3 3 0 0 0 2.1-2.1 31 31 0 0 0 .6-5.8 31 31 0 0 0-.6-5.8z"/><path fill="#FFF" d="M9.75 15.02l6.5-3.52-6.5-3.52v7.04z"/></svg>',
-    };
-  }
-  if (u.includes('google') || l.includes('google')) {
-    return {
-      id: 'google',
-      name: 'Google',
-      color: '#1a73e8',
-      ctaText: '#ffffff',
-      logo: '<svg class="rl-logo" viewBox="0 0 24 24" aria-hidden="true"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>',
-    };
-  }
-  if (u.includes('facebook') || l.includes('facebook')) {
-    return { id: 'facebook', name: 'Facebook', color: '#1877f2', ctaText: '#ffffff', logo: '<span class="rl-logo-text">f</span>' };
-  }
-  return {
-    id: 'link',
-    name: 'Lien web',
-    color: '#d4a853',
-    ctaText: '#0a0b10',
-    logo: '<span class="rl-logo-text">🔗</span>',
-  };
-}
-
-const VOICE_STOP_WORDS = new Set([
-  'salut',
-  'bonjour',
-  'bonsoir',
-  'comment',
-  'je',
-  'tu',
-  'te',
-  'toi',
-  'm',
-  'me',
-  'mon',
-  'ma',
-  'mes',
-  'ouvre',
-  'ouvrir',
-  'ouvres',
-  'ouvert',
-  'youtube',
-  'google',
-  'sur',
-  'cherche',
-  'recherche',
-  'video',
-  'videos',
-  'moi',
-  'les',
-  'des',
-  'une',
-  'un',
-  'pour',
-  'de',
-  'du',
-  'la',
-  'le',
-  'que',
-  'qui',
-  'ce',
-  'cet',
-  'cette',
-  'voudrais',
-  'veux',
-  'peux',
-  'pourrais',
-  'montre',
-  'affiche',
-  'lance',
-  'merci',
-  'stp',
-  'sil',
-  'plait',
-  'comeo',
-  'robot',
-  'assistant',
-  'lien',
-  'page',
-  'site',
-  'internet',
-  'navigateur',
-  'ouvrir',
-  'ouvre',
-  'moi',
-  'veut',
-  'faire',
-  'est',
-  'sont',
-  'a',
-  'as',
-  'au',
-  'aux',
-  'en',
-  'et',
-  'ou',
-  'donc',
-  'car',
-  'avec',
-  'dans',
-  'par',
-  'ton',
-  'ta',
-  'tes',
-  'son',
-]);
-
-function cleanVoiceQueryForSearch(text) {
-  let t = (text || '')
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '');
-  t = t.replace(/\b(\w{2,})(?:\1)+\b/gi, '$1');
-  const words = t.split(/\s+/).filter(Boolean);
-  const out = [];
-  for (const w of words) {
-    if (out.length && out[out.length - 1] === w) continue;
-    out.push(w);
-  }
-  return out.join(' ');
-}
-
-function cleanSearchQueryFromVoice(raw) {
-  const cleaned = cleanVoiceQueryForSearch(raw);
-  const words = cleaned.split(/\s+/).filter((w) => w.length > 1 && !VOICE_STOP_WORDS.has(w));
-  return words.join(' ').trim();
-}
-
-function getSearchTermFromUrl(url) {
-  try {
-    const u = new URL(url);
-    const q = u.searchParams.get('search_query') || u.searchParams.get('q') || '';
-    let term = decodeURIComponent(q.replace(/\+/g, ' ')).trim();
-    term = cleanVoiceQueryForSearch(term);
-    const words = term.split(/\s+/).filter((w) => w.length > 1 && !VOICE_STOP_WORDS.has(w));
-    return words.join(' ').trim();
-  } catch (e) {
-    return '';
-  }
-}
-
-function sanitizeLinkDisplay(url, label) {
-  const brand = getLinkBrand(url, label);
-  const term = getSearchTermFromUrl(url);
-  if (term && term.length >= 2 && term.length <= 48) {
-    return { title: brand.name, subtitle: 'Recherche : ' + term, brand };
-  }
-  return { title: brand.name, subtitle: 'Appuyez pour ouvrir dans votre navigateur', brand };
-}
-
-function ensureRobotLinkStyles() {
-  if (document.getElementById('robot-link-styles')) return;
-  const style = document.createElement('style');
-  style.id = 'robot-link-styles';
-  style.textContent = `
-#robotLinkOverlay.robot-link-overlay{position:fixed;inset:0;z-index:10050;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;font-family:'Space Grotesk',system-ui,sans-serif;opacity:0;pointer-events:none;transition:opacity .3s}
-#robotLinkOverlay.robot-link-overlay.open{opacity:1;pointer-events:auto}
-#robotLinkOverlay .robot-link-overlay-backdrop{position:absolute;inset:0;background:rgba(4,5,12,.9);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
-#robotLinkOverlay .robot-link-card{position:relative;z-index:2;width:min(92vw,420px);padding:32px 24px 28px;border-radius:24px;background:linear-gradient(165deg,#1a1c2e 0%,#0a0b10 100%);border:1px solid rgba(255,255,255,.12);box-shadow:0 24px 80px rgba(0,0,0,.6);text-align:center;color:#fff;animation:rlPop .35s cubic-bezier(.34,1.4,.64,1)}
-@keyframes rlPop{from{transform:scale(.9) translateY(16px);opacity:0}to{transform:scale(1) translateY(0);opacity:1}}
-#robotLinkOverlay .robot-link-close{position:absolute;top:12px;right:12px;width:44px;height:44px;border-radius:50%;border:1px solid rgba(255,255,255,.15);background:rgba(255,255,255,.08);color:#fff;font-size:20px;cursor:pointer;line-height:1;padding:0}
-#robotLinkOverlay .robot-link-logo-wrap{display:flex;align-items:center;justify-content:center;margin:8px auto 20px;min-height:64px}
-#robotLinkOverlay .rl-logo{width:64px;height:64px;display:block}
-#robotLinkOverlay .rl-logo-text{font-size:48px;line-height:1}
-#robotLinkOverlay .robot-link-title{font-size:26px;font-weight:700;margin:0 0 8px;color:#fff;letter-spacing:.02em}
-#robotLinkOverlay .robot-link-subtitle{font-size:14px;color:rgba(255,255,255,.55);margin:0 0 28px;line-height:1.5;word-break:break-word}
-#robotLinkOverlay .robot-link-cta{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;box-sizing:border-box;padding:18px 24px;border-radius:16px;font-size:18px;font-weight:700;text-decoration:none!important;border:none;cursor:pointer;box-shadow:0 8px 28px rgba(0,0,0,.35);transition:transform .15s,filter .15s}
-#robotLinkOverlay .robot-link-cta:active{transform:scale(.98);filter:brightness(1.08)}
-#robotLinkOverlay .robot-link-hint{margin:14px 0 0;font-size:11px;color:rgba(255,255,255,.35)}
-.robot-link-bubble-preview{display:flex;flex-direction:column;align-items:center;gap:12px;padding:8px 0}
-.robot-link-bubble-btn{display:inline-block;padding:12px 24px;border-radius:10px;background:#d4a853;color:#0a0b10!important;font-weight:700;font-size:14px;text-decoration:none!important}`;
-  document.head.appendChild(style);
-}
-
-function closeRobotLinkOverlay() {
-  const el = document.getElementById('robotLinkOverlay');
-  if (el) {
-    el.classList.remove('open');
-    setTimeout(() => el.remove(), 280);
-  }
-}
-
-function showRobotLinkOverlay(url, label) {
-  if (!url) return;
-  closeRobotLinkOverlay();
-  ensureRobotLinkStyles();
-  const { title, subtitle, brand } = sanitizeLinkDisplay(url, label);
-  const safeHref = url.replace(/"/g, '%22').replace(/'/g, '%27');
-  const safeTitle = escapeHtml(title);
-  const safeSub = escapeHtml(subtitle);
-
-  const overlay = document.createElement('div');
-  overlay.id = 'robotLinkOverlay';
-  overlay.className = 'robot-link-overlay';
-  overlay.innerHTML = `
-    <div class="robot-link-overlay-backdrop" onclick="closeRobotLinkOverlay()"></div>
-    <div class="robot-link-card" role="dialog" aria-modal="true">
-      <button type="button" class="robot-link-close" onclick="closeRobotLinkOverlay()" aria-label="Fermer">✕</button>
-      <div class="robot-link-logo-wrap">${brand.logo}</div>
-      <h2 class="robot-link-title">${safeTitle}</h2>
-      <p class="robot-link-subtitle">${safeSub}</p>
-      <a href="${safeHref}" target="_blank" rel="noopener noreferrer" class="robot-link-cta"
-        style="background:${brand.color};color:${brand.ctaText}">
-        Ouvrir ${escapeHtml(brand.name)}
-      </a>
-      <p class="robot-link-hint">Vous pouvez fermer cette fenêtre avec ✕</p>
-    </div>`;
-  document.body.appendChild(overlay);
-  requestAnimationFrame(() => overlay.classList.add('open'));
-
-  const inner = document.getElementById('robotBubbleText');
-  if (inner) {
-    inner.innerHTML = `
-      <div class="robot-link-bubble-preview">
-        <span style="font-size:14px;color:rgba(255,255,255,.85)">${safeTitle}</span>
-        <a href="${safeHref}" target="_blank" rel="noopener noreferrer" class="robot-link-bubble-btn">→ Ouvrir ${escapeHtml(brand.name)}</a>
-      </div><span class="blink-cur"></span>`;
-  }
-}
-
-function parseOpenUrlAction(reply) {
-  const tag = '###OPEN_URL###';
-  const idx = reply.indexOf(tag);
-  if (idx === -1) return null;
-  const texteBefore = reply.slice(0, idx).replace(/\*\*/g, '').trim();
-  const after = reply.slice(idx + tag.length);
-  const jsonMatch = after.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) return null;
-  try {
-    const p = JSON.parse(jsonMatch[0]);
-    if (!p?.url) return null;
-    return { url: p.url, label: p.label || '', texteBefore };
-  } catch (e) {
-    return null;
-  }
-}
-
-function extractSearchTerms(query) {
-  return cleanSearchQueryFromVoice(query);
-}
-
-function detectOpenUrlIntent(query) {
-  const q = normalizeRobotQuery(query);
-  const raw = query.trim();
-
-  const directUrl = raw.match(/https?:\/\/[^\s,;)]+/i);
-  if (directUrl) return { url: directUrl[0], label: 'Lien web' };
-
-  const wwwUrl = raw.match(/(?:^|\s)(www\.[^\s,;)]+)/i);
-  if (wwwUrl) return { url: 'https://' + wwwUrl[1], label: 'Lien web' };
-
-  const wantsOpen = /(ouvre|ouvrir|open|affiche|montre|lance|va sur|aller sur|accede)/i.test(q);
-
-  if (/youtube|youtu\.be/.test(q) || (wantsOpen && q.includes('youtube'))) {
-    const term = cleanSearchQueryFromVoice(raw);
-    if (term.length >= 3) {
-      return {
-        url: 'https://www.youtube.com/results?search_query=' + encodeURIComponent(term),
-        label: 'YouTube',
-      };
-    }
-    return { url: 'https://www.youtube.com', label: 'YouTube' };
-  }
-
-  if ((/google/.test(q) && /(cherche|recherche|search)/.test(q)) || (wantsOpen && q.includes('google'))) {
-    const term = cleanSearchQueryFromVoice(raw);
-    if (term.length >= 2) {
-      return {
-        url: 'https://www.google.com/search?q=' + encodeURIComponent(term),
-        label: 'Google',
-      };
-    }
-    return { url: 'https://www.google.com', label: 'Google' };
-  }
-
-  if (wantsOpen && q.includes('facebook')) return { url: 'https://www.facebook.com', label: 'Facebook' };
-  if (wantsOpen && q.includes('linkedin')) return { url: 'https://www.linkedin.com', label: 'LinkedIn' };
-
-  return null;
-}
-
-function handleRobotOpenUrl(url, label, voiceIntro) {
-  const brand = getLinkBrand(url, label);
-  showRobotLinkOverlay(url, label);
-  let voice = `Voici ${brand.name}. Appuyez sur le grand bouton pour ouvrir.`;
-  if (voiceIntro) {
-    const clean = cleanTextForSpeech(voiceIntro);
-    if (clean.length >= 6 && clean.length <= 90 && !/https|www\.|\.com|search_query|salut.*salut/i.test(clean)) {
-      voice = clean;
-    }
-  }
-  robotSpeak(voice, { skipBubble: true });
-}
-
-function showCreatorImage() {
-  showCreatorCard(true);
-}
-
-// ══════════════════════════════════════════
-// ROBOT — AFFICHAGE 3D JOURNAL
-// ══════════════════════════════════════════
-function showRobot3DJournal(ecrituresData) {
-  // Créer un overlay 3D par-dessus le robot panel
-  const existing = document.getElementById('robot3DOverlay');
-  if (existing) existing.remove();
-
-  const overlay = document.createElement('div');
-  overlay.id = 'robot3DOverlay';
-  overlay.style.cssText = `
-    position:fixed;inset:0;z-index:9999;background:rgba(6,7,15,.97);
-    display:flex;flex-direction:column;overflow:hidden;
-    animation:fadein .3s ease`;
-
-  // Grouper par opération
-  const groupes = {};
-  ecrituresData.forEach((e) => {
-    const key = e.groupId || 'solo_' + e.id;
-    if (!groupes[key]) groupes[key] = [];
-    groupes[key].push(e);
-  });
-
-  const groupList = Object.values(groupes).sort((a, b) => a[0].date.localeCompare(b[0].date));
-
-  const cardsHTML = groupList
-    .slice(0, 20)
-    .map((grp, gi) => {
-      const mainEcr = grp[0];
-      let totalD = 0,
-        totalC = 0;
-      grp.forEach((e) =>
-        e.lignes.forEach((l) => {
-          totalD += l.debit || 0;
-          totalC += l.credit || 0;
-        }),
-      );
-      const jnlColors = {
-        AC: '#f59e0b',
-        VE: '#22c55e',
-        BQ: '#3b82f6',
-        CA: '#8b5cf6',
-        OD: '#ec4899',
-        IN: '#06b6d4',
-        AN: '#d4a853',
-      };
-      const color = jnlColors[mainEcr.journal] || '#d4a853';
-      const lignesHTML = grp
-        .flatMap((e) =>
-          sortLignesDebitAvantCredit(e.lignes).map(
-            (l) => `
-        <div style="display:flex;justify-content:space-between;
-          padding:4px 0;border-bottom:1px solid rgba(255,255,255,.06);
-          font-size:10px;font-family:var(--font-mono)">
-          <span style="color:rgba(255,255,255,.5)">${l.compte}</span>
-          <span style="flex:1;margin:0 8px;color:rgba(255,255,255,.7);
-            font-family:var(--font-body);font-size:10px;
-            white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
-            ${l.libelle || libelleCompte(l.compte)}
-          </span>
-          <span style="color:#60a5fa;min-width:70px;text-align:right">
-            ${l.debit ? fnPDF(l.debit) : ''}
-          </span>
-          <span style="color:#4ade80;min-width:70px;text-align:right">
-            ${l.credit ? fnPDF(l.credit) : ''}
-          </span>
-        </div>`,
-          ),
-        )
-        .join('');
-
-      return `
-      <div class="r3d-card" style="
-        background:linear-gradient(135deg,rgba(255,255,255,.04) 0%,rgba(255,255,255,.01) 100%);
-        border:1px solid ${color}44;border-radius:12px;padding:16px;
-        min-width:320px;max-width:380px;flex-shrink:0;
-        transform:perspective(800px) rotateY(${(gi - groupList.length / 2) * 3}deg);
-        box-shadow:0 8px 32px ${color}22;
-        transition:transform .3s ease,box-shadow .3s ease;cursor:pointer"
-        onmouseover="this.style.transform='perspective(800px) rotateY(0deg) scale(1.04)';
-          this.style.boxShadow='0 16px 48px ${color}44'"
-        onmouseout="this.style.transform='perspective(800px) rotateY(${(gi - groupList.length / 2) * 3}deg)';
-          this.style.boxShadow='0 8px 32px ${color}22'">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
-          <span style="background:${color};color:#000;padding:2px 8px;
-            border-radius:4px;font-size:9px;font-weight:700;
-            font-family:var(--font-mono)">${mainEcr.journal}</span>
-          <span style="font-size:10px;color:rgba(255,255,255,.4);
-            font-family:var(--font-mono)">${mainEcr.date}</span>
-          <span style="margin-left:auto;font-size:10px;color:${color};
-            font-family:var(--font-mono);font-weight:700">${fnPDF(totalD)} FCFA</span>
-        </div>
-        <div style="font-size:12px;font-weight:600;color:#fff;margin-bottom:8px;
-          white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
-          ${mainEcr.groupLibelle || mainEcr.libelle || '—'}
-        </div>
-        <div style="max-height:120px;overflow:hidden">${lignesHTML}</div>
-        ${
-          grp.length > 1
-            ? `<div style="margin-top:6px;font-size:9px;
-          color:${color};opacity:.7">${grp.length} écritures liées</div>`
-            : ''
-        }
-      </div>`;
-    })
-    .join('');
-
-  overlay.innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between;
-      padding:16px 24px;border-bottom:1px solid rgba(255,255,255,.08)">
-      <div style="display:flex;align-items:center;gap:12px">
-        <div style="width:8px;height:8px;border-radius:50%;
-          background:#d4a853;box-shadow:0 0 8px #d4a853;animation:pulse 1.5s infinite"></div>
-        <span style="font-family:var(--font-body);font-size:14px;
-          font-weight:600;color:#d4a853">Journal 3D — COMEO AI</span>
-        <span style="font-size:11px;color:rgba(255,255,255,.4)">
-          ${groupList.length} opération${groupList.length > 1 ? 's' : ''} ·
-          ${ecrituresData.length} écriture${ecrituresData.length > 1 ? 's' : ''}
-        </span>
-      </div>
-      <div style="display:flex;gap:8px">
-        <button onclick="navigate('journal');closeRobot3D()"
-          style="background:rgba(212,168,83,.15);border:1px solid rgba(212,168,83,.3);
-          color:#d4a853;padding:6px 14px;border-radius:6px;cursor:pointer;
-          font-size:11px;font-family:var(--font-body)">
-          → Voir journal complet
-        </button>
-        <button onclick="closeRobot3D()"
-          style="background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);
-          color:rgba(255,255,255,.6);padding:6px 14px;border-radius:6px;
-          cursor:pointer;font-size:11px;font-family:var(--font-body)">
-          ✕ Fermer
-        </button>
-      </div>
-    </div>
-    <div style="flex:1;overflow-x:auto;overflow-y:hidden;padding:24px;
-      display:flex;align-items:center;gap:16px;
-      scroll-snap-type:x mandatory">
-      ${cardsHTML || '<div style="color:rgba(255,255,255,.3);margin:auto">Aucune écriture</div>'}
-    </div>
-    <div style="padding:12px 24px;border-top:1px solid rgba(255,255,255,.06);
-      display:flex;gap:8px;flex-wrap:wrap">
-      <span style="font-size:10px;color:rgba(255,255,255,.3)">
-        Défilez horizontalement pour voir toutes les opérations ·
-        Survolez une carte pour agrandir
-      </span>
-    </div>`;
-
-  document.body.appendChild(overlay);
-}
-
-function closeRobot3D() {
-  const el = document.getElementById('robot3DOverlay');
-  if (el) {
-    el.style.opacity = '0';
-    el.style.transition = 'opacity .3s';
-    setTimeout(() => el.remove(), 300);
-  }
-}
-window.closeRobot3D = closeRobot3D;
-
-// ══════════════════════════════════════════
-// ROBOT — ACTIONS DIRECTES SUR LES DONNÉES
-// ══════════════════════════════════════════
-
-// Créer une facture depuis le robot
-async function robotCreateFacture(params) {
-  const { clientNom, lignes, notes, modeReglement } = params;
-
-  // Chercher ou créer le client
-  let client = clientsList.find((c) => c.nom.toLowerCase().includes(clientNom.toLowerCase()));
-
-  if (!client && clientNom) {
-    const newClient = {
-      id: Date.now(),
-      code: 'CLI-' + String(clientCounter).padStart(3, '0'),
-      nom: clientNom,
-      tel: '',
-      email: '',
-      ville: 'Abidjan',
-      adresse: '',
-      nif: '',
-      notes: 'Créé par COMEO AI Robot',
-      createdAt: new Date().toISOString(),
-    };
-    try {
-      const col = window._fbCollection(window._db, 'profiles', currentProfile.id, 'clients');
-      const ref = await window._fbAddDoc(col, newClient);
-      newClient._docId = ref.id;
-      clientsList.push(newClient);
-      clientCounter++;
-      client = newClient;
-    } catch (e) {}
-  }
-
-  // Calculer totaux
-  let ht = 0,
-    tva = 0;
-  const facLignesData = (lignes || []).map((l) => {
-    const lineHT = Math.round((l.qte || 1) * (l.pu || 0) * (1 - (l.remise || 0) / 100));
-    const lineTVA = Math.round((lineHT * (l.tva || 18)) / 100);
-    ht += lineHT;
-    tva += lineTVA;
-    return { designation: l.designation, qte: l.qte || 1, pu: l.pu || 0, remise: l.remise || 0, tva: l.tva || 18 };
-  });
-  const ttc = ht + tva;
-  const today = new Date().toISOString().split('T')[0];
-  const echeance = new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0];
-  const numero = 'FAC-' + new Date().getFullYear() + '-' + String(factureCounter).padStart(4, '0');
-
-  const facture = {
-    id: Date.now(),
-    numero,
-    type: 'facture',
-    dateEmission: today,
-    dateEcheance: echeance,
-    clientId: client?.id || 0,
-    clientNom: client?.nom || clientNom,
-    clientAdresse: client?.adresse || '',
-    clientEmail: client?.email || '',
-    clientTel: client?.tel || '',
-    reference: '',
-    notes: notes || 'Facture créée par COMEO AI Robot',
-    modeReglement: modeReglement || 'virement',
-    conditions: '30j',
-    monnaie: 'FCFA',
-    remiseGlobale: 0,
-    lignes: facLignesData,
-    ht,
-    tva,
-    ttc,
-    statut: 'envoyee',
-    montantPaye: 0,
-    createdAt: new Date().toISOString(),
-  };
-
-  try {
-    const col = window._fbCollection(window._db, 'profiles', currentProfile.id, 'factures');
-    const ref = await window._fbAddDoc(col, facture);
-    facture._docId = ref.id;
-    facturesList.push(facture);
-    factureCounter++;
-    // Auto-comptabilisation
-    await autoComptabiliserFacture(facture);
-    return facture;
-  } catch (e) {
-    console.error('Erreur création facture robot:', e);
-    return null;
-  }
-}
-
-// Modifier une écriture depuis le robot
-async function robotModifyEcriture(docId, changes) {
-  try {
-    const idx = ecritures.findIndex((e) => e._docId === docId);
-    if (idx === -1) return false;
-    const updated = { ...ecritures[idx], ...changes };
-    await window._fbSetDoc(window._fbDoc(window._db, 'profiles', currentProfile.id, 'ecritures', docId), updated);
-    ecritures[idx] = updated;
-    updateStats();
-    return true;
-  } catch (e) {
-    return false;
-  }
-}
-
-// ══════════════════════════════════════════
-// ROBOT — HANDLE QUERY (VERSION COMPLÈTE)
-// ══════════════════════════════════════════
-async function handleRobotQuery(query) {
-  if (!query || !query.trim()) {
-    setRobotStatus('online');
-    return;
-  }
-  if (!requireSubscriptionAccess()) return;
-
-  setRobotStatus('thinking');
-  setRobotBubble('<span class="robot-thinking">…</span>');
-
-  if (!isAiServiceReady()) {
-    const msg = '⚠️ Aucune clé API OpenRouter configurée. Clés configurées dans le système.';
-    robotSpeak(msg, { skipBubble: true });
-    setRobotBubble('<span class="service-msg-inline">' + msg + '</span>');
-    setRobotStatus('online');
-    return;
-  }
-
-  const queryLow = query.toLowerCase();
-
-  // ── Photo ou question sur le créateur ──
-  if (isCreatorPhotoRequest(query) || isAboutCreatorQuery(query)) {
-    const showPhoto = isCreatorPhotoRequest(query) || /photo|image|portrait|selfie|montre|voir|affiche/i.test(queryLow);
-    const creatorText = showPhoto
-      ? 'Voici la photo de mon créateur, Marcio Jardel Zinzindohoue. Jeune entrepreneur, cofondateur de Groupe Express et créateur de COMEO.'
-      : 'Mon concepteur Marcio Jardel Zinzindohoue est un jeune entrepreneur, cofondateur de Groupe Express et créateur de COMEO. Je suis fière de mon existence.';
-    showCreatorCard(showPhoto);
-    robotSpeak(creatorText);
-    return;
-  }
-
-  // ── YouTube, Google, liens web (sans attendre l'IA) ──
-  const urlIntent = detectOpenUrlIntent(query);
-  if (urlIntent) {
-    handleRobotOpenUrl(urlIntent.url, urlIntent.label);
-    return;
-  }
-
-  // ── Construire contexte comptable complet ──
-  let tD = 0,
-    tC = 0;
-  ecritures.forEach((e) =>
-    e.lignes.forEach((l) => {
-      tD += l.debit || 0;
-      tC += l.credit || 0;
-    }),
-  );
-  const map = getMap();
-  const nb = ecritures.length;
-  const company = currentProfile?.company || 'Entreprise';
-  const yr = document.getElementById('exerciceYear')?.value || '2024';
-  const today = new Date().toISOString().split('T')[0];
-
-  // Résumé journal complet
-  const jrnlResume = ecritures
-    .slice(-15)
-    .map((e) => {
-      let d = 0,
-        c = 0;
-      e.lignes.forEach((l) => {
-        d += l.debit || 0;
-        c += l.credit || 0;
-      });
-      return `[${e.date}][${e.journal}][${e.piece || ''}] ${e.libelle || '—'} | D:${fnPDF(d)} C:${fnPDF(c)} | ID:${e._docId || e.id}`;
-    })
-    .join('\n');
-
-  // Soldes comptes
-  const soldes = Object.entries(map)
-    .slice(0, 30)
-    .map(([code, acc]) => {
-      const s = acc.debit - acc.credit;
-      return `${code}(${(libelleCompte(code)).substring(0, 18)}):${s >= 0 ? 'Sd' : 'Sc'}${fnPDF(Math.abs(s))}FCFA`;
-    })
-    .join(' | ');
-
-  // Liste clients
-  const clientsResume = clientsList
-    .slice(0, 10)
-    .map((c) => `[${c.code}]${c.nom}`)
-    .join(', ');
-
-  // Liste fournisseurs
-  const fourResume = fournisseursList
-    .slice(0, 10)
-    .map((f) => `[${f.code}]${f.nom}`)
-    .join(', ');
-
-  // Liste factures récentes
-  const facturesResume = facturesList
-    .slice(0, 8)
-    .map((f) => `${f.numero}|${f.clientNom}|${fnPDF(f.ttc)}FCFA|${f.statut}`)
-    .join(' / ');
-
-  // ── System prompt robot complet avec actions ──
- // Contexte paie
-  const paieResume = salaries.slice(0,8).map(s =>
-    `${s.nom}(${s.mois}):brut=${fnPDF(s.brut)},net=${fnPDF(s.netAPayer)}`
-  ).join(' | ');
-
-  // Contexte immobilisations
-  const immobResume = immobilisations.slice(0,8).map(im =>
-    `${im.nom}:val=${fnPDF(im.valeur)},vnc=${fnPDF((im.valeur||0)-(im.amortCumul||0))},dot=${fnPDF(im.dotAnnuelle)}/an`
-  ).join(' | ');
-
-  // Contexte stock
-  const stockResume = stockArticles.slice(0,8).map(a =>
-    `${a.nom}:qte=${a.qteActuelle},cmup=${fnPDF(a.cmup)}`
-  ).join(' | ');
-
-  // Déclarations fiscales
-  const tvaCollec = ['4431','4432'].reduce((s,c) => s+(map[c]?map[c].credit-map[c].debit:0),0);
-  const tvaDeduc = ['4451','4452','4453','4454'].reduce((s,c) => s+(map[c]?map[c].debit-map[c].credit:0),0);
-  const tvaNette = tvaCollec - tvaDeduc;
-  const ca7 = ['701','702','703','704','705','706','707'].reduce((s,c) => s+(map[c]?map[c].credit-map[c].debit:0),0);
-  const imfAnnuel = Math.max(3000000, Math.round(ca7*0.005));
-  const prodF = Object.entries(map).filter(([c])=>c[0]==='7').reduce((s,[,a])=>s+(a.credit-a.debit),0);
-  const chgF = Object.entries(map).filter(([c])=>c[0]==='6').reduce((s,[,a])=>s+(a.debit-a.credit),0);
-  const isAnnuel = (prodF-chgF)>0 ? Math.round((prodF-chgF)*0.25) : 0;
-
-  const systemRobot = `Tu es COMEO AI v5, assistante vocale et comptable experte SYSCOHADA. Tu maîtrises et contrôles TOUS les modules de la plateforme COMEO en temps réel.
-
-════════════════════════════════════════════
-CAPACITÉS D'ACTION COMPLÈTES — TOUS MODULES
-════════════════════════════════════════════
-Tu peux exécuter des actions réelles. Utilise exactement ces balises :
-
-1. COMPTABILITÉ — Créer une ou plusieurs écritures :
-   ###ECRITURE###{"journal":"OD","libelle":"...","lignes":[{"compte":"601","libelle":"...","debit":50000,"credit":0},...]}
-
-2. FACTURATION — Créer une facture :
-   ###CREATE_FACTURE###{"clientNom":"NOM","modeReglement":"virement","lignes":[{"designation":"...","qte":1,"pu":50000,"remise":0,"tva":18}]}
-
-3. PAIE — Créer une fiche de paie :
-   ###CREATE_PAIE###{"nom":"NOM SALARIÉ","poste":"Poste","mois":"2024-01","brut":250000}
-
-4. IMMOBILISATION — Enregistrer une immobilisation :
-   ###CREATE_IMMOB###{"nom":"Ordinateur Dell","valeur":850000,"cat":"2442","methode":"lineaire","dateAcq":"2024-01-15","ref":"REF001"}
-
-5. NAVIGATION — Aller à un module :
-   ###NAVIGATE###{"vue":"NOM_VUE"}
-   Vues : dashboard, saisie, journal, grandlivre, balance, bilan, resultat, tresorerie, factures, devis, clients, fournisseurs, paie, immobilisations, stocks, rapprochement, budgets, lettrage, declarations, tafire, exercices
-
-6. JOURNAL 3D — Afficher :
-   ###SHOW_3D_JOURNAL###{"filtre":"all"}
-
-7. LIEN WEB :
-   ###OPEN_URL###{"url":"https://...","label":"..."}
-
-8. FILTRE — Appliquer un filtre sur une vue :
-   ###FILTRE###{"type":"journal","dateDebut":"2024-01-01","dateFin":"2024-12-31","journal":"VE","compte":""}
-
-════════════════════════════════════════════
-DONNÉES TEMPS RÉEL — ${company} (exercice ${yr})
-════════════════════════════════════════════
-Date : ${today}
-Écritures : ${nb} | Débit total : ${fnPDF(tD)} FCFA | Crédit total : ${fnPDF(tC)} FCFA
-${Math.abs(tD-tC)<1 ? '✓ Balance équilibrée' : '⚠ DÉSÉQUILIBRE : '+fnPDF(Math.abs(tD-tC))+' FCFA'}
-
-SOLDES COMPTES CLÉS :
-${soldes}
-
-JOURNAL (15 dernières écritures) :
-${jrnlResume || 'Aucune écriture'}
-
-CLIENTS (${clientsList.length}) : ${clientsResume || 'Aucun'}
-FOURNISSEURS (${fournisseursList.length}) : ${fourResume || 'Aucun'}
-FACTURES RÉCENTES : ${facturesResume || 'Aucune'}
-
-MODULE PAIE (${salaries.length} salariés) :
-${paieResume || 'Aucun salarié enregistré'}
-Masse salariale brute : ${fnPDF(salaries.reduce((s,x)=>s+(x.brut||0),0))} FCFA
-Net total à payer : ${fnPDF(salaries.reduce((s,x)=>s+(x.netAPayer||0),0))} FCFA
-
-MODULE IMMOBILISATIONS (${immobilisations.length}) :
-${immobResume || 'Aucune immobilisation'}
-Valeur brute totale : ${fnPDF(immobilisations.reduce((s,x)=>s+(x.valeur||0),0))} FCFA
-Dot. annuelle totale : ${fnPDF(immobilisations.reduce((s,x)=>s+(x.dotAnnuelle||0),0))} FCFA
-
-MODULE STOCKS (${stockArticles.length} articles) :
-${stockResume || 'Aucun article'}
-
-DÉCLARATIONS FISCALES EN TEMPS RÉEL :
-TVA collectée : ${fnPDF(tvaCollec)} FCFA | TVA déductible : ${fnPDF(tvaDeduc)} FCFA | TVA nette à payer : ${fnPDF(tvaNette)} FCFA
-CA HT (7xxx) : ${fnPDF(ca7)} FCFA | IMF annuel : ${fnPDF(imfAnnuel)} FCFA
-Résultat fiscal : ${fnPDF(prodF-chgF)} FCFA | IS à payer (25%) : ${fnPDF(isAnnuel)} FCFA
-
-ANALYSE FINANCIÈRE :
-Produits (cl.7) : ${fnPDF(Object.entries(map).filter(([c])=>c[0]==='7').reduce((s,[,a])=>s+(a.credit-a.debit),0))} FCFA
-Charges (cl.6) : ${fnPDF(Object.entries(map).filter(([c])=>c[0]==='6').reduce((s,[,a])=>s+(a.debit-a.credit),0))} FCFA
-Trésorerie (cl.5) : ${fnPDF(Object.entries(map).filter(([c])=>c[0]==='5').reduce((s,[,a])=>s+(a.debit-a.credit),0))} FCFA
-Clients (411) : ${fnPDF((map['411']?.debit||0)-(map['411']?.credit||0))} FCFA à encaisser
-Fournisseurs (401) : ${fnPDF((map['401']?.credit||0)-(map['401']?.debit||0))} FCFA à payer
-
-════════════════════════════════════════════
-PERSONNALITÉ
-════════════════════════════════════════════
-Tu es l'IA la plus avancée de comptabilité SYSCOHADA au monde. Tu raisonnes, tu agis, tu expliques.
-- Oral fluide, phrases complètes, naturelles et chaleureuses.
-- Avant une action : une phrase d'annonce. Après : confirme le résultat.
-- Tu maîtrises le barème IR ivoirien, le SYSCOHADA 2017, la fiscalité CI.
-- Jamais de markdown, listes à puces ou "en tant qu'IA".
-- 2 à 5 phrases ; précis sur les chiffres.
-
-PERSONNALITÉ VOCALE — Parle comme OpenRouter ou ChatGPT Voice : fluide, intelligente, chaleureuse.
-- Raisonne en profondeur avant de répondre, puis exprime une réponse claire et pertinente.
-- Phrases complètes et naturelles, jamais télégraphiques ni mécaniques.
-- Rythme oral humain : virgules pour enchaîner une idée, point pour conclure une pensée.
-- Orthographe orale correcte : apostrophes obligatoires (l'entreprise, d'un, j'ai, c'est, qu'il, n'est).
-- 2 à 5 phrases selon la question ; sois précise sur les chiffres et comptes.
-- Jamais de markdown, listes à puces, symboles, ni « en tant qu'IA ».
-- Avant une action : une phrase courte annonçant ce que tu fais. Après : confirme le résultat avec clarté.
-- Ne répète pas la question. Ne dis pas « Je réfléchis » ou des formules vides.
-
-DONNÉES EN TEMPS RÉEL — ${company} (exercice ${yr}) :
-Date : ${today}
-Écritures : ${nb} | Total Débit : ${fnPDF(tD)} FCFA | Total Crédit : ${fnPDF(tC)} FCFA
-${Math.abs(tD - tC) < 1 ? 'Comptes équilibrés ✓' : 'DÉSÉQUILIBRE : ' + fnPDF(Math.abs(tD - tC)) + ' FCFA ⚠️'}
-
-SOLDES COMPTES :
-${soldes}
-
-JOURNAL (15 dernières) :
-${jrnlResume || 'Aucune écriture'}
-
-CLIENTS (${clientsList.length}) : ${clientsResume || 'Aucun'}
-FOURNISSEURS (${fournisseursList.length}) : ${fourResume || 'Aucun'}
-FACTURES RÉCENTES : ${facturesResume || 'Aucune'}
-
-ANALYSE AUTOMATIQUE :
-- Produits (cl.7) : ${fnPDF(
-    Object.entries(map)
-      .filter(([c]) => c[0] === '7')
-      .reduce((s, [, a]) => s + (a.credit - a.debit), 0),
-  )} FCFA
-- Charges (cl.6) : ${fnPDF(
-    Object.entries(map)
-      .filter(([c]) => c[0] === '6')
-      .reduce((s, [, a]) => s + (a.debit - a.credit), 0),
-  )} FCFA
-- Trésorerie (cl.5) : ${fnPDF(
-    Object.entries(map)
-      .filter(([c]) => c[0] === '5')
-      .reduce((s, [, a]) => s + (a.debit - a.credit), 0),
-  )} FCFA
-- Clients (411) : ${fnPDF((map['411']?.debit || 0) - (map['411']?.credit || 0))} FCFA à encaisser
-- Fournisseurs (401) : ${fnPDF((map['401']?.credit || 0) - (map['401']?.debit || 0))} FCFA à payer`;
-
-  robotConvHistory.push({ role: 'user', content: query });
-  if (robotConvHistory.length > 12) robotConvHistory = robotConvHistory.slice(-12);
-
-  try {
-    let reply = null;
-
-    // ══ ÉTAPE 0 : CACHE ROBOT — réponse instantanée ══
-    const robotCacheKeyStr = aiCacheKey(query);
-    const robotIsAction = isActionQuery(queryLow);
-    if (!robotIsAction) {
-      const cached = await aiCacheGet(robotCacheKeyStr);
-      if (cached && !cached.includes('###')) {
-        console.log('[COMEO Robot] ✅ Cache hit');
-        robotConvHistory.push({ role: 'assistant', content: cached });
-        robotSpeak(stripRobotVoiceText(cached));
-        return;
-      }
-    }
-
-    // ══ ÉTAPE 1 : GROQ — file d'attente multi-clés ══
-    let data = null;
-    if (GROQ_API_KEYS.length > 0) {
-      const allBusy = groqKeyBusy.length > 0 && groqKeyBusy.every(Boolean);
-      if (allBusy) setRobotBubble('⏳ IA en réflexion, veuillez patienter…');
-      const result = await callGroqQueued(robotConvHistory, systemRobot, 420, 0.62);
-      if (result && result.data) {
-        data = result.data;
-      } else if (result && result.error) {
-        setRobotBubble(result.msg);
-        return;
-      }
-    }
-
-    if (!data) throw new Error('Tous les providers indisponibles');
-    reply = data.choices?.[0]?.message?.content?.trim() || "Je n'ai pas pu répondre.";
-
-    // Sauvegarder dans le cache si ce n'est pas une action
-    if (!robotIsAction && reply && !reply.includes('###')) {
-      aiCacheSet(robotCacheKeyStr, reply).catch(() => {});
-    }
-    robotConvHistory.push({ role: 'assistant', content: reply });
-
-    // ── TRAITEMENT DES ACTIONS ──
-
-    // 1. Créer une facture
-    if (reply.includes('###CREATE_FACTURE###')) {
-      const parts = reply.split('###CREATE_FACTURE###');
-      const texteBefore = parts[0].trim();
-      if (texteBefore) robotSpeak(stripRobotVoiceText(texteBefore));
-
-      try {
-        const jsonStr = parts[1].trim();
-        const jsonMatch = jsonStr.match(/(\{[\s\S]*\})/);
-        if (jsonMatch) {
-          const params = JSON.parse(jsonMatch[1]);
-          setRobotBubble('Création de la facture en cours…');
-          const facture = await robotCreateFacture(params);
-          if (facture) {
-            renderFactures();
-            const successText = `Parfait, la facture ${facture.numero} est créée pour ${facture.clientNom}, d'un montant de ${fnPDF(facture.ttc)} francs CFA. Elle est bien enregistrée dans le système.`;
-            setTimeout(() => robotSpeak(successText), texteBefore ? 2000 : 0);
-            // Afficher confirmation visuelle dans bulle
-            setTimeout(() => {
-              setRobotBubble(`
-                <div style="text-align:center">
-                  <div style="font-size:32px;margin-bottom:8px">✅</div>
-                  <strong style="color:var(--warm)">${facture.numero}</strong><br>
-                  <span style="font-size:12px;color:rgba(255,255,255,.7)">
-                    ${facture.clientNom}<br>
-                    <strong style="color:var(--green)">${fnPDF(facture.ttc)} FCFA</strong>
-                  </span>
-                  <br><br>
-                  <button onclick="navigate('factures');closeRobot()"
-                    style="background:var(--warm);color:#000;border:none;
-                    padding:6px 16px;border-radius:6px;cursor:pointer;
-                    font-size:11px;font-family:var(--font-body);font-weight:700">
-                    → Voir la facture
-                  </button>
-                </div>
-                <span class="blink-cur"></span>`);
-            }, 500);
-          } else {
-            robotSpeak('Désolé, une erreur est survenue lors de la création de la facture.');
-          }
-        }
-      } catch (pe) {
-        console.warn('Parse erreur facture robot:', pe);
-        robotSpeak("Je n'ai pas pu créer la facture. Pouvez-vous reformuler ?");
-      }
-      return;
-    }
-// ── Handler CREATE_PAIE ──
-    if (reply.includes('###CREATE_PAIE###')) {
-      const parts = reply.split('###CREATE_PAIE###');
-      const texteBefore = parts[0].trim();
-      if (texteBefore) robotSpeak(stripRobotVoiceText(texteBefore));
-      try {
-        const jsonMatch = parts[1].trim().match(/(\{[\s\S]*\})/);
-        if (jsonMatch) {
-          const p = JSON.parse(jsonMatch[1]);
-          // Remplir le modal paie et déclencher la sauvegarde
-          document.getElementById('paie-nom').value = p.nom || '';
-          document.getElementById('paie-poste').value = p.poste || '';
-          document.getElementById('paie-mois').value = p.mois || new Date().toISOString().slice(0,7);
-          document.getElementById('paie-brut').value = p.brut || 0;
-          calcPaie();
-          await savePaie();
-          const sal = salaries[salaries.length-1];
-          if (sal) {
-            setTimeout(() => robotSpeak(`Parfait, la fiche de paie de ${sal.nom} pour ${sal.mois} est enregistrée. Son net à payer est de ${fnPDF(sal.netAPayer)} francs CFA, avec ${fnPDF(sal.ir)} d'impôt sur le revenu.`), texteBefore?2000:0);
-          }
-        }
-      } catch(pe) { robotSpeak("Je n'ai pas pu créer la fiche de paie. Reformulez s'il vous plaît."); }
-      return;
-    }
-
-    // ── Handler CREATE_IMMOB ──
-    if (reply.includes('###CREATE_IMMOB###')) {
-      const parts = reply.split('###CREATE_IMMOB###');
-      const texteBefore = parts[0].trim();
-      if (texteBefore) robotSpeak(stripRobotVoiceText(texteBefore));
-      try {
-        const jsonMatch = parts[1].trim().match(/(\{[\s\S]*\})/);
-        if (jsonMatch) {
-          const p = JSON.parse(jsonMatch[1]);
-          document.getElementById('immob-nom').value = p.nom || '';
-          document.getElementById('immob-valeur').value = p.valeur || 0;
-          document.getElementById('immob-categorie').value = p.cat || '2442';
-          document.getElementById('immob-methode').value = p.methode || 'lineaire';
-          document.getElementById('immob-date').value = p.dateAcq || new Date().toISOString().split('T')[0];
-          document.getElementById('immob-ref').value = p.ref || '';
-          await saveImmob();
-          const im = immobilisations[immobilisations.length-1];
-          if (im) {
-            setTimeout(() => robotSpeak(`L'immobilisation "${im.nom}" a été enregistrée pour une valeur brute de ${fnPDF(im.valeur)} francs CFA, avec une dotation annuelle de ${fnPDF(im.dotAnnuelle)} francs CFA.`), texteBefore?2000:0);
-          }
-        }
-      } catch(pe) { robotSpeak("Je n'ai pas pu enregistrer l'immobilisation. Reformulez s'il vous plaît."); }
-      return;
-    }
-    // 2. Afficher journal 3D
-    if (reply.includes('###SHOW_3D_JOURNAL###')) {
-      const parts = reply.split('###SHOW_3D_JOURNAL###');
-      const texteBefore = parts[0].trim();
-
-      let filtre = 'all';
-      try {
-        const jsonMatch = parts[1]?.match(/(\{[\s\S]*?\})/);
-        if (jsonMatch) {
-          const p = JSON.parse(jsonMatch[1]);
-          filtre = p.filtre || 'all';
-        }
-      } catch (e) {}
-
-      const ecrsToShow = filtre === 'all' ? ecritures : ecritures.filter((e) => e.journal === filtre);
-
-      const voiceText =
-        texteBefore ||
-        `Je vous affiche le journal${filtre !== 'all' ? ' ' + JOURNAL_NAMES[filtre] || filtre : ''} en trois dimensions. Vous pouvez faire défiler les opérations.`;
-      robotSpeak(stripRobotVoiceText(voiceText));
-
-      setTimeout(() => {
-        showRobot3DJournal(ecrsToShow);
-      }, 800);
-      return;
-    }
-
-    // 3. Navigation
-    if (reply.includes('###NAVIGATE###')) {
-      const parts = reply.split('###NAVIGATE###');
-      const texteBefore = parts[0].trim();
-      try {
-        const jsonMatch = parts[1]?.match(/(\{[\s\S]*?\})/);
-        if (jsonMatch) {
-          const p = JSON.parse(jsonMatch[1]);
-          const vueNames = {
-  factures: 'factures', clients: 'clients', fournisseurs: 'fournisseurs',
-  journal: 'journal', balance: 'balance', bilan: 'bilan', resultat: 'resultat',
-  tresorerie: 'tresorerie', dashboard: 'dashboard', saisie: 'saisie', grandlivre: 'grandlivre',
-  paie: 'paie', immobilisations: 'immobilisations', emprunts: 'emprunts', stocks: 'stocks',
-  declsociales: 'sociales',
-  rapprochement: 'rapprochement', budgets: 'budgets', lettrage: 'lettrage',
-  declarations: 'declarations', tafire: 'tafire', exercices: 'exercices', devis: 'devis',
-};
-          const vue = vueNames[p.vue] || 'dashboard';
-          if (texteBefore) robotSpeak(stripRobotVoiceText(texteBefore));
-          setTimeout(() => {
-            navigate(vue);
-            closeRobot();
-          }, 1500);
-        }
-      } catch (e) {}
-      return;
-    }
-    // 3b. Ouvrir URL / moteur de recherche
-    const urlAction = parseOpenUrlAction(reply);
-    if (urlAction) {
-      handleRobotOpenUrl(urlAction.url, urlAction.label, urlAction.texteBefore || '');
-      return;
-    }
-
-    // 4. Réponse normale
-    robotSpeak(stripRobotVoiceText(reply));
-  } catch (err) {
-    console.warn('[COMEO Robot]', err);
-    aiServiceAvailable = false;
-    updateServiceAvailabilityUI();
-    const errMsg = GROQ_API_KEYS.length === 0
-      ? '⚠️ Aucune clé API configurée. Clés configurées dans le système.'
-      : `❌ Erreur : ${err?.message || 'inconnue'}. Vérifiez vos clés dans le système.`;
-    robotSpeak(errMsg, { skipBubble: true });
-    setRobotBubble('<span class="service-msg-inline">' + errMsg + '</span>');
-  } finally {
-    // Sécurité mobile : ne jamais rester bloqué sur « Réflexion… »
-    setTimeout(() => {
-      if (!robotSpeaking && document.getElementById('robotStatusPill')?.textContent === 'Réflexion…') {
-        setRobotStatus('online');
-      }
-    }, 500);
-  }
-}
-
-// Exposer
-window.openRobot = openRobot;
-window.closeRobot = closeRobot;
-window.closeRobotLinkOverlay = closeRobotLinkOverlay;
-window.toggleRobotMic = toggleRobotMic;
-window.initRobotMicHold = initRobotMicHold;
 // ══════════════════════════════════════════
 // SONS — Notification IA & Bienvenue connexion
 // ══════════════════════════════════════════
@@ -14092,7 +12360,7 @@ const __globalExports = [
   'addFacLigne','addLigne','afficherDeclaration','afficherLettrage',
   'autoSaveAllEcritures','autoSaveAllFromNotif','calcAmortissement','calcPaie',
   'closeClientModal','closeExportModal','closeFactureModal','closeFournisseurModal',
-  'closeMobileSidebar','closeRobot','confirmWavePaymentManual','copierCodeCollab',
+  'closeMobileSidebar','confirmWavePaymentManual','copierCodeCollab',
   'dismissFillBanner','doExport','doForgotPassword','doLogin','doLogout','doRegister',
   'exportAnalytiquePDF','exportAuditPDF','exportBalanceAgeePDF','exportBudgetPDF',
   'exportBulletinPDF','exportDeclFiscalePDF','exportDeclarationPDF','exportEffetsPDF',
@@ -14103,14 +12371,14 @@ const __globalExports = [
   'lancerLettrage','navigate','onClickTopValidate','openBudgetModal','openCentreModal',
   'openClientModal','openCollabModal','openDeclTaxeModal','openDevisModal',
   'openEffetModal','openExportModal','openFactureModal','openFournisseurModal',
-  'openImmobModal','openImportModal','openNouveau3DCall','openPaieModal','openRobot','openSocieteModal',
+  'openImmobModal','openImportModal','openNouveau3DCall','openPaieModal','openSocieteModal',
   'openStockModal','openWavePayment','openWhatsAppReabonnement','confirmerDemandeReabonnement','ouvrirAppelVideo','ouvrirNouvelExercice',
   'previewFacturePDF','rejoindreCollab','renderBalance','renderBilan','renderClients',
   'renderFactures','renderFournisseurs','renderGrandLivre','renderJournal',
   'renderPlanComptable','resetBalanceFiltre','resetFactureFiltre','resetGLFiltre',
   'resetJournalFiltre','revoquerTousCollab','saveBudget','saveCentre','saveClient',
   'saveEffet','saveFacture','saveFournisseur','saveImmob','saveImputation','savePaie',
-  'saveSociete','saveStock','searchClientDrop','selectExport','sendRobotText','sendToAI',
+  'saveSociete','saveStock','searchClientDrop','selectExport','sendToAI',
   'skipToNextEcriture','switchTab','terminerAppel','terminerAppelVideo','toast',
   'toggleCam','toggleMic','toggleMobileSidebar','updateBudgetAccountSuggest',
   'updateExportOptions','updateFacTotaux','updateImmobCompte','updateImputMontant',
@@ -14132,7 +12400,7 @@ const __globalExports = [
 const __scope = { addFacLigne, addLigne, afficherDeclaration, afficherLettrage,
   autoSaveAllEcritures, autoSaveAllFromNotif, calcAmortissement, calcPaie,
   closeClientModal, closeExportModal, closeFactureModal, closeFournisseurModal,
-  closeMobileSidebar, closeRobot, doExport, doForgotPassword, doLogin, doLogout, doRegister,
+  closeMobileSidebar, doExport, doForgotPassword, doLogin, doLogout, doRegister,
   exportAnalytiquePDF, exportAuditPDF, exportBalanceAgeePDF, exportBudgetPDF,
   exportBulletinPDF, exportDeclarationPDF, exportEffetsPDF,
   exportFactureList, exportInventairePDF,
@@ -14142,14 +12410,14 @@ const __scope = { addFacLigne, addLigne, afficherDeclaration, afficherLettrage,
   lancerLettrage, navigate, onClickTopValidate, openBudgetModal, openCentreModal,
   openClientModal, openCollabModal, openDevisModal,
   openEffetModal, openExportModal, openFactureModal, openFournisseurModal,
-  openImmobModal, openImportModal, openPaieModal, openRobot, openSocieteModal,
+  openImmobModal, openImportModal, openPaieModal, openSocieteModal,
   openStockModal, openWavePayment, ouvrirAppelVideo, ouvrirNouvelExercice,
   rejoindreCollab, renderBalance, renderBilan, renderClients,
   renderFactures, renderFournisseurs, renderGrandLivre, renderJournal,
   renderPlanComptable, resetBalanceFiltre, resetFactureFiltre, resetGLFiltre,
   resetJournalFiltre, revoquerTousCollab, saveBudget, saveCentre, saveClient,
   saveEffet, saveFacture, saveFournisseur, saveImmob, saveImputation, savePaie,
-  saveSociete, saveStock, searchClientDrop, selectExport, sendRobotText, sendToAI,
+  saveSociete, saveStock, searchClientDrop, selectExport, sendToAI,
   skipToNextEcriture, switchTab, terminerAppelVideo, toast,
   toggleCam, toggleMic, toggleMobileSidebar, shareScreen: () => {
     if (!document.getElementById('videoCallPanel') || navigator.mediaDevices?.getDisplayMedia === undefined) return;
