@@ -4,7 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>SYSCOHADA Pro — COMEO AI v4</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%23151310'/%3E%3Ctext x='50' y='68' font-size='58' font-family='Georgia,serif' font-weight='700' fill='%23d4a853' text-anchor='middle'%3EC%3C/text%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;0,900;1,400&family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -2081,16 +2080,15 @@
 
     <div id="scanStepResult" style="display:none">
       <div class="scan-result-badge">✓ Facture lue et normalisée</div>
-      <div class="scan-result-lock-note">🔒 Champs verrouillés en lecture seule — la donnée lue par l'IA ne peut pas être modifiée manuellement, pour garantir l'intégrité de la facture transmise.</div>
       <div class="scan-result-grid">
-        <div class="sr-field"><span class="sr-label">Fournisseur / Client</span><input class="af-input" id="sr-tiers" type="text" placeholder="Nom du client/fournisseur" readonly aria-readonly="true"></div>
-        <div class="sr-field"><span class="sr-label">N° Facture</span><input class="af-input" id="sr-numero" type="text" placeholder="N° facture" readonly aria-readonly="true"></div>
-        <div class="sr-field"><span class="sr-label">Date</span><input class="af-input" type="date" id="sr-date" readonly aria-readonly="true" onkeydown="return false"></div>
-        <div class="sr-field"><span class="sr-label">Montant HT</span><input class="af-input" type="text" inputmode="decimal" id="sr-ht" placeholder="0" readonly aria-readonly="true"></div>
-        <div class="sr-field"><span class="sr-label">TVA</span><input class="af-input" type="text" inputmode="decimal" id="sr-tva" placeholder="0" readonly aria-readonly="true"></div>
-        <div class="sr-field"><span class="sr-label">Montant TTC</span><input class="af-input" type="text" inputmode="decimal" id="sr-ttc" placeholder="0" readonly aria-readonly="true"></div>
+        <div class="sr-field"><span class="sr-label">Fournisseur / Client</span><input class="af-input" id="sr-tiers" type="text" placeholder="Nom du client/fournisseur"></div>
+        <div class="sr-field"><span class="sr-label">N° Facture</span><input class="af-input" id="sr-numero" type="text" placeholder="N° facture"></div>
+        <div class="sr-field"><span class="sr-label">Date</span><input class="af-input" type="date" id="sr-date"></div>
+        <div class="sr-field"><span class="sr-label">Montant HT</span><input class="af-input" type="text" inputmode="decimal" id="sr-ht" placeholder="0" oninput="recalculerTTCScan()"></div>
+        <div class="sr-field"><span class="sr-label">TVA</span><input class="af-input" type="text" inputmode="decimal" id="sr-tva" placeholder="0" oninput="recalculerTTCScan()"></div>
+        <div class="sr-field"><span class="sr-label">Montant TTC</span><input class="af-input" type="text" inputmode="decimal" id="sr-ttc" placeholder="0"></div>
       </div>
-      <p class="scan-result-note">Champs détectés automatiquement par l'IA à partir de l'image, non modifiables. Si une information est incorrecte, annulez et rescannez la facture. Une fois confirmée, la facture normalisée sera enregistrée et placée en file de transmission vers la DGI / Ministère de l'Économie et des Finances du Bénin (norme e-facturation). L'envoi effectif sera activé dès l'intégration de l'API officielle.</p>
+      <p class="scan-result-note">Vérifiez les champs détectés par l'IA avant confirmation. Une fois confirmée, la facture normalisée sera enregistrée et placée en file de transmission vers la DGI / Ministère de l'Économie et des Finances du Bénin (norme e-facturation). L'envoi effectif sera activé dès l'intégration de l'API officielle.</p>
       <button class="btn btn-gold" style="width:100%" onclick="confirmerTransmissionFacture()">✓ Confirmer et transmettre</button>
     </div>
 
