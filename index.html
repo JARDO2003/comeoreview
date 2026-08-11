@@ -2081,12 +2081,12 @@
     <div id="scanStepResult" style="display:none">
       <div class="scan-result-badge">✓ Facture lue et normalisée</div>
       <div class="scan-result-grid">
-        <div class="sr-field"><span class="sr-label">Fournisseur / Client</span><input class="af-input" id="sr-tiers"></div>
-        <div class="sr-field"><span class="sr-label">N° Facture</span><input class="af-input" id="sr-numero"></div>
+        <div class="sr-field"><span class="sr-label">Fournisseur / Client</span><input class="af-input" id="sr-tiers" type="text" placeholder="Nom du client/fournisseur"></div>
+        <div class="sr-field"><span class="sr-label">N° Facture</span><input class="af-input" id="sr-numero" type="text" placeholder="N° facture"></div>
         <div class="sr-field"><span class="sr-label">Date</span><input class="af-input" type="date" id="sr-date"></div>
-        <div class="sr-field"><span class="sr-label">Montant HT</span><input class="af-input" type="number" id="sr-ht"></div>
-        <div class="sr-field"><span class="sr-label">TVA</span><input class="af-input" type="number" id="sr-tva"></div>
-        <div class="sr-field"><span class="sr-label">Montant TTC</span><input class="af-input" type="number" id="sr-ttc"></div>
+        <div class="sr-field"><span class="sr-label">Montant HT</span><input class="af-input" type="text" inputmode="decimal" id="sr-ht" placeholder="0" oninput="recalculerTTCScan()"></div>
+        <div class="sr-field"><span class="sr-label">TVA</span><input class="af-input" type="text" inputmode="decimal" id="sr-tva" placeholder="0" oninput="recalculerTTCScan()"></div>
+        <div class="sr-field"><span class="sr-label">Montant TTC</span><input class="af-input" type="text" inputmode="decimal" id="sr-ttc" placeholder="0"></div>
       </div>
       <p class="scan-result-note">Vérifiez les champs détectés par l'IA avant confirmation. Une fois confirmée, la facture normalisée sera enregistrée et placée en file de transmission vers la DGI / Ministère de l'Économie et des Finances du Bénin (norme e-facturation). L'envoi effectif sera activé dès l'intégration de l'API officielle.</p>
       <button class="btn btn-gold" style="width:100%" onclick="confirmerTransmissionFacture()">✓ Confirmer et transmettre</button>
