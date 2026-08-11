@@ -2029,6 +2029,18 @@ mark.hl { background:rgba(212,168,83,.3); color:var(--warm); border-radius:2px; 
 .ceo-charts-row { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px; }
 @media(max-width:800px){ .ceo-charts-row { grid-template-columns:1fr; } }
 .ceo-chart-wrap { position:relative; height:220px; }
+.chart-placeholder-badge {
+  position:absolute; top:10px; left:12px; pointer-events:none;
+  font-size:11px; font-weight:600; letter-spacing:.02em;
+  color:rgba(255,255,255,.45);
+  background:rgba(212,168,83,.1);
+  border:1px solid rgba(212,168,83,.25);
+  padding:4px 10px; border-radius:20px;
+}
+.chart-placeholder-badge-center {
+  top:50%; left:50%; transform:translate(-50%,-50%);
+  text-align:center; white-space:nowrap;
+}
 .cb-account-card { background:var(--surface); border:1px solid var(--line); border-radius:14px; padding:18px; box-shadow:var(--sh); }
 .cb-account-card .cb-acc-name { font-size:11px; color:var(--muted); font-weight:600; margin-bottom:6px; }
 .cb-account-card .cb-acc-amount { font-family:var(--font-mono); font-size:19px; font-weight:700; }
