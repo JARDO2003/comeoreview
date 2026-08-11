@@ -5063,6 +5063,9 @@ function openScanFactureModal() {
   document.getElementById('scanStepPreview').style.display = 'none';
   document.getElementById('scanStepResult').style.display = 'none';
   document.getElementById('scanFactureInput').value = '';
+  const errEl = document.getElementById('scanErr');
+  errEl.textContent = '';
+  errEl.classList.remove('show');
   scanFactureImageDataUrl = null;
   scanFactureExtracted = null;
 }
@@ -5090,7 +5093,9 @@ async function handleFactureFileSelect(e) {
     document.getElementById('scanStepPreview').style.display = 'block';
     document.getElementById('scanImagePreview').src = scanFactureImageDataUrl;
     document.getElementById('scanProgress').style.display = 'flex';
-    document.getElementById('scanErr').textContent = '';
+    const errEl = document.getElementById('scanErr');
+    errEl.textContent = '';
+    errEl.classList.remove('show');
     await analyserFactureScan(scanFactureImageDataUrl);
   };
   reader.readAsDataURL(file);
@@ -5181,6 +5186,7 @@ async function analyserFactureScan(imageDataUrl, tentative = 1) {
   const progressText = document.getElementById('scanProgressText');
   const errEl = document.getElementById('scanErr');
   errEl.textContent = '';
+  errEl.classList.remove('show');
   try {
     const img = await _chargerImageDansCanvas(imageDataUrl);
 
@@ -5270,7 +5276,8 @@ Les montants sont en FCFA, en nombres purs (sans espaces ni symboles).`;
       }
     }
   } catch (e) {
-    errEl.textContent = '❌ ' + e.message;
+    errEl.textContent = '❌ ' + (e.message || "Une erreur est survenue pendant l'analyse. Réessayez.");
+    errEl.classList.add('show');
     document.getElementById('scanProgress').style.display = 'none';
   }
 }
