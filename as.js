@@ -4675,11 +4675,231 @@ function getLast6MonthsBuckets() {
   return buckets;
 }
 
+// ══════════════════════════════════════════
+// GRAPHIQUES 3D (canvas, sans dépendance externe) — style "colonnes 3D" à
+// l'ancienne façon Excel : chaque barre a un volume (face avant + dessus +
+// côté) et chaque série s'étage en profondeur pour un rendu type trading.
+// ══════════════════════════════════════════
+function _c3dRGB(c) {
+  if (!c) return [200, 200, 200];
+  if (c[0] === '#') {
+    let hex = c.slice(1);
+    if (hex.length === 3) hex = hex.split('').map((x) => x + x).join('');
+    const num = parseInt(hex, 16);
+    return [(num >> 16) & 255, (num >> 8) & 255, num & 255];
+  }
+  const m = c.match(/rgba?\(([^)]+)\)/);
+  if (m) {
+    const p = m[1].split(',').map((s) => parseFloat(s));
+    return [p[0], p[1], p[2]];
+  }
+  return [200, 200, 200];
+}
+function _c3dShade(c, factor) {
+  const [r, g, b] = _c3dRGB(c);
+  const adj = (v) => Math.max(0, Math.min(255, Math.round(v + (factor > 0 ? (255 - v) * factor : v * factor))));
+  return `rgb(${adj(r)},${adj(g)},${adj(b)})`;
+}
+function _c3dCompact(v) {
+  const abs = Math.abs(v);
+  if (abs >= 1e6) return (v / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+  if (abs >= 1e3) return (v / 1e3).toFixed(0) + 'k';
+  return String(Math.round(v));
+}
+function _c3dNiceMax(v) {
+  if (v <= 0) return 1;
+  const exp = Math.floor(Math.log10(v));
+  const base = Math.pow(10, exp);
+  const n = v / base;
+  let nice;
+  if (n <= 1) nice = 1; else if (n <= 2) nice = 2; else if (n <= 5) nice = 5; else nice = 10;
+  return nice * base;
+}
+function _c3dSetupCanvas(canvas) {
+  const wrap = canvas.parentElement;
+  const cssW = Math.max(wrap.clientWidth, 60);
+  const cssH = Math.max(wrap.clientHeight, 60);
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = cssW * dpr;
+  canvas.height = cssH * dpr;
+  canvas.style.width = cssW + 'px';
+  canvas.style.height = cssH + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssW, cssH);
+  return { ctx, cssW, cssH };
+}
+function _c3dBar(ctx, x, y, w, h, color, ext) {
+  if (h < 0.5) return;
+  const top = _c3dShade(color, 0.32);
+  const side = _c3dShade(color, -0.28);
+  ctx.fillStyle = color;
+  ctx.fillRect(x, y, w, h);
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(x + ext * 0.72, y - ext);
+  ctx.lineTo(x + w + ext * 0.72, y - ext);
+  ctx.lineTo(x + w, y);
+  ctx.closePath();
+  ctx.fillStyle = top;
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(x + w, y);
+  ctx.lineTo(x + w + ext * 0.72, y - ext);
+  ctx.lineTo(x + w + ext * 0.72, y - ext + h);
+  ctx.lineTo(x + w, y + h);
+  ctx.closePath();
+  ctx.fillStyle = side;
+  ctx.fill();
+}
+// draw3DBarChart(canvas, { labels, series:[{name,color,data}] })
+function draw3DBarChart(canvas, opts) {
+  if (!canvas) return;
+  const { labels = [], series = [] } = opts || {};
+  const wrap = canvas.parentElement;
+  if (!labels.length || !series.length || !series.some((s) => (s.data || []).some((v) => v))) {
+    wrap.innerHTML = '<div class="empty-state"><p>Aucune donnée pour l\'instant</p></div>';
+    return;
+  }
+  const { ctx, cssW, cssH } = _c3dSetupCanvas(canvas);
+  const EXT = 6;
+  const SDEPTH = 14;
+  const nCat = labels.length, nSer = series.length;
+  const shiftX = (nSer - 1) * SDEPTH * 0.6;
+  const shiftY = (nSer - 1) * SDEPTH * 0.5;
+  const legendH = 20;
+  const padL = 40, padR = 12 + shiftX + EXT, padT = 10 + shiftY + EXT, padB = 26;
+  const plotW = cssW - padL - padR;
+  const plotH = cssH - padT - padB - legendH;
+  let maxV = 0;
+  series.forEach((s) => (s.data || []).forEach((v) => { if (v > maxV) maxV = v; }));
+  const niceMax = _c3dNiceMax(maxV);
+
+  ctx.font = '10px sans-serif';
+  ctx.strokeStyle = 'rgba(255,255,255,.07)';
+  ctx.fillStyle = 'rgba(255,255,255,.5)';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  for (let i = 0; i <= 4; i++) {
+    const v = (niceMax * i) / 4;
+    const y = padT + plotH - (v / niceMax) * plotH;
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
+    ctx.fillText(_c3dCompact(v), padL - 6, y);
+  }
+
+  const groupW = plotW / nCat;
+  const barW = Math.min(30, groupW * 0.5);
+  for (let s = nSer - 1; s >= 0; s--) {
+    const dx = (nSer - 1 - s) * SDEPTH * 0.6;
+    const dy = -(nSer - 1 - s) * SDEPTH * 0.5;
+    const color = series[s].color;
+    (series[s].data || []).forEach((v, i) => {
+      const h = (v / niceMax) * plotH;
+      const x = padL + i * groupW + (groupW - barW) / 2 + dx;
+      const y = padT + plotH - h + dy;
+      _c3dBar(ctx, x, y, barW, h, color, EXT);
+    });
+  }
+
+  ctx.fillStyle = 'rgba(255,255,255,.55)';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  labels.forEach((lb, i) => {
+    const x = padL + i * groupW + groupW / 2;
+    ctx.fillText(String(lb).substring(0, 10), x, padT + plotH + 6);
+  });
+
+  let lx = padL;
+  const ly = cssH - legendH / 2;
+  ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  series.forEach((s) => {
+    ctx.fillStyle = s.color;
+    ctx.fillRect(lx, ly - 5, 10, 10);
+    ctx.fillStyle = 'rgba(255,255,255,.65)';
+    ctx.fillText(s.name, lx + 15, ly);
+    lx += 15 + ctx.measureText(s.name).width + 18;
+  });
+}
+// draw3DPieChart(canvas, { labels, data, colors })
+function draw3DPieChart(canvas, opts) {
+  if (!canvas) return;
+  const { labels = [], data = [], colors = [] } = opts || {};
+  const wrap = canvas.parentElement;
+  const total = data.reduce((s, v) => s + Math.abs(v), 0);
+  if (!total) {
+    wrap.innerHTML = '<div class="empty-state"><p>Aucune donnée pour l\'instant</p></div>';
+    return;
+  }
+  const { ctx, cssW, cssH } = _c3dSetupCanvas(canvas);
+  const legendRows = Math.ceil(labels.length / 2);
+  const legendH = 18 * legendRows + 8;
+  const depth = 16;
+  const cx = cssW / 2;
+  const plotH = cssH - legendH;
+  const cy = padTop(plotH, depth);
+  const rx = Math.min(cssW * 0.34, (plotH - depth) * 0.62);
+  const ry = rx * 0.55;
+  function padTop(h, d) { return Math.min(h - ry - d - 4, h * 0.42) + ry; }
+
+  const slices = data.map((v, i) => ({ v: Math.abs(v), color: colors[i % colors.length], label: labels[i] }));
+  let start = -Math.PI / 2;
+  const arcs = slices.map((s) => {
+    const angle = (s.v / total) * Math.PI * 2;
+    const a = { ...s, start, end: start + angle };
+    start += angle;
+    return a;
+  });
+
+  // Face latérale (épaisseur du "disque") — dessinée avant le dessus
+  ctx.fillStyle = 'rgba(0,0,0,.28)';
+  ctx.beginPath();
+  ctx.ellipse(cx, cy + depth, rx, ry, 0, 0, Math.PI);
+  ctx.lineTo(cx + rx, cy);
+  ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI, true);
+  ctx.closePath();
+  ctx.fill();
+  arcs.forEach((a) => {
+    if (a.end - a.start < 0.005) return;
+    ctx.beginPath();
+    ctx.moveTo(cx + rx * Math.cos(a.start), cy + ry * Math.sin(a.start));
+    for (let t = a.start; t <= a.end; t += 0.05) ctx.lineTo(cx + rx * Math.cos(t), cy + ry * Math.sin(t));
+    ctx.lineTo(cx + rx * Math.cos(a.end), cy + ry * Math.sin(a.end) + depth);
+    for (let t = a.end; t >= a.start; t -= 0.05) ctx.lineTo(cx + rx * Math.cos(t), cy + ry * Math.sin(t) + depth);
+    ctx.closePath();
+    ctx.fillStyle = _c3dShade(a.color, -0.35);
+    ctx.fill();
+  });
+
+  // Dessus du disque (les parts, vues du dessus)
+  arcs.forEach((a) => {
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.ellipse(cx, cy, rx, ry, 0, a.start, a.end);
+    ctx.closePath();
+    ctx.fillStyle = a.color;
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,.15)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  });
+
+  const lyy = cssH - legendH + 6;
+  const colW = cssW / 2;
+  labels.forEach((lb, i) => {
+    const bx = 8 + (i % 2) * colW;
+    const by = lyy + Math.floor(i / 2) * 18;
+    ctx.fillStyle = colors[i % colors.length];
+    ctx.fillRect(bx, by + 2, 9, 9);
+    ctx.fillStyle = 'rgba(255,255,255,.65)';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.font = '9.5px sans-serif';
+    ctx.fillText(String(lb).substring(0, 16), bx + 13, by);
+  });
+}
+
 let _ceoChartCaSolde = null;
 let _ceoChartComptes = null;
 
 function dessinerGraphiquesCeoDashboard(all) {
-  if (!window.Chart) return; // Chart.js non chargé (ex: hors-ligne) → on n'affiche pas de graphique fictif
   const buckets = getLast6MonthsBuckets();
 
   // ── Graphique 1 : CA mensuel + solde de trésorerie cumulé (données réelles issues des écritures) ──
@@ -4702,24 +4922,13 @@ function dessinerGraphiquesCeoDashboard(all) {
 
   const ctx1 = document.getElementById('ceoChartCaSolde');
   if (ctx1) {
-    if (_ceoChartCaSolde) _ceoChartCaSolde.destroy();
-    _ceoChartCaSolde = new Chart(ctx1, {
-      type: 'bar',
-      data: {
-        labels: buckets.map((b) => b.label),
-        datasets: [
-          { type: 'bar', label: "Chiffre d'affaires", data: caParMois, backgroundColor: 'rgba(212,168,83,.55)', borderRadius: 4, order: 2 },
-          { type: 'line', label: 'Solde de trésorerie cumulé', data: soldeParMois, borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,.12)', tension: .3, fill: true, order: 1, yAxisID: 'y' },
-        ],
-      },
-      options: {
-        responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { labels: { color: 'rgba(255,255,255,.7)', font: { size: 10.5 } } } },
-        scales: {
-          x: { ticks: { color: 'rgba(255,255,255,.5)' }, grid: { display: false } },
-          y: { ticks: { color: 'rgba(255,255,255,.5)' }, grid: { color: 'rgba(255,255,255,.06)' } },
-        },
-      },
+    ctx1.parentElement.innerHTML = '<canvas id="ceoChartCaSolde"></canvas>';
+    draw3DBarChart(document.getElementById('ceoChartCaSolde'), {
+      labels: buckets.map((b) => b.label),
+      series: [
+        { name: "Chiffre d'affaires", color: '#d4a853', data: caParMois },
+        { name: 'Solde de trésorerie cumulé', color: '#3b82f6', data: soldeParMois },
+      ],
     });
   }
 
@@ -4728,27 +4937,16 @@ function dessinerGraphiquesCeoDashboard(all) {
   const comptesTreso = Object.entries(map).filter(([c]) => c.startsWith('5')).slice(0, 8);
   const ctx2 = document.getElementById('ceoChartComptes');
   if (ctx2) {
-    if (_ceoChartComptes) _ceoChartComptes.destroy();
     if (!comptesTreso.length) {
       ctx2.parentElement.innerHTML = '<div class="empty-state"><p>Aucun mouvement de compte pour l\'instant</p></div>';
     } else {
-      _ceoChartComptes = new Chart(ctx2, {
-        type: 'bar',
-        data: {
-          labels: comptesTreso.map(([c]) => libelleCompte(c).substring(0, 16)),
-          datasets: [
-            { label: 'Entrées', data: comptesTreso.map(([, a]) => a.debit), backgroundColor: 'rgba(34,197,94,.6)', borderRadius: 4 },
-            { label: 'Sorties', data: comptesTreso.map(([, a]) => a.credit), backgroundColor: 'rgba(239,68,68,.6)', borderRadius: 4 },
-          ],
-        },
-        options: {
-          responsive: true, maintainAspectRatio: false, indexAxis: 'y',
-          plugins: { legend: { labels: { color: 'rgba(255,255,255,.7)', font: { size: 10.5 } } } },
-          scales: {
-            x: { ticks: { color: 'rgba(255,255,255,.5)' }, grid: { color: 'rgba(255,255,255,.06)' } },
-            y: { ticks: { color: 'rgba(255,255,255,.5)', font: { size: 10 } }, grid: { display: false } },
-          },
-        },
+      ctx2.parentElement.innerHTML = '<canvas id="ceoChartComptes"></canvas>';
+      draw3DBarChart(document.getElementById('ceoChartComptes'), {
+        labels: comptesTreso.map(([c]) => libelleCompte(c).substring(0, 12)),
+        series: [
+          { name: 'Entrées', color: '#22c55e', data: comptesTreso.map(([, a]) => a.debit) },
+          { name: 'Sorties', color: '#ef4444', data: comptesTreso.map(([, a]) => a.credit) },
+        ],
       });
     }
   }
@@ -4800,7 +4998,6 @@ function renderCompteBanque() {
       : '<div class="empty-state"><p>Aucun mouvement pour l\'instant</p></div>';
   }
 
-  if (!window.Chart) return;
   const buckets = getLast6MonthsBuckets();
   const entreesParMois = buckets.map((b) =>
     (ecritures || []).filter((e) => (e.date || '').startsWith(b.key)).flatMap((e) => e.lignes).filter((l) => l.compte?.[0] === '5').reduce((s, l) => s + (l.debit || 0), 0),
@@ -4811,41 +5008,24 @@ function renderCompteBanque() {
 
   const ctx1 = document.getElementById('cbChartInOut');
   if (ctx1) {
-    if (_cbChartInOut) _cbChartInOut.destroy();
-    _cbChartInOut = new Chart(ctx1, {
-      type: 'bar',
-      data: {
-        labels: buckets.map((b) => b.label),
-        datasets: [
-          { label: 'Entrées', data: entreesParMois, backgroundColor: 'rgba(34,197,94,.6)', borderRadius: 4 },
-          { label: 'Sorties', data: sortiesParMois, backgroundColor: 'rgba(239,68,68,.6)', borderRadius: 4 },
-        ],
-      },
-      options: {
-        responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { labels: { color: 'rgba(255,255,255,.7)', font: { size: 10.5 } } } },
-        scales: {
-          x: { ticks: { color: 'rgba(255,255,255,.5)' }, grid: { display: false } },
-          y: { ticks: { color: 'rgba(255,255,255,.5)' }, grid: { color: 'rgba(255,255,255,.06)' } },
-        },
-      },
+    ctx1.parentElement.innerHTML = '<canvas id="cbChartInOut"></canvas>';
+    draw3DBarChart(document.getElementById('cbChartInOut'), {
+      labels: buckets.map((b) => b.label),
+      series: [
+        { name: 'Entrées', color: '#22c55e', data: entreesParMois },
+        { name: 'Sorties', color: '#ef4444', data: sortiesParMois },
+      ],
     });
   }
 
   const ctx2 = document.getElementById('cbChartRepartition');
   if (ctx2) {
-    if (_cbChartRepartition) _cbChartRepartition.destroy();
     if (comptes.length) {
-      _cbChartRepartition = new Chart(ctx2, {
-        type: 'doughnut',
-        data: {
-          labels: comptes.map(([c]) => libelleCompte(c).substring(0, 18)),
-          datasets: [{ data: comptes.map(([, a]) => Math.abs(a.debit - a.credit)), backgroundColor: ['#d4a853', '#3b82f6', '#22c55e', '#ef4444', '#8b5cf6', '#14b8a6', '#f97316', '#ec4899'] }],
-        },
-        options: {
-          responsive: true, maintainAspectRatio: false,
-          plugins: { legend: { position: 'bottom', labels: { color: 'rgba(255,255,255,.7)', font: { size: 9.5 } } } },
-        },
+      ctx2.parentElement.innerHTML = '<canvas id="cbChartRepartition"></canvas>';
+      draw3DPieChart(document.getElementById('cbChartRepartition'), {
+        labels: comptes.map(([c]) => libelleCompte(c).substring(0, 18)),
+        data: comptes.map(([, a]) => Math.abs(a.debit - a.credit)),
+        colors: ['#d4a853', '#3b82f6', '#22c55e', '#ef4444', '#8b5cf6', '#14b8a6', '#f97316', '#ec4899'],
       });
     } else {
       ctx2.parentElement.innerHTML = '<div class="empty-state"><p>Aucune donnée pour l\'instant</p></div>';
@@ -4853,6 +5033,23 @@ function renderCompteBanque() {
   }
 }
 window.renderCompteBanque = renderCompteBanque;
+window.dessinerGraphiquesCeoDashboard = dessinerGraphiquesCeoDashboard;
+
+// Redessine les graphiques 3D (canvas) au redimensionnement de la fenêtre,
+// puisqu'ils sont dessinés manuellement à une taille fixe et non via une
+// librairie "responsive" automatique.
+let _c3dResizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(_c3dResizeTimer);
+  _c3dResizeTimer = setTimeout(() => {
+    if (document.getElementById('ceoChartCaSolde') || document.getElementById('ceoChartComptes')) {
+      try { dessinerGraphiquesCeoDashboard(); } catch (e) { /* ignore */ }
+    }
+    if (document.getElementById('cbChartInOut') || document.getElementById('cbChartRepartition')) {
+      try { renderCompteBanque(); } catch (e) { /* ignore */ }
+    }
+  }, 200);
+});
 
 // ══════════════════════════════════════════
 // SCAN DE FACTURE PAR IA — OCR + normalisation + transmission
@@ -5080,12 +5277,18 @@ Les montants sont en FCFA, en nombres purs (sans espaces ni symboles).`;
 
 async function confirmerTransmissionFacture() {
   const parseNum = (v) => parseFloat(String(v).replace(/\s/g, '').replace(',', '.')) || 0;
-  const tiers = document.getElementById('sr-tiers').value.trim();
-  const numero = document.getElementById('sr-numero').value.trim();
-  const date = document.getElementById('sr-date').value;
-  const ht = parseNum(document.getElementById('sr-ht').value);
-  const tva = parseNum(document.getElementById('sr-tva').value);
-  const ttc = parseNum(document.getElementById('sr-ttc').value) || (ht + tva);
+  // Sécurité : les champs affichés sont en lecture seule (non éditables par l'utilisateur).
+  // On ne fait pas confiance au DOM pour la transmission — on relit directement le résultat
+  // brut renvoyé par l'IA (scanFactureExtracted), qui est la seule source de vérité, afin
+  // qu'une modification manuelle du DOM (ex: outils développeur) ne puisse pas altérer les
+  // montants réellement transmis.
+  if (!scanFactureExtracted) { toast('Aucune facture analysée à transmettre', 'error'); return; }
+  const tiers = String(scanFactureExtracted.tiers || '').trim();
+  const numero = String(scanFactureExtracted.numero || document.getElementById('sr-numero').value || ('FAC-' + Date.now())).trim();
+  const date = scanFactureExtracted.date || document.getElementById('sr-date').value;
+  const ht = parseNum(scanFactureExtracted.ht);
+  const tva = parseNum(scanFactureExtracted.tva);
+  const ttc = parseNum(scanFactureExtracted.ttc) || (ht + tva);
   if (!tiers) { toast('Le nom du client/fournisseur est requis', 'error'); return; }
 
   const facture = {
