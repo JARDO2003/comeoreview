@@ -4678,15 +4678,40 @@ function getLast6MonthsBuckets() {
 let _ceoChartCaSolde = null;
 let _ceoChartComptes = null;
 
+// Attend que Chart.js soit chargé (jusqu'à ~6s) avant de dessiner, au lieu d'abandonner
+// silencieusement si le CDN est lent, bloqué par une extension, ou hors-ligne au 1er essai.
+// Si Chart.js n'arrive jamais, affiche un message visible plutôt qu'un cadre vide muet.
+function whenChartReady(cb, onGiveUp, tries) {
+  tries = tries || 0;
+  if (window.Chart) { cb(); return; }
+  if (tries > 60) {
+    console.warn('[SYSCOHADA] Chart.js indisponible après 6s — vérifiez que https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js se charge bien (Réseau, bloqueur de pub, extension de confidentialité).');
+    if (onGiveUp) onGiveUp();
+    return;
+  }
+  setTimeout(() => whenChartReady(cb, onGiveUp, tries + 1), 100);
+}
+function afficherChartIndisponible(canvasEl, msg) {
+  if (!canvasEl) return;
+  const wrap = canvasEl.parentElement;
+  if (wrap && !wrap.querySelector('.chart-placeholder-badge')) {
+    wrap.innerHTML = `<div class="empty-state"><p>${msg || 'Graphique indisponible — la bibliothèque Chart.js n\'a pas pu se charger.'}</p></div>`;
+  }
+}
+
 function dessinerGraphiquesCeoDashboard(all) {
-  if (!window.Chart) return; // Chart.js non chargé (ex: hors-ligne) → on n'affiche pas de graphique fictif
-  // Le conteneur .view vient tout juste de passer à display:block : on attend une frame
-  // pour que le canvas ait une taille mesurable, sinon Chart.js dessine un graphe vide.
-  requestAnimationFrame(() => dessinerGraphiquesCeoDashboardImpl(all));
+  whenChartReady(
+    () => requestAnimationFrame(() => dessinerGraphiquesCeoDashboardImpl(all)),
+    () => {
+      afficherChartIndisponible(document.getElementById('ceoChartCaSolde'));
+      afficherChartIndisponible(document.getElementById('ceoChartComptes'));
+    },
+  );
 }
 
 function dessinerGraphiquesCeoDashboardImpl(all) {
   const buckets = getLast6MonthsBuckets();
+
 
   // ── Graphique 1 : CA mensuel + solde de trésorerie cumulé (données réelles issues des écritures) ──
   const caParMois = buckets.map((b) =>
@@ -4858,10 +4883,13 @@ function renderCompteBanque() {
       : '<div class="empty-state"><p>Aucun mouvement pour l\'instant</p></div>';
   }
 
-  if (!window.Chart) return;
-  // Le conteneur .view vient tout juste de passer à display:block : on attend une frame
-  // pour que le canvas ait une taille mesurable, sinon Chart.js dessine un graphe vide.
-  requestAnimationFrame(() => renderCompteBanqueCharts(comptes));
+  whenChartReady(
+    () => requestAnimationFrame(() => renderCompteBanqueCharts(comptes)),
+    () => {
+      afficherChartIndisponible(document.getElementById('cbChartInOut'));
+      afficherChartIndisponible(document.getElementById('cbChartRepartition'));
+    },
+  );
 }
 
 function renderCompteBanqueCharts(comptes) {
