@@ -2022,6 +2022,12 @@ mark.hl { background:rgba(212,168,83,.3); color:var(--warm); border-radius:2px; 
 .scan-modal-box .af-input::placeholder { color:var(--muted); }
 .scan-result-grid .af-input:focus,
 .scan-modal-box .af-input:focus { border-color:var(--warm); background:var(--surface); }
+.scan-result-grid .af-input[readonly] {
+  background:rgba(0,0,0,.035); color:var(--ink); cursor:not-allowed; user-select:text !important;
+  border-style:dashed; border-color:var(--line);
+}
+.scan-result-grid .af-input[readonly]:focus { border-color:var(--line); background:rgba(0,0,0,.035); box-shadow:none; }
+.scan-result-lock-note { display:flex; align-items:center; gap:6px; font-size:10.5px; font-weight:600; color:var(--ink); background:rgba(212,168,83,.12); border:1px solid rgba(212,168,83,.35); border-radius:8px; padding:8px 10px; margin-bottom:12px; line-height:1.5; }
 .scan-result-note { font-size:10.5px; color:var(--muted); line-height:1.5; margin-bottom:14px; }
 .sb-comptable-banner { margin:0 10px 4px; padding:8px 10px; background:rgba(37,99,235,.12); color:var(--blue); border:1px solid rgba(37,99,235,.25); border-radius:8px; font-size:9.5px; font-weight:800; letter-spacing:.12em; text-align:center; }
 
