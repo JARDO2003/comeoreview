@@ -5259,51 +5259,114 @@ function _extraireFactureJSON(content) {
   return null;
 }
 
+/**
+ * Appel Gemini Vision — lit une image de facture DIRECTEMENT (sans passer par
+ * un OCR classique). Bien plus robuste sur les photos floues/mal cadrées
+ * qu'un pipeline OCR + texte, car le modèle "voit" l'image comme un humain
+ * plutôt que de dépendre d'une reconnaissance de caractères imparfaite.
+ */
+async function callGeminiVision(imageDataUrl, systemPrompt, userText, maxTokens = 900, temperature = 0.0) {
+  if (!GEMINI_KEYS.length) return { error: 'no_gemini', msg: '⚠️ Clé Gemini non configurée.' };
+  const m = String(imageDataUrl || '').match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.*)$/);
+  if (!m) return { error: 'bad_image', msg: 'Image invalide.' };
+  const mimeType = m[1], base64Data = m[2];
+
+  for (let i = 0; i < GEMINI_KEYS.length; i++) {
+    try {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEYS[i]}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            role: 'user',
+            parts: [
+              { text: systemPrompt + '\n\n' + userText },
+              { inline_data: { mime_type: mimeType, data: base64Data } },
+            ],
+          }],
+          generationConfig: { temperature, topP: 0.95, maxOutputTokens: maxTokens },
+        }),
+      });
+      if (response.ok) {
+        const data = await response.json();
+        const transformedData = { choices: [{ message: { content: data?.candidates?.[0]?.content?.parts?.[0]?.text || '' } }] };
+        return { data: transformedData, provider: 'gemini-vision' };
+      }
+      if (response.status === 429 || response.status === 401 || response.status === 403) continue;
+    } catch (e) {
+      console.warn('[COMEO Vision] Exception Gemini Vision :', e.message);
+    }
+  }
+  return { error: 'gemini_vision_failed', msg: 'Vision Gemini indisponible.' };
+}
+
 async function analyserFactureScan(imageDataUrl, tentative = 1) {
   const progressText = document.getElementById('scanProgressText');
   const errEl = document.getElementById('scanErr');
   errEl.textContent = '';
   errEl.classList.remove('show');
   try {
-    const img = await _chargerImageDansCanvas(imageDataUrl);
+    // ── ÉTAPE 1 (prioritaire) : lecture DIRECTE de l'image par IA vision ──
+    // Beaucoup plus fiable qu'un OCR classique sur une photo floue/mal cadrée,
+    // car le modèle "regarde" l'image plutôt que de dépendre d'une extraction
+    // de caractères imparfaite. On l'essaie en premier avant l'OCR.
+    if (progressText) progressText.textContent = "L'IA lit directement la photo…";
+    const visionPrompt = `Tu es un module de lecture de factures pour un logiciel comptable SYSCOHADA (Bénin/OHADA). On te montre la PHOTO d'une facture ou d'un ticket, qui peut être floue, mal éclairée, prise de travers, ou de basse qualité.
 
-    // ── PASSE 1 : image contrastée/agrandie — lecture générale (texte + chiffres) ──
-    if (progressText) progressText.textContent = `Analyse approfondie de l'image (passe 1/3)…`;
-    const imgContrast = pretraiterImageOCR(img, 'contrast');
-    const texteGeneral = await _ocrPass(imgContrast, { lang: 'fra' });
+CONSIGNE ABSOLUE : Ne refuse JAMAIS de répondre et ne dis JAMAIS que l'image est illisible. Même si l'image est très floue ou de mauvaise qualité, regarde attentivement les formes, les zones de texte, les tableaux de montants, et donne ta MEILLEURE estimation plausible pour chaque champ, comme le ferait un comptable humain qui doit deviner à partir d'un document abîmé. N'invente pas de valeurs totalement absurdes, mais ne réponds jamais par un refus, une excuse, ou un texte d'explication — uniquement le JSON demandé.
 
-    // ── PASSE 2 : image binarisée — spécialisée sur les tickets/factures nettes ──
-    if (progressText) progressText.textContent = `Analyse approfondie de l'image (passe 2/3)…`;
-    const imgBinaire = pretraiterImageOCR(img, 'binarize');
-    const texteBinaire = await _ocrPass(imgBinaire, { lang: 'fra' });
+RÈGLES POUR LES MONTANTS :
+- Le plus grand montant proche des mots "Total", "TTC", "Net à payer" est presque toujours le TTC.
+- TTC doit être cohérent avec HT + TVA ; si un des trois est illisible, déduis-le des deux autres.
+- Si vraiment aucun chiffre n'est discernable pour un champ, mets 0 pour ce champ précis (mais ne mets pas tout à 0 si au moins une zone de montant est visible).
 
-    // ── PASSE 3 : passe dédiée aux CHIFFRES uniquement (biaise fortement la reconnaissance vers les montants) ──
-    if (progressText) progressText.textContent = `Analyse approfondie de l'image (passe 3/3 — montants)…`;
-    const texteChiffres = await _ocrPass(imgBinaire, { lang: 'fra', whitelist: '0123456789.,%FCFAfcfa ' });
-
-    const rawTextCombine = [
-      '--- LECTURE GÉNÉRALE ---',
-      texteGeneral,
-      '--- LECTURE VERSION CONTRASTÉE (noir/blanc) ---',
-      texteBinaire,
-      '--- LECTURE SPÉCIALISÉE CHIFFRES/MONTANTS (peut contenir du bruit, mais isole les nombres) ---',
-      texteChiffres,
-    ].join('\n');
-
-    if (!texteGeneral.trim() && !texteBinaire.trim() && !texteChiffres.trim()) {
-      if (tentative < 2) {
-        // Aucun texte détecté du tout → on retente automatiquement avec un traitement plus agressif
-        if (progressText) progressText.textContent = 'Aucun texte détecté — nouvelle tentative avec traitement renforcé…';
-        return analyserFactureScan(imageDataUrl, tentative + 1);
-      }
-      throw new Error("Impossible de lire le moindre texte sur cette image. Reprenez la photo avec plus de lumière et en évitant le flou de mouvement.");
+Réponds UNIQUEMENT avec un objet JSON valide (aucun texte avant/après, aucun markdown), avec exactement ces clés :
+{"tiers": string (nom du client ou fournisseur), "numero": string, "date": string (format YYYY-MM-DD, déduis une date plausible si absente), "ht": number, "tva": number, "ttc": number, "confiance": "haute"|"moyenne"|"faible"}
+Les montants sont en FCFA, en nombres purs (sans espaces ni symboles).`;
+    const visionResult = await callGeminiVision(imageDataUrl, visionPrompt, 'Voici la photo de la facture à analyser.', 900, 0.05 * (tentative - 1));
+    let parsed = null;
+    if (visionResult && !visionResult.error) {
+      const visionContent = visionResult.data.choices?.[0]?.message?.content?.trim() || '';
+      parsed = _extraireFactureJSON(visionContent);
+      if (parsed && !parsed.ht && !parsed.tva && !parsed.ttc && !parsed.tiers) parsed = null; // rien d'exploitable
     }
 
-    // ── Normalisation par IA — reconstruit les montants même à partir d'un OCR bruité/flou ──
-    if (progressText) progressText.textContent = "L'IA reconstitue et normalise la facture…";
-    const systemPrompt = `Tu es un module de normalisation de factures pour un logiciel comptable SYSCOHADA (Bénin/OHADA), spécialisé dans la reconstruction de montants à partir d'OCR de mauvaise qualité (photo floue, mal éclairée, angle imparfait).
+    // ── ÉTAPE 2 (repli) : pipeline OCR classique + normalisation IA texte ──
+    // Utilisé seulement si la lecture directe par vision n'a rien donné
+    // d'exploitable (pas de clé Gemini configurée, quota atteint, etc.).
+    if (!parsed) {
+      const img = await _chargerImageDansCanvas(imageDataUrl);
+
+      if (progressText) progressText.textContent = `Analyse approfondie de l'image (passe 1/3)…`;
+      const imgContrast = pretraiterImageOCR(img, 'contrast');
+      const texteGeneral = await _ocrPass(imgContrast, { lang: 'fra' });
+
+      if (progressText) progressText.textContent = `Analyse approfondie de l'image (passe 2/3)…`;
+      const imgBinaire = pretraiterImageOCR(img, 'binarize');
+      const texteBinaire = await _ocrPass(imgBinaire, { lang: 'fra' });
+
+      if (progressText) progressText.textContent = `Analyse approfondie de l'image (passe 3/3 — montants)…`;
+      const texteChiffres = await _ocrPass(imgBinaire, { lang: 'fra', whitelist: '0123456789.,%FCFAfcfa ' });
+
+      const rawTextCombine = [
+        '--- LECTURE GÉNÉRALE ---',
+        texteGeneral,
+        '--- LECTURE VERSION CONTRASTÉE (noir/blanc) ---',
+        texteBinaire,
+        '--- LECTURE SPÉCIALISÉE CHIFFRES/MONTANTS (peut contenir du bruit, mais isole les nombres) ---',
+        texteChiffres,
+      ].join('\n');
+
+      const aOCR = texteGeneral.trim() || texteBinaire.trim() || texteChiffres.trim();
+
+      if (aOCR) {
+        // ── Normalisation par IA — reconstruit les montants même à partir d'un OCR bruité/flou ──
+        if (progressText) progressText.textContent = "L'IA reconstitue et normalise la facture…";
+        const systemPrompt = `Tu es un module de normalisation de factures pour un logiciel comptable SYSCOHADA (Bénin/OHADA), spécialisé dans la reconstruction de montants à partir d'OCR de mauvaise qualité (photo floue, mal éclairée, angle imparfait).
 
 On te donne TROIS lectures OCR de la MÊME facture (une lecture générale, une version contrastée, et une version spécialisée chiffres). Elles peuvent chacune contenir des erreurs différentes — utilise-les ensemble pour reconstituer le texte réel le plus probable, comme un expert qui recoupe plusieurs indices imparfaits.
+
+CONSIGNE ABSOLUE : Ne réponds JAMAIS par un refus ou une excuse, même si les trois lectures sont très bruitées/incohérentes — donne toujours ta meilleure estimation plausible avec "confiance":"faible" plutôt que de refuser.
 
 RÈGLES IMPORTANTES POUR LES MONTANTS :
 - Ne rends JAMAIS 0 pour un montant si le texte contient des chiffres à proximité de mots comme "Total", "TTC", "Net à payer", "Montant", "HT", "TVA" — dans ce cas, reconstitue ta meilleure estimation plausible plutôt que de mettre 0.
@@ -5314,30 +5377,32 @@ RÈGLES IMPORTANTES POUR LES MONTANTS :
 Réponds UNIQUEMENT avec un objet JSON valide (aucun texte avant/après, aucun markdown), avec exactement ces clés :
 {"tiers": string (nom du client ou fournisseur), "numero": string, "date": string (format YYYY-MM-DD, déduis une date plausible si absente), "ht": number, "tva": number, "ttc": number, "confiance": "haute"|"moyenne"|"faible"}
 Les montants sont en FCFA, en nombres purs (sans espaces ni symboles).`;
-    const result = await callGroqQueued(
-      [{ role: 'user', content: `Voici les 3 lectures OCR de la facture :\n\n${rawTextCombine}` }],
-      systemPrompt,
-      900,
-      0.0,
-    );
-    if (!result || result.error) {
-      throw new Error(result?.msg || "L'IA n'a pas pu normaliser la facture. Réessayez.");
-    }
-    const content = result.data.choices?.[0]?.message?.content?.trim() || '';
-    const parsed = _extraireFactureJSON(content);
-    if (!parsed) {
-      // Réponse IA non exploitable (JSON tronqué/mal formé) → on retente automatiquement
-      // avant d'ennuyer l'utilisateur avec un message d'erreur.
-      if (tentative < 2) {
-        if (progressText) progressText.textContent = 'Réponse IA illisible — nouvelle tentative…';
-        return analyserFactureScan(imageDataUrl, tentative + 1);
+        const result = await callGroqQueued(
+          [{ role: 'user', content: `Voici les 3 lectures OCR de la facture :\n\n${rawTextCombine}` }],
+          systemPrompt,
+          900,
+          0.0,
+        );
+        if (result && !result.error) {
+          const content = result.data.choices?.[0]?.message?.content?.trim() || '';
+          parsed = _extraireFactureJSON(content);
+        }
       }
-      throw new Error("L'IA n'a pas réussi à lire cette facture après plusieurs tentatives. Essayez une photo plus nette et bien cadrée, ou vérifiez votre connexion.");
     }
 
-    // Si tout est resté à 0 malgré la présence de texte → on retente une fois avec traitement renforcé
+    if (!parsed) {
+      // Ni la vision, ni l'OCR n'ont produit de résultat exploitable → on retente
+      // (jusqu'à 3 tentatives au total) avant d'informer l'utilisateur.
+      if (tentative < 3) {
+        if (progressText) progressText.textContent = 'Lecture difficile — nouvelle tentative avec traitement renforcé…';
+        return analyserFactureScan(imageDataUrl, tentative + 1);
+      }
+      throw new Error("Impossible de lire cette facture même après plusieurs tentatives. Reprenez la photo avec plus de lumière, à plat et sans flou de mouvement.");
+    }
+
+    // Si tout est resté à 0 malgré une lecture partielle → on retente une fois avec traitement renforcé
     const toutAZero = !parsed.ht && !parsed.tva && !parsed.ttc;
-    if (toutAZero && tentative < 2) {
+    if (toutAZero && tentative < 3) {
       if (progressText) progressText.textContent = 'Montants non détectés — nouvelle tentative avec traitement renforcé…';
       return analyserFactureScan(imageDataUrl, tentative + 1);
     }
@@ -5349,6 +5414,7 @@ Les montants sont en FCFA, en nombres purs (sans espaces ni symboles).`;
     document.getElementById('sr-ht').value = parsed.ht || 0;
     document.getElementById('sr-tva').value = parsed.tva || 0;
     document.getElementById('sr-ttc').value = parsed.ttc || (Number(parsed.ht || 0) + Number(parsed.tva || 0));
+
 
     document.getElementById('scanStepPreview').style.display = 'none';
     document.getElementById('scanStepResult').style.display = 'block';
