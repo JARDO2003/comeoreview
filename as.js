@@ -4752,15 +4752,33 @@ function _c3dBar(ctx, x, y, w, h, color, ext) {
   ctx.fillStyle = side;
   ctx.fill();
 }
+const _c3dAnimFrames = {};
+function _c3dAnimate(canvas, duration, renderFn) {
+  const key = canvas.id || canvas;
+  if (_c3dAnimFrames[key]) cancelAnimationFrame(_c3dAnimFrames[key]);
+  const t0 = performance.now();
+  const step = (now) => {
+    const p = Math.min(1, (now - t0) / duration);
+    const eased = 1 - Math.pow(1 - p, 3); // ease-out cubic — donne l'impression de "profondeur qui se déploie"
+    renderFn(eased);
+    if (p < 1) _c3dAnimFrames[key] = requestAnimationFrame(step);
+    else delete _c3dAnimFrames[key];
+  };
+  _c3dAnimFrames[key] = requestAnimationFrame(step);
+}
 // draw3DBarChart(canvas, { labels, series:[{name,color,data}] })
+// Le graphique est TOUJOURS dessiné (chassis + axes + légende), même sans
+// aucune donnée — un état "vide" affiche juste les colonnes à zéro plutôt
+// que de faire disparaître le graphique. L'apparition des barres est animée
+// (croissance depuis la base) pour un rendu vivant, en mouvement.
 function draw3DBarChart(canvas, opts) {
   if (!canvas) return;
   const { labels = [], series = [] } = opts || {};
-  const wrap = canvas.parentElement;
-  if (!labels.length || !series.length || !series.some((s) => (s.data || []).some((v) => v))) {
-    wrap.innerHTML = '<div class="empty-state"><p>Aucune donnée pour l\'instant</p></div>';
+  if (!labels.length || !series.length) {
+    canvas.parentElement.innerHTML = '<div class="empty-state"><p>Aucune donnée pour l\'instant</p></div>';
     return;
   }
+  const hasData = series.some((s) => (s.data || []).some((v) => v));
   const { ctx, cssW, cssH } = _c3dSetupCanvas(canvas);
   const EXT = 6;
   const SDEPTH = 14;
@@ -4774,125 +4792,144 @@ function draw3DBarChart(canvas, opts) {
   let maxV = 0;
   series.forEach((s) => (s.data || []).forEach((v) => { if (v > maxV) maxV = v; }));
   const niceMax = _c3dNiceMax(maxV);
-
-  ctx.font = '10px sans-serif';
-  ctx.strokeStyle = 'rgba(255,255,255,.07)';
-  ctx.fillStyle = 'rgba(255,255,255,.5)';
-  ctx.textAlign = 'right';
-  ctx.textBaseline = 'middle';
-  for (let i = 0; i <= 4; i++) {
-    const v = (niceMax * i) / 4;
-    const y = padT + plotH - (v / niceMax) * plotH;
-    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
-    ctx.fillText(_c3dCompact(v), padL - 6, y);
-  }
-
   const groupW = plotW / nCat;
   const barW = Math.min(30, groupW * 0.5);
-  for (let s = nSer - 1; s >= 0; s--) {
-    const dx = (nSer - 1 - s) * SDEPTH * 0.6;
-    const dy = -(nSer - 1 - s) * SDEPTH * 0.5;
-    const color = series[s].color;
-    (series[s].data || []).forEach((v, i) => {
-      const h = (v / niceMax) * plotH;
-      const x = padL + i * groupW + (groupW - barW) / 2 + dx;
-      const y = padT + plotH - h + dy;
-      _c3dBar(ctx, x, y, barW, h, color, EXT);
+
+  _c3dAnimate(canvas, hasData ? 650 : 1, (progress) => {
+    ctx.clearRect(0, 0, cssW, cssH);
+
+    ctx.font = '10px sans-serif';
+    ctx.strokeStyle = 'rgba(255,255,255,.07)';
+    ctx.fillStyle = 'rgba(255,255,255,.5)';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    for (let i = 0; i <= 4; i++) {
+      const v = (niceMax * i) / 4;
+      const y = padT + plotH - (v / niceMax) * plotH;
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
+      ctx.fillText(_c3dCompact(v), padL - 6, y);
+    }
+
+    for (let s = nSer - 1; s >= 0; s--) {
+      const dx = (nSer - 1 - s) * SDEPTH * 0.6;
+      const dy = -(nSer - 1 - s) * SDEPTH * 0.5;
+      const color = series[s].color;
+      (series[s].data || []).forEach((v, i) => {
+        const h = (v / niceMax) * plotH * progress;
+        const x = padL + i * groupW + (groupW - barW) / 2 + dx;
+        const y = padT + plotH - h + dy;
+        _c3dBar(ctx, x, y, barW, h, color, EXT);
+      });
+    }
+
+    ctx.fillStyle = 'rgba(255,255,255,.55)';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    labels.forEach((lb, i) => {
+      const x = padL + i * groupW + groupW / 2;
+      ctx.fillText(String(lb).substring(0, 10), x, padT + plotH + 6);
     });
-  }
 
-  ctx.fillStyle = 'rgba(255,255,255,.55)';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'top';
-  labels.forEach((lb, i) => {
-    const x = padL + i * groupW + groupW / 2;
-    ctx.fillText(String(lb).substring(0, 10), x, padT + plotH + 6);
-  });
+    let lx = padL;
+    const ly = cssH - legendH / 2;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    series.forEach((s) => {
+      ctx.fillStyle = s.color;
+      ctx.fillRect(lx, ly - 5, 10, 10);
+      ctx.fillStyle = 'rgba(255,255,255,.65)';
+      ctx.fillText(s.name, lx + 15, ly);
+      lx += 15 + ctx.measureText(s.name).width + 18;
+    });
 
-  let lx = padL;
-  const ly = cssH - legendH / 2;
-  ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-  series.forEach((s) => {
-    ctx.fillStyle = s.color;
-    ctx.fillRect(lx, ly - 5, 10, 10);
-    ctx.fillStyle = 'rgba(255,255,255,.65)';
-    ctx.fillText(s.name, lx + 15, ly);
-    lx += 15 + ctx.measureText(s.name).width + 18;
+    if (!hasData) {
+      ctx.fillStyle = 'rgba(255,255,255,.4)';
+      ctx.font = '11px sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('Aucun mouvement pour l\'instant', padL + plotW / 2, padT + plotH / 2);
+    }
   });
 }
 // draw3DPieChart(canvas, { labels, data, colors })
+// Toujours dessiné : si aucune donnée n'existe, un disque neutre "vide" est
+// affiché plutôt que de masquer le graphique. L'apparition des parts est
+// animée en balayage (comme une révélation dans le temps → effet "4D").
 function draw3DPieChart(canvas, opts) {
   if (!canvas) return;
   const { labels = [], data = [], colors = [] } = opts || {};
-  const wrap = canvas.parentElement;
   const total = data.reduce((s, v) => s + Math.abs(v), 0);
-  if (!total) {
-    wrap.innerHTML = '<div class="empty-state"><p>Aucune donnée pour l\'instant</p></div>';
-    return;
-  }
+  const hasData = total > 0;
   const { ctx, cssW, cssH } = _c3dSetupCanvas(canvas);
-  const legendRows = Math.ceil(labels.length / 2);
+  const displayLabels = hasData ? labels : ['Aucune donnée'];
+  const displayColors = hasData ? colors : ['rgba(255,255,255,.12)'];
+  const legendRows = Math.ceil(displayLabels.length / 2);
   const legendH = 18 * legendRows + 8;
   const depth = 16;
   const cx = cssW / 2;
   const plotH = cssH - legendH;
-  const cy = padTop(plotH, depth);
   const rx = Math.min(cssW * 0.34, (plotH - depth) * 0.62);
   const ry = rx * 0.55;
-  function padTop(h, d) { return Math.min(h - ry - d - 4, h * 0.42) + ry; }
+  const cy = Math.min(plotH - ry - depth - 4, plotH * 0.42) + ry;
 
-  const slices = data.map((v, i) => ({ v: Math.abs(v), color: colors[i % colors.length], label: labels[i] }));
-  let start = -Math.PI / 2;
-  const arcs = slices.map((s) => {
-    const angle = (s.v / total) * Math.PI * 2;
-    const a = { ...s, start, end: start + angle };
-    start += angle;
-    return a;
-  });
+  const slices = hasData
+    ? data.map((v, i) => ({ v: Math.abs(v), color: colors[i % colors.length], label: labels[i] }))
+    : [{ v: 1, color: displayColors[0], label: displayLabels[0] }];
+  const sliceTotal = slices.reduce((s, a) => s + a.v, 0) || 1;
 
-  // Face latérale (épaisseur du "disque") — dessinée avant le dessus
-  ctx.fillStyle = 'rgba(0,0,0,.28)';
-  ctx.beginPath();
-  ctx.ellipse(cx, cy + depth, rx, ry, 0, 0, Math.PI);
-  ctx.lineTo(cx + rx, cy);
-  ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI, true);
-  ctx.closePath();
-  ctx.fill();
-  arcs.forEach((a) => {
-    if (a.end - a.start < 0.005) return;
+  _c3dAnimate(canvas, hasData ? 650 : 1, (progress) => {
+    ctx.clearRect(0, 0, cssW, cssH);
+    const sweep = Math.PI * 2 * progress;
+    let start = -Math.PI / 2;
+    const arcs = [];
+    for (const s of slices) {
+      const full = (s.v / sliceTotal) * Math.PI * 2;
+      const angle = Math.max(0, Math.min(full, sweep - (start + Math.PI / 2)));
+      if (angle > 0.002) arcs.push({ ...s, start, end: start + angle });
+      start += full;
+      if (start + Math.PI / 2 >= sweep) break;
+    }
+
+    ctx.fillStyle = 'rgba(0,0,0,.28)';
     ctx.beginPath();
-    ctx.moveTo(cx + rx * Math.cos(a.start), cy + ry * Math.sin(a.start));
-    for (let t = a.start; t <= a.end; t += 0.05) ctx.lineTo(cx + rx * Math.cos(t), cy + ry * Math.sin(t));
-    ctx.lineTo(cx + rx * Math.cos(a.end), cy + ry * Math.sin(a.end) + depth);
-    for (let t = a.end; t >= a.start; t -= 0.05) ctx.lineTo(cx + rx * Math.cos(t), cy + ry * Math.sin(t) + depth);
+    ctx.ellipse(cx, cy + depth, rx, ry, 0, 0, Math.PI);
+    ctx.lineTo(cx + rx, cy);
+    ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI, true);
     ctx.closePath();
-    ctx.fillStyle = _c3dShade(a.color, -0.35);
     ctx.fill();
-  });
+    arcs.forEach((a) => {
+      if (a.end - a.start < 0.005) return;
+      ctx.beginPath();
+      ctx.moveTo(cx + rx * Math.cos(a.start), cy + ry * Math.sin(a.start));
+      for (let t = a.start; t <= a.end; t += 0.05) ctx.lineTo(cx + rx * Math.cos(t), cy + ry * Math.sin(t));
+      ctx.lineTo(cx + rx * Math.cos(a.end), cy + ry * Math.sin(a.end) + depth);
+      for (let t = a.end; t >= a.start; t -= 0.05) ctx.lineTo(cx + rx * Math.cos(t), cy + ry * Math.sin(t) + depth);
+      ctx.closePath();
+      ctx.fillStyle = _c3dShade(a.color, -0.35);
+      ctx.fill();
+    });
 
-  // Dessus du disque (les parts, vues du dessus)
-  arcs.forEach((a) => {
-    ctx.beginPath();
-    ctx.moveTo(cx, cy);
-    ctx.ellipse(cx, cy, rx, ry, 0, a.start, a.end);
-    ctx.closePath();
-    ctx.fillStyle = a.color;
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(0,0,0,.15)';
-    ctx.lineWidth = 1;
-    ctx.stroke();
-  });
+    arcs.forEach((a) => {
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.ellipse(cx, cy, rx, ry, 0, a.start, a.end);
+      ctx.closePath();
+      ctx.fillStyle = a.color;
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,.15)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    });
 
-  const lyy = cssH - legendH + 6;
-  const colW = cssW / 2;
-  labels.forEach((lb, i) => {
-    const bx = 8 + (i % 2) * colW;
-    const by = lyy + Math.floor(i / 2) * 18;
-    ctx.fillStyle = colors[i % colors.length];
-    ctx.fillRect(bx, by + 2, 9, 9);
-    ctx.fillStyle = 'rgba(255,255,255,.65)';
-    ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.font = '9.5px sans-serif';
-    ctx.fillText(String(lb).substring(0, 16), bx + 13, by);
+    const lyy = cssH - legendH + 6;
+    const colW = cssW / 2;
+    displayLabels.forEach((lb, i) => {
+      const bx = 8 + (i % 2) * colW;
+      const by = lyy + Math.floor(i / 2) * 18;
+      ctx.fillStyle = displayColors[i % displayColors.length];
+      ctx.fillRect(bx, by + 2, 9, 9);
+      ctx.fillStyle = 'rgba(255,255,255,.65)';
+      ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.font = '9.5px sans-serif';
+      ctx.fillText(String(lb).substring(0, 16), bx + 13, by);
+    });
   });
 }
 
@@ -4934,21 +4971,19 @@ function dessinerGraphiquesCeoDashboard(all) {
 
   // ── Graphique 2 : mouvements par compte de trésorerie (classe 5) — débit vs crédit réels ──
   const map = getMap();
-  const comptesTreso = Object.entries(map).filter(([c]) => c.startsWith('5')).slice(0, 8);
+  let comptesTreso = Object.entries(map).filter(([c]) => c.startsWith('5')).slice(0, 8);
   const ctx2 = document.getElementById('ceoChartComptes');
   if (ctx2) {
-    if (!comptesTreso.length) {
-      ctx2.parentElement.innerHTML = '<div class="empty-state"><p>Aucun mouvement de compte pour l\'instant</p></div>';
-    } else {
-      ctx2.parentElement.innerHTML = '<canvas id="ceoChartComptes"></canvas>';
-      draw3DBarChart(document.getElementById('ceoChartComptes'), {
-        labels: comptesTreso.map(([c]) => libelleCompte(c).substring(0, 12)),
-        series: [
-          { name: 'Entrées', color: '#22c55e', data: comptesTreso.map(([, a]) => a.debit) },
-          { name: 'Sorties', color: '#ef4444', data: comptesTreso.map(([, a]) => a.credit) },
-        ],
-      });
-    }
+    ctx2.parentElement.innerHTML = '<canvas id="ceoChartComptes"></canvas>';
+    const placeholder = !comptesTreso.length;
+    if (placeholder) comptesTreso = [['5xx', { debit: 0, credit: 0 }]]; // chassis vide affiché quand même
+    draw3DBarChart(document.getElementById('ceoChartComptes'), {
+      labels: placeholder ? ['—'] : comptesTreso.map(([c]) => libelleCompte(c).substring(0, 12)),
+      series: [
+        { name: 'Entrées', color: '#22c55e', data: comptesTreso.map(([, a]) => a.debit) },
+        { name: 'Sorties', color: '#ef4444', data: comptesTreso.map(([, a]) => a.credit) },
+      ],
+    });
   }
 }
 
@@ -5020,16 +5055,12 @@ function renderCompteBanque() {
 
   const ctx2 = document.getElementById('cbChartRepartition');
   if (ctx2) {
-    if (comptes.length) {
-      ctx2.parentElement.innerHTML = '<canvas id="cbChartRepartition"></canvas>';
-      draw3DPieChart(document.getElementById('cbChartRepartition'), {
-        labels: comptes.map(([c]) => libelleCompte(c).substring(0, 18)),
-        data: comptes.map(([, a]) => Math.abs(a.debit - a.credit)),
-        colors: ['#d4a853', '#3b82f6', '#22c55e', '#ef4444', '#8b5cf6', '#14b8a6', '#f97316', '#ec4899'],
-      });
-    } else {
-      ctx2.parentElement.innerHTML = '<div class="empty-state"><p>Aucune donnée pour l\'instant</p></div>';
-    }
+    ctx2.parentElement.innerHTML = '<canvas id="cbChartRepartition"></canvas>';
+    draw3DPieChart(document.getElementById('cbChartRepartition'), {
+      labels: comptes.map(([c]) => libelleCompte(c).substring(0, 18)),
+      data: comptes.map(([, a]) => Math.abs(a.debit - a.credit)),
+      colors: ['#d4a853', '#3b82f6', '#22c55e', '#ef4444', '#8b5cf6', '#14b8a6', '#f97316', '#ec4899'],
+    });
   }
 }
 window.renderCompteBanque = renderCompteBanque;
@@ -5182,6 +5213,52 @@ async function _ocrPass(dataUrl, config) {
   }
 }
 
+// Extraction robuste du JSON renvoyé par l'IA pour la normalisation de facture.
+// Tolère : balises ```json, texte parasite avant/après, virgules traînantes,
+// et en dernier recours reconstruit l'objet champ par champ par regex plutôt
+// que d'échouer complètement (une réponse partiellement lisible vaut mieux
+// que de bloquer l'utilisateur avec "Réponse IA illisible").
+function _extraireFactureJSON(content) {
+  if (!content) return null;
+  const clean = content.replace(/```json/gi, '').replace(/```/g, '').trim();
+
+  const tryParse = (s) => { try { return JSON.parse(s); } catch (_) { return null; } };
+
+  let out = tryParse(clean);
+  if (out) return out;
+
+  const first = clean.indexOf('{');
+  const last = clean.lastIndexOf('}');
+  if (first !== -1 && last > first) {
+    const sub = clean.slice(first, last + 1);
+    out = tryParse(sub) || tryParse(sub.replace(/,\s*([}\]])/g, '$1'));
+    if (out) return out;
+  }
+
+  // Dernier recours : extraction champ par champ (réponse tronquée/mal formée)
+  const grabStr = (key) => {
+    const m = clean.match(new RegExp('"' + key + '"\\s*:\\s*"([^"]*)"', 'i'));
+    return m ? m[1] : undefined;
+  };
+  const grabNum = (key) => {
+    const m = clean.match(new RegExp('"' + key + '"\\s*:\\s*"?(-?[0-9]+(?:[.,][0-9]+)?)"?', 'i'));
+    return m ? Number(m[1].replace(',', '.')) : undefined;
+  };
+  const ht = grabNum('ht'), tva = grabNum('tva'), ttc = grabNum('ttc'), tiers = grabStr('tiers');
+  if (ht !== undefined || tva !== undefined || ttc !== undefined || tiers !== undefined) {
+    return {
+      tiers: tiers || '',
+      numero: grabStr('numero') || '',
+      date: grabStr('date') || '',
+      ht: ht || 0,
+      tva: tva || 0,
+      ttc: ttc || 0,
+      confiance: grabStr('confiance') || 'faible',
+    };
+  }
+  return null;
+}
+
 async function analyserFactureScan(imageDataUrl, tentative = 1) {
   const progressText = document.getElementById('scanProgressText');
   const errEl = document.getElementById('scanErr');
@@ -5240,16 +5317,23 @@ Les montants sont en FCFA, en nombres purs (sans espaces ni symboles).`;
     const result = await callGroqQueued(
       [{ role: 'user', content: `Voici les 3 lectures OCR de la facture :\n\n${rawTextCombine}` }],
       systemPrompt,
-      600,
+      900,
       0.0,
     );
     if (!result || result.error) {
       throw new Error(result?.msg || "L'IA n'a pas pu normaliser la facture. Réessayez.");
     }
     const content = result.data.choices?.[0]?.message?.content?.trim() || '';
-    const jsonMatch = content.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error("Réponse IA illisible. Réessayez.");
-    const parsed = JSON.parse(jsonMatch[0]);
+    const parsed = _extraireFactureJSON(content);
+    if (!parsed) {
+      // Réponse IA non exploitable (JSON tronqué/mal formé) → on retente automatiquement
+      // avant d'ennuyer l'utilisateur avec un message d'erreur.
+      if (tentative < 2) {
+        if (progressText) progressText.textContent = 'Réponse IA illisible — nouvelle tentative…';
+        return analyserFactureScan(imageDataUrl, tentative + 1);
+      }
+      throw new Error("L'IA n'a pas réussi à lire cette facture après plusieurs tentatives. Essayez une photo plus nette et bien cadrée, ou vérifiez votre connexion.");
+    }
 
     // Si tout est resté à 0 malgré la présence de texte → on retente une fois avec traitement renforcé
     const toutAZero = !parsed.ht && !parsed.tva && !parsed.ttc;
