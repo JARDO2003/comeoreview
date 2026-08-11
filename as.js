@@ -4675,268 +4675,11 @@ function getLast6MonthsBuckets() {
   return buckets;
 }
 
-// ══════════════════════════════════════════
-// GRAPHIQUES 3D (canvas, sans dépendance externe) — style "colonnes 3D" à
-// l'ancienne façon Excel : chaque barre a un volume (face avant + dessus +
-// côté) et chaque série s'étage en profondeur pour un rendu type trading.
-// ══════════════════════════════════════════
-function _c3dRGB(c) {
-  if (!c) return [200, 200, 200];
-  if (c[0] === '#') {
-    let hex = c.slice(1);
-    if (hex.length === 3) hex = hex.split('').map((x) => x + x).join('');
-    const num = parseInt(hex, 16);
-    return [(num >> 16) & 255, (num >> 8) & 255, num & 255];
-  }
-  const m = c.match(/rgba?\(([^)]+)\)/);
-  if (m) {
-    const p = m[1].split(',').map((s) => parseFloat(s));
-    return [p[0], p[1], p[2]];
-  }
-  return [200, 200, 200];
-}
-function _c3dShade(c, factor) {
-  const [r, g, b] = _c3dRGB(c);
-  const adj = (v) => Math.max(0, Math.min(255, Math.round(v + (factor > 0 ? (255 - v) * factor : v * factor))));
-  return `rgb(${adj(r)},${adj(g)},${adj(b)})`;
-}
-function _c3dCompact(v) {
-  const abs = Math.abs(v);
-  if (abs >= 1e6) return (v / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
-  if (abs >= 1e3) return (v / 1e3).toFixed(0) + 'k';
-  return String(Math.round(v));
-}
-function _c3dNiceMax(v) {
-  if (v <= 0) return 1;
-  const exp = Math.floor(Math.log10(v));
-  const base = Math.pow(10, exp);
-  const n = v / base;
-  let nice;
-  if (n <= 1) nice = 1; else if (n <= 2) nice = 2; else if (n <= 5) nice = 5; else nice = 10;
-  return nice * base;
-}
-function _c3dSetupCanvas(canvas) {
-  const wrap = canvas.parentElement;
-  const cssW = Math.max(wrap.clientWidth, 60);
-  const cssH = Math.max(wrap.clientHeight, 60);
-  const dpr = window.devicePixelRatio || 1;
-  canvas.width = cssW * dpr;
-  canvas.height = cssH * dpr;
-  canvas.style.width = cssW + 'px';
-  canvas.style.height = cssH + 'px';
-  const ctx = canvas.getContext('2d');
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, cssW, cssH);
-  return { ctx, cssW, cssH };
-}
-function _c3dBar(ctx, x, y, w, h, color, ext) {
-  if (h < 0.5) return;
-  const top = _c3dShade(color, 0.32);
-  const side = _c3dShade(color, -0.28);
-  ctx.fillStyle = color;
-  ctx.fillRect(x, y, w, h);
-  ctx.beginPath();
-  ctx.moveTo(x, y);
-  ctx.lineTo(x + ext * 0.72, y - ext);
-  ctx.lineTo(x + w + ext * 0.72, y - ext);
-  ctx.lineTo(x + w, y);
-  ctx.closePath();
-  ctx.fillStyle = top;
-  ctx.fill();
-  ctx.beginPath();
-  ctx.moveTo(x + w, y);
-  ctx.lineTo(x + w + ext * 0.72, y - ext);
-  ctx.lineTo(x + w + ext * 0.72, y - ext + h);
-  ctx.lineTo(x + w, y + h);
-  ctx.closePath();
-  ctx.fillStyle = side;
-  ctx.fill();
-}
-const _c3dAnimFrames = {};
-function _c3dAnimate(canvas, duration, renderFn) {
-  const key = canvas.id || canvas;
-  if (_c3dAnimFrames[key]) cancelAnimationFrame(_c3dAnimFrames[key]);
-  const t0 = performance.now();
-  const step = (now) => {
-    const p = Math.min(1, (now - t0) / duration);
-    const eased = 1 - Math.pow(1 - p, 3); // ease-out cubic — donne l'impression de "profondeur qui se déploie"
-    renderFn(eased);
-    if (p < 1) _c3dAnimFrames[key] = requestAnimationFrame(step);
-    else delete _c3dAnimFrames[key];
-  };
-  _c3dAnimFrames[key] = requestAnimationFrame(step);
-}
-// draw3DBarChart(canvas, { labels, series:[{name,color,data}] })
-// Le graphique est TOUJOURS dessiné (chassis + axes + légende), même sans
-// aucune donnée — un état "vide" affiche juste les colonnes à zéro plutôt
-// que de faire disparaître le graphique. L'apparition des barres est animée
-// (croissance depuis la base) pour un rendu vivant, en mouvement.
-function draw3DBarChart(canvas, opts) {
-  if (!canvas) return;
-  const { labels = [], series = [] } = opts || {};
-  if (!labels.length || !series.length) {
-    canvas.parentElement.innerHTML = '<div class="empty-state"><p>Aucune donnée pour l\'instant</p></div>';
-    return;
-  }
-  const hasData = series.some((s) => (s.data || []).some((v) => v));
-  const { ctx, cssW, cssH } = _c3dSetupCanvas(canvas);
-  const EXT = 6;
-  const SDEPTH = 14;
-  const nCat = labels.length, nSer = series.length;
-  const shiftX = (nSer - 1) * SDEPTH * 0.6;
-  const shiftY = (nSer - 1) * SDEPTH * 0.5;
-  const legendH = 20;
-  const padL = 40, padR = 12 + shiftX + EXT, padT = 10 + shiftY + EXT, padB = 26;
-  const plotW = cssW - padL - padR;
-  const plotH = cssH - padT - padB - legendH;
-  let maxV = 0;
-  series.forEach((s) => (s.data || []).forEach((v) => { if (v > maxV) maxV = v; }));
-  const niceMax = _c3dNiceMax(maxV);
-  const groupW = plotW / nCat;
-  const barW = Math.min(30, groupW * 0.5);
-
-  _c3dAnimate(canvas, hasData ? 650 : 1, (progress) => {
-    ctx.clearRect(0, 0, cssW, cssH);
-
-    ctx.font = '10px sans-serif';
-    ctx.strokeStyle = 'rgba(255,255,255,.07)';
-    ctx.fillStyle = 'rgba(255,255,255,.5)';
-    ctx.textAlign = 'right';
-    ctx.textBaseline = 'middle';
-    for (let i = 0; i <= 4; i++) {
-      const v = (niceMax * i) / 4;
-      const y = padT + plotH - (v / niceMax) * plotH;
-      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
-      ctx.fillText(_c3dCompact(v), padL - 6, y);
-    }
-
-    for (let s = nSer - 1; s >= 0; s--) {
-      const dx = (nSer - 1 - s) * SDEPTH * 0.6;
-      const dy = -(nSer - 1 - s) * SDEPTH * 0.5;
-      const color = series[s].color;
-      (series[s].data || []).forEach((v, i) => {
-        const h = (v / niceMax) * plotH * progress;
-        const x = padL + i * groupW + (groupW - barW) / 2 + dx;
-        const y = padT + plotH - h + dy;
-        _c3dBar(ctx, x, y, barW, h, color, EXT);
-      });
-    }
-
-    ctx.fillStyle = 'rgba(255,255,255,.55)';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'top';
-    labels.forEach((lb, i) => {
-      const x = padL + i * groupW + groupW / 2;
-      ctx.fillText(String(lb).substring(0, 10), x, padT + plotH + 6);
-    });
-
-    let lx = padL;
-    const ly = cssH - legendH / 2;
-    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-    series.forEach((s) => {
-      ctx.fillStyle = s.color;
-      ctx.fillRect(lx, ly - 5, 10, 10);
-      ctx.fillStyle = 'rgba(255,255,255,.65)';
-      ctx.fillText(s.name, lx + 15, ly);
-      lx += 15 + ctx.measureText(s.name).width + 18;
-    });
-
-    if (!hasData) {
-      ctx.fillStyle = 'rgba(255,255,255,.4)';
-      ctx.font = '11px sans-serif';
-      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText('Aucun mouvement pour l\'instant', padL + plotW / 2, padT + plotH / 2);
-    }
-  });
-}
-// draw3DPieChart(canvas, { labels, data, colors })
-// Toujours dessiné : si aucune donnée n'existe, un disque neutre "vide" est
-// affiché plutôt que de masquer le graphique. L'apparition des parts est
-// animée en balayage (comme une révélation dans le temps → effet "4D").
-function draw3DPieChart(canvas, opts) {
-  if (!canvas) return;
-  const { labels = [], data = [], colors = [] } = opts || {};
-  const total = data.reduce((s, v) => s + Math.abs(v), 0);
-  const hasData = total > 0;
-  const { ctx, cssW, cssH } = _c3dSetupCanvas(canvas);
-  const displayLabels = hasData ? labels : ['Aucune donnée'];
-  const displayColors = hasData ? colors : ['rgba(255,255,255,.12)'];
-  const legendRows = Math.ceil(displayLabels.length / 2);
-  const legendH = 18 * legendRows + 8;
-  const depth = 16;
-  const cx = cssW / 2;
-  const plotH = cssH - legendH;
-  const rx = Math.min(cssW * 0.34, (plotH - depth) * 0.62);
-  const ry = rx * 0.55;
-  const cy = Math.min(plotH - ry - depth - 4, plotH * 0.42) + ry;
-
-  const slices = hasData
-    ? data.map((v, i) => ({ v: Math.abs(v), color: colors[i % colors.length], label: labels[i] }))
-    : [{ v: 1, color: displayColors[0], label: displayLabels[0] }];
-  const sliceTotal = slices.reduce((s, a) => s + a.v, 0) || 1;
-
-  _c3dAnimate(canvas, hasData ? 650 : 1, (progress) => {
-    ctx.clearRect(0, 0, cssW, cssH);
-    const sweep = Math.PI * 2 * progress;
-    let start = -Math.PI / 2;
-    const arcs = [];
-    for (const s of slices) {
-      const full = (s.v / sliceTotal) * Math.PI * 2;
-      const angle = Math.max(0, Math.min(full, sweep - (start + Math.PI / 2)));
-      if (angle > 0.002) arcs.push({ ...s, start, end: start + angle });
-      start += full;
-      if (start + Math.PI / 2 >= sweep) break;
-    }
-
-    ctx.fillStyle = 'rgba(0,0,0,.28)';
-    ctx.beginPath();
-    ctx.ellipse(cx, cy + depth, rx, ry, 0, 0, Math.PI);
-    ctx.lineTo(cx + rx, cy);
-    ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI, true);
-    ctx.closePath();
-    ctx.fill();
-    arcs.forEach((a) => {
-      if (a.end - a.start < 0.005) return;
-      ctx.beginPath();
-      ctx.moveTo(cx + rx * Math.cos(a.start), cy + ry * Math.sin(a.start));
-      for (let t = a.start; t <= a.end; t += 0.05) ctx.lineTo(cx + rx * Math.cos(t), cy + ry * Math.sin(t));
-      ctx.lineTo(cx + rx * Math.cos(a.end), cy + ry * Math.sin(a.end) + depth);
-      for (let t = a.end; t >= a.start; t -= 0.05) ctx.lineTo(cx + rx * Math.cos(t), cy + ry * Math.sin(t) + depth);
-      ctx.closePath();
-      ctx.fillStyle = _c3dShade(a.color, -0.35);
-      ctx.fill();
-    });
-
-    arcs.forEach((a) => {
-      ctx.beginPath();
-      ctx.moveTo(cx, cy);
-      ctx.ellipse(cx, cy, rx, ry, 0, a.start, a.end);
-      ctx.closePath();
-      ctx.fillStyle = a.color;
-      ctx.fill();
-      ctx.strokeStyle = 'rgba(0,0,0,.15)';
-      ctx.lineWidth = 1;
-      ctx.stroke();
-    });
-
-    const lyy = cssH - legendH + 6;
-    const colW = cssW / 2;
-    displayLabels.forEach((lb, i) => {
-      const bx = 8 + (i % 2) * colW;
-      const by = lyy + Math.floor(i / 2) * 18;
-      ctx.fillStyle = displayColors[i % displayColors.length];
-      ctx.fillRect(bx, by + 2, 9, 9);
-      ctx.fillStyle = 'rgba(255,255,255,.65)';
-      ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.font = '9.5px sans-serif';
-      ctx.fillText(String(lb).substring(0, 16), bx + 13, by);
-    });
-  });
-}
-
 let _ceoChartCaSolde = null;
 let _ceoChartComptes = null;
 
 function dessinerGraphiquesCeoDashboard(all) {
+  if (!window.Chart) return; // Chart.js non chargé (ex: hors-ligne) → on n'affiche pas de graphique fictif
   const buckets = getLast6MonthsBuckets();
 
   // ── Graphique 1 : CA mensuel + solde de trésorerie cumulé (données réelles issues des écritures) ──
@@ -4959,31 +4702,55 @@ function dessinerGraphiquesCeoDashboard(all) {
 
   const ctx1 = document.getElementById('ceoChartCaSolde');
   if (ctx1) {
-    ctx1.parentElement.innerHTML = '<canvas id="ceoChartCaSolde"></canvas>';
-    draw3DBarChart(document.getElementById('ceoChartCaSolde'), {
-      labels: buckets.map((b) => b.label),
-      series: [
-        { name: "Chiffre d'affaires", color: '#d4a853', data: caParMois },
-        { name: 'Solde de trésorerie cumulé', color: '#3b82f6', data: soldeParMois },
-      ],
+    if (_ceoChartCaSolde) _ceoChartCaSolde.destroy();
+    _ceoChartCaSolde = new Chart(ctx1, {
+      type: 'bar',
+      data: {
+        labels: buckets.map((b) => b.label),
+        datasets: [
+          { type: 'bar', label: "Chiffre d'affaires", data: caParMois, backgroundColor: 'rgba(212,168,83,.55)', borderRadius: 4, order: 2 },
+          { type: 'line', label: 'Solde de trésorerie cumulé', data: soldeParMois, borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,.12)', tension: .3, fill: true, order: 1, yAxisID: 'y' },
+        ],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: 'rgba(255,255,255,.7)', font: { size: 10.5 } } } },
+        scales: {
+          x: { ticks: { color: 'rgba(255,255,255,.5)' }, grid: { display: false } },
+          y: { ticks: { color: 'rgba(255,255,255,.5)' }, grid: { color: 'rgba(255,255,255,.06)' } },
+        },
+      },
     });
   }
 
   // ── Graphique 2 : mouvements par compte de trésorerie (classe 5) — débit vs crédit réels ──
   const map = getMap();
-  let comptesTreso = Object.entries(map).filter(([c]) => c.startsWith('5')).slice(0, 8);
+  const comptesTreso = Object.entries(map).filter(([c]) => c.startsWith('5')).slice(0, 8);
   const ctx2 = document.getElementById('ceoChartComptes');
   if (ctx2) {
-    ctx2.parentElement.innerHTML = '<canvas id="ceoChartComptes"></canvas>';
-    const placeholder = !comptesTreso.length;
-    if (placeholder) comptesTreso = [['5xx', { debit: 0, credit: 0 }]]; // chassis vide affiché quand même
-    draw3DBarChart(document.getElementById('ceoChartComptes'), {
-      labels: placeholder ? ['—'] : comptesTreso.map(([c]) => libelleCompte(c).substring(0, 12)),
-      series: [
-        { name: 'Entrées', color: '#22c55e', data: comptesTreso.map(([, a]) => a.debit) },
-        { name: 'Sorties', color: '#ef4444', data: comptesTreso.map(([, a]) => a.credit) },
-      ],
-    });
+    if (_ceoChartComptes) _ceoChartComptes.destroy();
+    if (!comptesTreso.length) {
+      ctx2.parentElement.innerHTML = '<div class="empty-state"><p>Aucun mouvement de compte pour l\'instant</p></div>';
+    } else {
+      _ceoChartComptes = new Chart(ctx2, {
+        type: 'bar',
+        data: {
+          labels: comptesTreso.map(([c]) => libelleCompte(c).substring(0, 16)),
+          datasets: [
+            { label: 'Entrées', data: comptesTreso.map(([, a]) => a.debit), backgroundColor: 'rgba(34,197,94,.6)', borderRadius: 4 },
+            { label: 'Sorties', data: comptesTreso.map(([, a]) => a.credit), backgroundColor: 'rgba(239,68,68,.6)', borderRadius: 4 },
+          ],
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false, indexAxis: 'y',
+          plugins: { legend: { labels: { color: 'rgba(255,255,255,.7)', font: { size: 10.5 } } } },
+          scales: {
+            x: { ticks: { color: 'rgba(255,255,255,.5)' }, grid: { color: 'rgba(255,255,255,.06)' } },
+            y: { ticks: { color: 'rgba(255,255,255,.5)', font: { size: 10 } }, grid: { display: false } },
+          },
+        },
+      });
+    }
   }
 }
 
@@ -5033,6 +4800,7 @@ function renderCompteBanque() {
       : '<div class="empty-state"><p>Aucun mouvement pour l\'instant</p></div>';
   }
 
+  if (!window.Chart) return;
   const buckets = getLast6MonthsBuckets();
   const entreesParMois = buckets.map((b) =>
     (ecritures || []).filter((e) => (e.date || '').startsWith(b.key)).flatMap((e) => e.lignes).filter((l) => l.compte?.[0] === '5').reduce((s, l) => s + (l.debit || 0), 0),
@@ -5043,44 +4811,48 @@ function renderCompteBanque() {
 
   const ctx1 = document.getElementById('cbChartInOut');
   if (ctx1) {
-    ctx1.parentElement.innerHTML = '<canvas id="cbChartInOut"></canvas>';
-    draw3DBarChart(document.getElementById('cbChartInOut'), {
-      labels: buckets.map((b) => b.label),
-      series: [
-        { name: 'Entrées', color: '#22c55e', data: entreesParMois },
-        { name: 'Sorties', color: '#ef4444', data: sortiesParMois },
-      ],
+    if (_cbChartInOut) _cbChartInOut.destroy();
+    _cbChartInOut = new Chart(ctx1, {
+      type: 'bar',
+      data: {
+        labels: buckets.map((b) => b.label),
+        datasets: [
+          { label: 'Entrées', data: entreesParMois, backgroundColor: 'rgba(34,197,94,.6)', borderRadius: 4 },
+          { label: 'Sorties', data: sortiesParMois, backgroundColor: 'rgba(239,68,68,.6)', borderRadius: 4 },
+        ],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: 'rgba(255,255,255,.7)', font: { size: 10.5 } } } },
+        scales: {
+          x: { ticks: { color: 'rgba(255,255,255,.5)' }, grid: { display: false } },
+          y: { ticks: { color: 'rgba(255,255,255,.5)' }, grid: { color: 'rgba(255,255,255,.06)' } },
+        },
+      },
     });
   }
 
   const ctx2 = document.getElementById('cbChartRepartition');
   if (ctx2) {
-    ctx2.parentElement.innerHTML = '<canvas id="cbChartRepartition"></canvas>';
-    draw3DPieChart(document.getElementById('cbChartRepartition'), {
-      labels: comptes.map(([c]) => libelleCompte(c).substring(0, 18)),
-      data: comptes.map(([, a]) => Math.abs(a.debit - a.credit)),
-      colors: ['#d4a853', '#3b82f6', '#22c55e', '#ef4444', '#8b5cf6', '#14b8a6', '#f97316', '#ec4899'],
-    });
+    if (_cbChartRepartition) _cbChartRepartition.destroy();
+    if (comptes.length) {
+      _cbChartRepartition = new Chart(ctx2, {
+        type: 'doughnut',
+        data: {
+          labels: comptes.map(([c]) => libelleCompte(c).substring(0, 18)),
+          datasets: [{ data: comptes.map(([, a]) => Math.abs(a.debit - a.credit)), backgroundColor: ['#d4a853', '#3b82f6', '#22c55e', '#ef4444', '#8b5cf6', '#14b8a6', '#f97316', '#ec4899'] }],
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { position: 'bottom', labels: { color: 'rgba(255,255,255,.7)', font: { size: 9.5 } } } },
+        },
+      });
+    } else {
+      ctx2.parentElement.innerHTML = '<div class="empty-state"><p>Aucune donnée pour l\'instant</p></div>';
+    }
   }
 }
 window.renderCompteBanque = renderCompteBanque;
-window.dessinerGraphiquesCeoDashboard = dessinerGraphiquesCeoDashboard;
-
-// Redessine les graphiques 3D (canvas) au redimensionnement de la fenêtre,
-// puisqu'ils sont dessinés manuellement à une taille fixe et non via une
-// librairie "responsive" automatique.
-let _c3dResizeTimer = null;
-window.addEventListener('resize', () => {
-  clearTimeout(_c3dResizeTimer);
-  _c3dResizeTimer = setTimeout(() => {
-    if (document.getElementById('ceoChartCaSolde') || document.getElementById('ceoChartComptes')) {
-      try { dessinerGraphiquesCeoDashboard(); } catch (e) { /* ignore */ }
-    }
-    if (document.getElementById('cbChartInOut') || document.getElementById('cbChartRepartition')) {
-      try { renderCompteBanque(); } catch (e) { /* ignore */ }
-    }
-  }, 200);
-});
 
 // ══════════════════════════════════════════
 // SCAN DE FACTURE PAR IA — OCR + normalisation + transmission
@@ -5094,9 +4866,6 @@ function openScanFactureModal() {
   document.getElementById('scanStepPreview').style.display = 'none';
   document.getElementById('scanStepResult').style.display = 'none';
   document.getElementById('scanFactureInput').value = '';
-  const errEl = document.getElementById('scanErr');
-  errEl.textContent = '';
-  errEl.classList.remove('show');
   scanFactureImageDataUrl = null;
   scanFactureExtracted = null;
 }
@@ -5124,9 +4893,7 @@ async function handleFactureFileSelect(e) {
     document.getElementById('scanStepPreview').style.display = 'block';
     document.getElementById('scanImagePreview').src = scanFactureImageDataUrl;
     document.getElementById('scanProgress').style.display = 'flex';
-    const errEl = document.getElementById('scanErr');
-    errEl.textContent = '';
-    errEl.classList.remove('show');
+    document.getElementById('scanErr').textContent = '';
     await analyserFactureScan(scanFactureImageDataUrl);
   };
   reader.readAsDataURL(file);
@@ -5213,160 +4980,50 @@ async function _ocrPass(dataUrl, config) {
   }
 }
 
-// Extraction robuste du JSON renvoyé par l'IA pour la normalisation de facture.
-// Tolère : balises ```json, texte parasite avant/après, virgules traînantes,
-// et en dernier recours reconstruit l'objet champ par champ par regex plutôt
-// que d'échouer complètement (une réponse partiellement lisible vaut mieux
-// que de bloquer l'utilisateur avec "Réponse IA illisible").
-function _extraireFactureJSON(content) {
-  if (!content) return null;
-  const clean = content.replace(/```json/gi, '').replace(/```/g, '').trim();
-
-  const tryParse = (s) => { try { return JSON.parse(s); } catch (_) { return null; } };
-
-  let out = tryParse(clean);
-  if (out) return out;
-
-  const first = clean.indexOf('{');
-  const last = clean.lastIndexOf('}');
-  if (first !== -1 && last > first) {
-    const sub = clean.slice(first, last + 1);
-    out = tryParse(sub) || tryParse(sub.replace(/,\s*([}\]])/g, '$1'));
-    if (out) return out;
-  }
-
-  // Dernier recours : extraction champ par champ (réponse tronquée/mal formée)
-  const grabStr = (key) => {
-    const m = clean.match(new RegExp('"' + key + '"\\s*:\\s*"([^"]*)"', 'i'));
-    return m ? m[1] : undefined;
-  };
-  const grabNum = (key) => {
-    const m = clean.match(new RegExp('"' + key + '"\\s*:\\s*"?(-?[0-9]+(?:[.,][0-9]+)?)"?', 'i'));
-    return m ? Number(m[1].replace(',', '.')) : undefined;
-  };
-  const ht = grabNum('ht'), tva = grabNum('tva'), ttc = grabNum('ttc'), tiers = grabStr('tiers');
-  if (ht !== undefined || tva !== undefined || ttc !== undefined || tiers !== undefined) {
-    return {
-      tiers: tiers || '',
-      numero: grabStr('numero') || '',
-      date: grabStr('date') || '',
-      ht: ht || 0,
-      tva: tva || 0,
-      ttc: ttc || 0,
-      confiance: grabStr('confiance') || 'faible',
-    };
-  }
-  return null;
-}
-
-/**
- * Appel Gemini Vision — lit une image de facture DIRECTEMENT (sans passer par
- * un OCR classique). Bien plus robuste sur les photos floues/mal cadrées
- * qu'un pipeline OCR + texte, car le modèle "voit" l'image comme un humain
- * plutôt que de dépendre d'une reconnaissance de caractères imparfaite.
- */
-async function callGeminiVision(imageDataUrl, systemPrompt, userText, maxTokens = 900, temperature = 0.0) {
-  if (!GEMINI_KEYS.length) return { error: 'no_gemini', msg: '⚠️ Clé Gemini non configurée.' };
-  const m = String(imageDataUrl || '').match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.*)$/);
-  if (!m) return { error: 'bad_image', msg: 'Image invalide.' };
-  const mimeType = m[1], base64Data = m[2];
-
-  for (let i = 0; i < GEMINI_KEYS.length; i++) {
-    try {
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEYS[i]}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{
-            role: 'user',
-            parts: [
-              { text: systemPrompt + '\n\n' + userText },
-              { inline_data: { mime_type: mimeType, data: base64Data } },
-            ],
-          }],
-          generationConfig: { temperature, topP: 0.95, maxOutputTokens: maxTokens },
-        }),
-      });
-      if (response.ok) {
-        const data = await response.json();
-        const transformedData = { choices: [{ message: { content: data?.candidates?.[0]?.content?.parts?.[0]?.text || '' } }] };
-        return { data: transformedData, provider: 'gemini-vision' };
-      }
-      if (response.status === 429 || response.status === 401 || response.status === 403) continue;
-    } catch (e) {
-      console.warn('[COMEO Vision] Exception Gemini Vision :', e.message);
-    }
-  }
-  return { error: 'gemini_vision_failed', msg: 'Vision Gemini indisponible.' };
-}
-
 async function analyserFactureScan(imageDataUrl, tentative = 1) {
   const progressText = document.getElementById('scanProgressText');
   const errEl = document.getElementById('scanErr');
   errEl.textContent = '';
-  errEl.classList.remove('show');
   try {
-    // ── ÉTAPE 1 (prioritaire) : lecture DIRECTE de l'image par IA vision ──
-    // Beaucoup plus fiable qu'un OCR classique sur une photo floue/mal cadrée,
-    // car le modèle "regarde" l'image plutôt que de dépendre d'une extraction
-    // de caractères imparfaite. On l'essaie en premier avant l'OCR.
-    if (progressText) progressText.textContent = "L'IA lit directement la photo…";
-    const visionPrompt = `Tu es un module de lecture de factures pour un logiciel comptable SYSCOHADA (Bénin/OHADA). On te montre la PHOTO d'une facture ou d'un ticket, qui peut être floue, mal éclairée, prise de travers, ou de basse qualité.
+    const img = await _chargerImageDansCanvas(imageDataUrl);
 
-CONSIGNE ABSOLUE : Ne refuse JAMAIS de répondre et ne dis JAMAIS que l'image est illisible. Même si l'image est très floue ou de mauvaise qualité, regarde attentivement les formes, les zones de texte, les tableaux de montants, et donne ta MEILLEURE estimation plausible pour chaque champ, comme le ferait un comptable humain qui doit deviner à partir d'un document abîmé. N'invente pas de valeurs totalement absurdes, mais ne réponds jamais par un refus, une excuse, ou un texte d'explication — uniquement le JSON demandé.
+    // ── PASSE 1 : image contrastée/agrandie — lecture générale (texte + chiffres) ──
+    if (progressText) progressText.textContent = `Analyse approfondie de l'image (passe 1/3)…`;
+    const imgContrast = pretraiterImageOCR(img, 'contrast');
+    const texteGeneral = await _ocrPass(imgContrast, { lang: 'fra' });
 
-RÈGLES POUR LES MONTANTS :
-- Le plus grand montant proche des mots "Total", "TTC", "Net à payer" est presque toujours le TTC.
-- TTC doit être cohérent avec HT + TVA ; si un des trois est illisible, déduis-le des deux autres.
-- Si vraiment aucun chiffre n'est discernable pour un champ, mets 0 pour ce champ précis (mais ne mets pas tout à 0 si au moins une zone de montant est visible).
+    // ── PASSE 2 : image binarisée — spécialisée sur les tickets/factures nettes ──
+    if (progressText) progressText.textContent = `Analyse approfondie de l'image (passe 2/3)…`;
+    const imgBinaire = pretraiterImageOCR(img, 'binarize');
+    const texteBinaire = await _ocrPass(imgBinaire, { lang: 'fra' });
 
-Réponds UNIQUEMENT avec un objet JSON valide (aucun texte avant/après, aucun markdown), avec exactement ces clés :
-{"tiers": string (nom du client ou fournisseur), "numero": string, "date": string (format YYYY-MM-DD, déduis une date plausible si absente), "ht": number, "tva": number, "ttc": number, "confiance": "haute"|"moyenne"|"faible"}
-Les montants sont en FCFA, en nombres purs (sans espaces ni symboles).`;
-    const visionResult = await callGeminiVision(imageDataUrl, visionPrompt, 'Voici la photo de la facture à analyser.', 900, 0.05 * (tentative - 1));
-    let parsed = null;
-    if (visionResult && !visionResult.error) {
-      const visionContent = visionResult.data.choices?.[0]?.message?.content?.trim() || '';
-      parsed = _extraireFactureJSON(visionContent);
-      if (parsed && !parsed.ht && !parsed.tva && !parsed.ttc && !parsed.tiers) parsed = null; // rien d'exploitable
+    // ── PASSE 3 : passe dédiée aux CHIFFRES uniquement (biaise fortement la reconnaissance vers les montants) ──
+    if (progressText) progressText.textContent = `Analyse approfondie de l'image (passe 3/3 — montants)…`;
+    const texteChiffres = await _ocrPass(imgBinaire, { lang: 'fra', whitelist: '0123456789.,%FCFAfcfa ' });
+
+    const rawTextCombine = [
+      '--- LECTURE GÉNÉRALE ---',
+      texteGeneral,
+      '--- LECTURE VERSION CONTRASTÉE (noir/blanc) ---',
+      texteBinaire,
+      '--- LECTURE SPÉCIALISÉE CHIFFRES/MONTANTS (peut contenir du bruit, mais isole les nombres) ---',
+      texteChiffres,
+    ].join('\n');
+
+    if (!texteGeneral.trim() && !texteBinaire.trim() && !texteChiffres.trim()) {
+      if (tentative < 2) {
+        // Aucun texte détecté du tout → on retente automatiquement avec un traitement plus agressif
+        if (progressText) progressText.textContent = 'Aucun texte détecté — nouvelle tentative avec traitement renforcé…';
+        return analyserFactureScan(imageDataUrl, tentative + 1);
+      }
+      throw new Error("Impossible de lire le moindre texte sur cette image. Reprenez la photo avec plus de lumière et en évitant le flou de mouvement.");
     }
 
-    // ── ÉTAPE 2 (repli) : pipeline OCR classique + normalisation IA texte ──
-    // Utilisé seulement si la lecture directe par vision n'a rien donné
-    // d'exploitable (pas de clé Gemini configurée, quota atteint, etc.).
-    if (!parsed) {
-      const img = await _chargerImageDansCanvas(imageDataUrl);
-
-      if (progressText) progressText.textContent = `Analyse approfondie de l'image (passe 1/3)…`;
-      const imgContrast = pretraiterImageOCR(img, 'contrast');
-      const texteGeneral = await _ocrPass(imgContrast, { lang: 'fra' });
-
-      if (progressText) progressText.textContent = `Analyse approfondie de l'image (passe 2/3)…`;
-      const imgBinaire = pretraiterImageOCR(img, 'binarize');
-      const texteBinaire = await _ocrPass(imgBinaire, { lang: 'fra' });
-
-      if (progressText) progressText.textContent = `Analyse approfondie de l'image (passe 3/3 — montants)…`;
-      const texteChiffres = await _ocrPass(imgBinaire, { lang: 'fra', whitelist: '0123456789.,%FCFAfcfa ' });
-
-      const rawTextCombine = [
-        '--- LECTURE GÉNÉRALE ---',
-        texteGeneral,
-        '--- LECTURE VERSION CONTRASTÉE (noir/blanc) ---',
-        texteBinaire,
-        '--- LECTURE SPÉCIALISÉE CHIFFRES/MONTANTS (peut contenir du bruit, mais isole les nombres) ---',
-        texteChiffres,
-      ].join('\n');
-
-      const aOCR = texteGeneral.trim() || texteBinaire.trim() || texteChiffres.trim();
-
-      if (aOCR) {
-        // ── Normalisation par IA — reconstruit les montants même à partir d'un OCR bruité/flou ──
-        if (progressText) progressText.textContent = "L'IA reconstitue et normalise la facture…";
-        const systemPrompt = `Tu es un module de normalisation de factures pour un logiciel comptable SYSCOHADA (Bénin/OHADA), spécialisé dans la reconstruction de montants à partir d'OCR de mauvaise qualité (photo floue, mal éclairée, angle imparfait).
+    // ── Normalisation par IA — reconstruit les montants même à partir d'un OCR bruité/flou ──
+    if (progressText) progressText.textContent = "L'IA reconstitue et normalise la facture…";
+    const systemPrompt = `Tu es un module de normalisation de factures pour un logiciel comptable SYSCOHADA (Bénin/OHADA), spécialisé dans la reconstruction de montants à partir d'OCR de mauvaise qualité (photo floue, mal éclairée, angle imparfait).
 
 On te donne TROIS lectures OCR de la MÊME facture (une lecture générale, une version contrastée, et une version spécialisée chiffres). Elles peuvent chacune contenir des erreurs différentes — utilise-les ensemble pour reconstituer le texte réel le plus probable, comme un expert qui recoupe plusieurs indices imparfaits.
-
-CONSIGNE ABSOLUE : Ne réponds JAMAIS par un refus ou une excuse, même si les trois lectures sont très bruitées/incohérentes — donne toujours ta meilleure estimation plausible avec "confiance":"faible" plutôt que de refuser.
 
 RÈGLES IMPORTANTES POUR LES MONTANTS :
 - Ne rends JAMAIS 0 pour un montant si le texte contient des chiffres à proximité de mots comme "Total", "TTC", "Net à payer", "Montant", "HT", "TVA" — dans ce cas, reconstitue ta meilleure estimation plausible plutôt que de mettre 0.
@@ -5377,32 +5034,23 @@ RÈGLES IMPORTANTES POUR LES MONTANTS :
 Réponds UNIQUEMENT avec un objet JSON valide (aucun texte avant/après, aucun markdown), avec exactement ces clés :
 {"tiers": string (nom du client ou fournisseur), "numero": string, "date": string (format YYYY-MM-DD, déduis une date plausible si absente), "ht": number, "tva": number, "ttc": number, "confiance": "haute"|"moyenne"|"faible"}
 Les montants sont en FCFA, en nombres purs (sans espaces ni symboles).`;
-        const result = await callGroqQueued(
-          [{ role: 'user', content: `Voici les 3 lectures OCR de la facture :\n\n${rawTextCombine}` }],
-          systemPrompt,
-          900,
-          0.0,
-        );
-        if (result && !result.error) {
-          const content = result.data.choices?.[0]?.message?.content?.trim() || '';
-          parsed = _extraireFactureJSON(content);
-        }
-      }
+    const result = await callGroqQueued(
+      [{ role: 'user', content: `Voici les 3 lectures OCR de la facture :\n\n${rawTextCombine}` }],
+      systemPrompt,
+      600,
+      0.0,
+    );
+    if (!result || result.error) {
+      throw new Error(result?.msg || "L'IA n'a pas pu normaliser la facture. Réessayez.");
     }
+    const content = result.data.choices?.[0]?.message?.content?.trim() || '';
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error("Réponse IA illisible. Réessayez.");
+    const parsed = JSON.parse(jsonMatch[0]);
 
-    if (!parsed) {
-      // Ni la vision, ni l'OCR n'ont produit de résultat exploitable → on retente
-      // (jusqu'à 3 tentatives au total) avant d'informer l'utilisateur.
-      if (tentative < 3) {
-        if (progressText) progressText.textContent = 'Lecture difficile — nouvelle tentative avec traitement renforcé…';
-        return analyserFactureScan(imageDataUrl, tentative + 1);
-      }
-      throw new Error("Impossible de lire cette facture même après plusieurs tentatives. Reprenez la photo avec plus de lumière, à plat et sans flou de mouvement.");
-    }
-
-    // Si tout est resté à 0 malgré une lecture partielle → on retente une fois avec traitement renforcé
+    // Si tout est resté à 0 malgré la présence de texte → on retente une fois avec traitement renforcé
     const toutAZero = !parsed.ht && !parsed.tva && !parsed.ttc;
-    if (toutAZero && tentative < 3) {
+    if (toutAZero && tentative < 2) {
       if (progressText) progressText.textContent = 'Montants non détectés — nouvelle tentative avec traitement renforcé…';
       return analyserFactureScan(imageDataUrl, tentative + 1);
     }
@@ -5415,7 +5063,6 @@ Les montants sont en FCFA, en nombres purs (sans espaces ni symboles).`;
     document.getElementById('sr-tva').value = parsed.tva || 0;
     document.getElementById('sr-ttc').value = parsed.ttc || (Number(parsed.ht || 0) + Number(parsed.tva || 0));
 
-
     document.getElementById('scanStepPreview').style.display = 'none';
     document.getElementById('scanStepResult').style.display = 'block';
 
@@ -5426,26 +5073,19 @@ Les montants sont en FCFA, en nombres purs (sans espaces ni symboles).`;
       }
     }
   } catch (e) {
-    errEl.textContent = '❌ ' + (e.message || "Une erreur est survenue pendant l'analyse. Réessayez.");
-    errEl.classList.add('show');
+    errEl.textContent = '❌ ' + e.message;
     document.getElementById('scanProgress').style.display = 'none';
   }
 }
 
 async function confirmerTransmissionFacture() {
   const parseNum = (v) => parseFloat(String(v).replace(/\s/g, '').replace(',', '.')) || 0;
-  // Sécurité : les champs affichés sont en lecture seule (non éditables par l'utilisateur).
-  // On ne fait pas confiance au DOM pour la transmission — on relit directement le résultat
-  // brut renvoyé par l'IA (scanFactureExtracted), qui est la seule source de vérité, afin
-  // qu'une modification manuelle du DOM (ex: outils développeur) ne puisse pas altérer les
-  // montants réellement transmis.
-  if (!scanFactureExtracted) { toast('Aucune facture analysée à transmettre', 'error'); return; }
-  const tiers = String(scanFactureExtracted.tiers || '').trim();
-  const numero = String(scanFactureExtracted.numero || document.getElementById('sr-numero').value || ('FAC-' + Date.now())).trim();
-  const date = scanFactureExtracted.date || document.getElementById('sr-date').value;
-  const ht = parseNum(scanFactureExtracted.ht);
-  const tva = parseNum(scanFactureExtracted.tva);
-  const ttc = parseNum(scanFactureExtracted.ttc) || (ht + tva);
+  const tiers = document.getElementById('sr-tiers').value.trim();
+  const numero = document.getElementById('sr-numero').value.trim();
+  const date = document.getElementById('sr-date').value;
+  const ht = parseNum(document.getElementById('sr-ht').value);
+  const tva = parseNum(document.getElementById('sr-tva').value);
+  const ttc = parseNum(document.getElementById('sr-ttc').value) || (ht + tva);
   if (!tiers) { toast('Le nom du client/fournisseur est requis', 'error'); return; }
 
   const facture = {
@@ -10378,34 +10018,16 @@ window.filterPcClass = filterPcClass;
 window.pickPcAccount = pickPcAccount;
 document.addEventListener('firebase-ready', async () => {
   await loadServerConfig();
-  onAuthStateChanged(
-    auth,
-    async (user) => {
-      if (user) {
-        try {
-          const snap = await window._fbGetDoc(window._fbDoc(window._db, 'profiles', user.uid));
-          if (snap.exists()) {
-            currentProfile = { ...snap.data(), id: user.uid };
-            conversationHistory = [];
-            await loadApp();
-          }
-        } catch (e) {
-          // Le token vient d'être rafraîchi avec succès (sinon on serait dans onError ci-dessous)
-          // mais la lecture du profil a échoué pour une autre raison (ex: hors-ligne) → on ignore
-          // silencieusement plutôt que de bloquer l'utilisateur sur un écran cassé.
-          console.warn('[COMEO] Lecture du profil impossible :', e.message);
-        }
+  onAuthStateChanged(auth, async (user) => {
+    if (user) {
+      const snap = await window._fbGetDoc(window._fbDoc(window._db, 'profiles', user.uid));
+      if (snap.exists()) {
+        currentProfile = { ...snap.data(), id: user.uid };
+        conversationHistory = [];
+        await loadApp();
       }
-    },
-    (err) => {
-      // Le rafraîchissement du jeton Firebase a échoué (ex: session locale expirée/invalide
-      // laissée par une ancienne connexion). On nettoie cette session invalide côté client afin
-      // que l'utilisateur retombe proprement sur l'écran de connexion au lieu de rester bloqué
-      // silencieusement avec une erreur uniquement visible dans la console.
-      console.warn('[COMEO] Session Firebase invalide, nettoyage :', err.code || err.message);
-      signOut(auth).catch(() => {});
-    },
-  );
+    }
+  });
 });
 
 async function doForgotPassword() {
