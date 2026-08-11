@@ -10221,16 +10221,34 @@ window.filterPcClass = filterPcClass;
 window.pickPcAccount = pickPcAccount;
 document.addEventListener('firebase-ready', async () => {
   await loadServerConfig();
-  onAuthStateChanged(auth, async (user) => {
-    if (user) {
-      const snap = await window._fbGetDoc(window._fbDoc(window._db, 'profiles', user.uid));
-      if (snap.exists()) {
-        currentProfile = { ...snap.data(), id: user.uid };
-        conversationHistory = [];
-        await loadApp();
+  onAuthStateChanged(
+    auth,
+    async (user) => {
+      if (user) {
+        try {
+          const snap = await window._fbGetDoc(window._fbDoc(window._db, 'profiles', user.uid));
+          if (snap.exists()) {
+            currentProfile = { ...snap.data(), id: user.uid };
+            conversationHistory = [];
+            await loadApp();
+          }
+        } catch (e) {
+          // Le token vient d'être rafraîchi avec succès (sinon on serait dans onError ci-dessous)
+          // mais la lecture du profil a échoué pour une autre raison (ex: hors-ligne) → on ignore
+          // silencieusement plutôt que de bloquer l'utilisateur sur un écran cassé.
+          console.warn('[COMEO] Lecture du profil impossible :', e.message);
+        }
       }
-    }
-  });
+    },
+    (err) => {
+      // Le rafraîchissement du jeton Firebase a échoué (ex: session locale expirée/invalide
+      // laissée par une ancienne connexion). On nettoie cette session invalide côté client afin
+      // que l'utilisateur retombe proprement sur l'écran de connexion au lieu de rester bloqué
+      // silencieusement avec une erreur uniquement visible dans la console.
+      console.warn('[COMEO] Session Firebase invalide, nettoyage :', err.code || err.message);
+      signOut(auth).catch(() => {});
+    },
+  );
 });
 
 async function doForgotPassword() {
