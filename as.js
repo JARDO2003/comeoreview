@@ -441,13 +441,41 @@ function releaseGroqKey(idx) {
  * Retourne { data, keyIdx } ou null si toutes les clés échouent.
  */
 async function callGroqQueued(messages, systemPrompt, maxTokens = 6000, temperature = 0.02) {
+  const keyErrors = [];
+
+  // ── FOURNISSEUR 1 : GEMINI (prioritaire) ──
+  if (GEMINI_KEYS.length > 0) {
+    const geminiResult = await callGemini(messages, systemPrompt, maxTokens, temperature);
+    if (!geminiResult.error) {
+      console.log(`[COMEO] ✅ Gemini (prioritaire) réussi`);
+      return geminiResult;
+    }
+    keyErrors.push({ provider: 'Gemini', detail: geminiResult.msg });
+    console.warn(`[COMEO] Gemini indisponible → essai Groq direct`);
+  }
+
+  // ── FOURNISSEUR 2 : GROQ DIRECT ──
+  if (GROQ_DIRECT_KEYS.length > 0) {
+    const groqDirectResult = await callGroqDirect(messages, systemPrompt, maxTokens, temperature);
+    if (!groqDirectResult.error) {
+      console.log(`[COMEO] ✅ Groq direct réussi`);
+      return groqDirectResult;
+    }
+    keyErrors.push({ provider: 'Groq', detail: groqDirectResult.msg });
+    console.warn(`[COMEO] Groq direct indisponible → essai OpenRouter (dernier recours)`);
+  }
+
+  // ── FOURNISSEUR 3 : OPENROUTER (dernier recours, multi-clés avec file d'attente) ──
   if (GROQ_API_KEYS.length === 0) {
-    return { error: 'no_keys', msg: '⚠️ Aucune clé API OpenRouter configurée dans le système.' };
+    if (keyErrors.length > 0) {
+      const detail = keyErrors.map(e => `${e.provider} : ${e.detail}`).join('\n');
+      return { error: 'all_providers_failed', msg: `⚠️ Aucun fournisseur IA disponible.\n${detail}` };
+    }
+    return { error: 'no_keys', msg: '⚠️ Aucune clé API configurée dans le système (Gemini, Groq, OpenRouter).' };
   }
 
   const triedKeys = new Set();
   let keyIdx = await acquireGroqKey();
-  const keyErrors = [];
 
   try {
     while (triedKeys.size < GROQ_API_KEYS.length) {
@@ -481,25 +509,12 @@ async function callGroqQueued(messages, systemPrompt, maxTokens = 6000, temperat
         const errBody = await response.json().catch(() => ({}));
         const apiMsg = errBody?.error?.message || '';
 
-        if (status === 429) {
-          keyErrors.push({ keyNum: keyIdx + 1, code: 429, detail: 'Quota dépassé (rate limit)' });
-          console.warn(`[COMEO Queue] ${keyShort} saturée (429) → essai Groq direct puis Gemini en fallback`);
+        if (status === 429 || status === 402) {
+          const raison = status === 429 ? 'Quota dépassé (rate limit)' : 'Crédits épuisés';
+          keyErrors.push({ provider: `OpenRouter ${keyShort}`, detail: `${raison}${apiMsg ? ' — ' + apiMsg : ''}` });
+          console.warn(`[COMEO Queue] ${keyShort} — ${raison} (${status}) → clé OpenRouter suivante`);
           releaseGroqKey(keyIdx);
 
-          // 🔄 Basculer sur Groq natif si OpenRouter est saturé
-          const groqDirectResult = await callGroqDirect(messages, systemPrompt, maxTokens, temperature);
-          if (!groqDirectResult.error) {
-            console.log(`[COMEO] ✅ Fallback Groq direct réussi`);
-            return groqDirectResult;
-          }
-
-          // 🔄 Sinon basculer sur Gemini
-          const geminiResult = await callGemini(messages, systemPrompt, maxTokens, temperature);
-          if (!geminiResult.error) {
-            console.log(`[COMEO] ✅ Fallback Gemini réussi`);
-            return geminiResult;
-          }
-          
           let found = false;
           for (let i = 0; i < GROQ_API_KEYS.length; i++) {
             const candidate = (keyIdx + 1 + i) % GROQ_API_KEYS.length;
@@ -510,14 +525,14 @@ async function callGroqQueued(messages, systemPrompt, maxTokens = 6000, temperat
             }
           }
           if (!found) {
-            const detail = keyErrors.map(e => `clé ${e.keyNum} : ${e.detail}`).join(' · ');
-            return { error: 'all_rate_limited', msg: `⚠️ OpenRouter saturé, Groq direct et Gemini indisponibles.\n${detail}\n\nVeuillez patienter quelques instants et réessayez.` };
+            const detail = keyErrors.map(e => `${e.provider} : ${e.detail}`).join('\n');
+            return { error: 'all_exhausted', msg: `⚠️ Gemini, Groq et toutes les clés OpenRouter sont indisponibles.\n${detail}\n\nVeuillez patienter quelques instants et réessayez.` };
           }
           continue;
         }
 
         if (status === 401 || status === 403) {
-          keyErrors.push({ keyNum: keyIdx + 1, code: status, detail: 'Clé invalide ou révoquée' });
+          keyErrors.push({ provider: `OpenRouter ${keyShort}`, detail: 'Clé invalide ou révoquée' });
           console.warn(`[COMEO Queue] ${keyShort} invalide (${status})`);
           releaseGroqKey(keyIdx);
           let found = false;
@@ -530,13 +545,13 @@ async function callGroqQueued(messages, systemPrompt, maxTokens = 6000, temperat
             }
           }
           if (!found) {
-            const detail = keyErrors.map(e => `clé ${e.keyNum} : ${e.detail}`).join(' · ');
-            return { error: 'invalid_keys', msg: `🔑 Problème avec vos clés API OpenRouter.\n${detail}\n\nVérifiez vos clés dans le système.` };
+            const detail = keyErrors.map(e => `${e.provider} : ${e.detail}`).join('\n');
+            return { error: 'invalid_keys', msg: `🔑 Problème avec vos clés API.\n${detail}\n\nVérifiez vos clés dans le système.` };
           }
           continue;
         }
 
-        keyErrors.push({ keyNum: keyIdx + 1, code: status, detail: apiMsg || `Erreur HTTP ${status}` });
+        keyErrors.push({ provider: `OpenRouter ${keyShort}`, detail: apiMsg || `Erreur HTTP ${status}` });
         console.warn(`[COMEO Queue] ${keyShort} — erreur ${status} : ${apiMsg}`);
         return { error: 'api_error', msg: `❌ Erreur API OpenRouter (${status})${apiMsg ? ' : ' + apiMsg : ''}.` };
 
