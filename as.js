@@ -679,72 +679,6 @@ async function callGemini(messages, systemPrompt, maxTokens = 6000, temperature 
   return { error: 'gemini_failed', msg: '❌ Gemini indisponible. Réessayez dans quelques instants.' };
 }
 
-/**
- * Appel Gemini API en mode VISION (image + texte) — utilisé pour le SCAN DE FACTURE.
- * L'image est envoyée directement au modèle multimodal Gemini, qui effectue lui-même
- * l'OCR et la normalisation en une seule passe (plus fiable qu'un OCR local suivi
- * d'une normalisation texte séparée).
- */
-async function callGeminiVisionFacture(imageDataUrl, systemPrompt, maxTokens = 800, temperature = 0.0) {
-  if (GEMINI_KEYS.length === 0) {
-    return { error: 'no_gemini', msg: '⚠️ Clé Gemini non configurée.' };
-  }
-  const match = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/.exec(imageDataUrl || '');
-  if (!match) {
-    return { error: 'bad_image', msg: "⚠️ Image invalide pour l'analyse Gemini." };
-  }
-  const mimeType = match[1];
-  const base64Data = match[2];
-
-  for (let geminiKeyIdx = 0; geminiKeyIdx < GEMINI_KEYS.length; geminiKeyIdx++) {
-    try {
-      console.log(`[COMEO Scan Facture] 🔄 Essai Gemini Vision clé ${geminiKeyIdx + 1}...`);
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEYS[geminiKeyIdx]}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [
-            {
-              role: 'user',
-              parts: [
-                { text: systemPrompt },
-                { inline_data: { mime_type: mimeType, data: base64Data } },
-              ],
-            },
-          ],
-          generationConfig: {
-            temperature,
-            topP: 0.95,
-            maxOutputTokens: maxTokens,
-          },
-        }),
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        console.log(`[COMEO Scan Facture] ✅ Gemini Vision OK`);
-        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-        return { data: { choices: [{ message: { content: text } }] }, provider: 'gemini-vision' };
-      }
-
-      const status = response.status;
-      if (status === 429) {
-        console.warn(`[COMEO Scan Facture] Gemini Vision saturé (429), prochaine clé...`);
-        continue;
-      }
-      if (status === 401 || status === 403) {
-        console.warn(`[COMEO Scan Facture] Clé Gemini Vision invalide (${status})`);
-        continue;
-      }
-      const errBody = await response.json().catch(() => ({}));
-      console.warn(`[COMEO Scan Facture] Erreur Gemini Vision ${status}: ${errBody?.error?.message || ''}`);
-    } catch (e) {
-      console.warn(`[COMEO Scan Facture] Exception Gemini Vision: ${e.message}`);
-    }
-  }
-  return { error: 'gemini_vision_failed', msg: '❌ Gemini Vision indisponible. Réessayez dans quelques instants.' };
-}
-
 function requireSubscriptionAccess() {
   const sub = getSubscriptionState(currentProfile);
   if (!sub.access) {
@@ -5304,41 +5238,82 @@ async function analyserFactureScan(imageDataUrl, tentative = 1) {
   try {
     const img = await _chargerImageDansCanvas(imageDataUrl);
 
-    // ── Amélioration de l'image (contraste/agrandissement) avant envoi à Gemini Vision ──
-    // À la 1ère tentative on envoie une version contrastée ; en cas d'échec on retente
-    // avec l'image d'origine (parfois le contraste peut nuire à la lecture par le modèle).
-    if (progressText) progressText.textContent = `Préparation de l'image…`;
-    const imageAEnvoyer = tentative === 1 ? pretraiterImageOCR(img, 'contrast') : imageDataUrl;
+    // ── PASSE 1 : image contrastée/agrandie — lecture générale (texte + chiffres) ──
+    if (progressText) progressText.textContent = `Analyse approfondie de l'image (passe 1/3)…`;
+    const imgContrast = pretraiterImageOCR(img, 'contrast');
+    const texteGeneral = await _ocrPass(imgContrast, { lang: 'fra' });
 
-    // ── Analyse directe par Gemini Vision — l'IA lit ET normalise la facture en une seule passe ──
-    if (progressText) progressText.textContent = "Gemini analyse et normalise la facture…";
-    const systemPrompt = `Tu es un module de lecture et de normalisation de factures pour un logiciel comptable SYSCOHADA (Bénin/OHADA). On te fournit directement la PHOTO d'une facture, éventuellement floue, mal éclairée ou prise avec un angle imparfait. Lis-la toi-même (tu as une capacité de lecture d'image intégrée) et reconstitue les informations les plus plausibles.
+    // ── PASSE 2 : image binarisée — spécialisée sur les tickets/factures nettes ──
+    if (progressText) progressText.textContent = `Analyse approfondie de l'image (passe 2/3)…`;
+    const imgBinaire = pretraiterImageOCR(img, 'binarize');
+    const texteBinaire = await _ocrPass(imgBinaire, { lang: 'fra' });
+
+    // ── PASSE 3 : passe dédiée aux CHIFFRES uniquement (biaise fortement la reconnaissance vers les montants) ──
+    if (progressText) progressText.textContent = `Analyse approfondie de l'image (passe 3/3 — montants)…`;
+    const texteChiffres = await _ocrPass(imgBinaire, { lang: 'fra', whitelist: '0123456789.,%FCFAfcfa ' });
+
+    const rawTextCombine = [
+      '--- LECTURE GÉNÉRALE ---',
+      texteGeneral,
+      '--- LECTURE VERSION CONTRASTÉE (noir/blanc) ---',
+      texteBinaire,
+      '--- LECTURE SPÉCIALISÉE CHIFFRES/MONTANTS (peut contenir du bruit, mais isole les nombres) ---',
+      texteChiffres,
+    ].join('\n');
+
+    if (!texteGeneral.trim() && !texteBinaire.trim() && !texteChiffres.trim()) {
+      if (tentative < 2) {
+        // Aucun texte détecté du tout → on retente automatiquement avec un traitement plus agressif
+        if (progressText) progressText.textContent = 'Aucun texte détecté — nouvelle tentative avec traitement renforcé…';
+        return analyserFactureScan(imageDataUrl, tentative + 1);
+      }
+      throw new Error("Impossible de lire le moindre texte sur cette image. Reprenez la photo avec plus de lumière et en évitant le flou de mouvement.");
+    }
+
+    // ── Normalisation par IA — reconstruit les montants même à partir d'un OCR bruité/flou ──
+    if (progressText) progressText.textContent = "L'IA reconstitue et normalise la facture…";
+    const systemPrompt = `Tu es un module de normalisation de factures pour un logiciel comptable SYSCOHADA (Bénin/OHADA), spécialisé dans la reconstruction de montants à partir d'OCR de mauvaise qualité (photo floue, mal éclairée, angle imparfait).
+
+On te donne TROIS lectures OCR de la MÊME facture (une lecture générale, une version contrastée, et une version spécialisée chiffres). Elles peuvent chacune contenir des erreurs différentes — utilise-les ensemble pour reconstituer le texte réel le plus probable, comme un expert qui recoupe plusieurs indices imparfaits.
 
 RÈGLES IMPORTANTES POUR LES MONTANTS :
-- Ne rends JAMAIS 0 pour un montant si tu vois des chiffres à proximité de mots comme "Total", "TTC", "Net à payer", "Montant", "HT", "TVA" — dans ce cas, donne ta meilleure estimation plausible plutôt que de mettre 0.
-- Vérifie la cohérence arithmétique : TTC doit être proche de HT + TVA. Si un des trois est manquant ou illisible, recalcule-le à partir des deux autres.
+- Ne rends JAMAIS 0 pour un montant si le texte contient des chiffres à proximité de mots comme "Total", "TTC", "Net à payer", "Montant", "HT", "TVA" — dans ce cas, reconstitue ta meilleure estimation plausible plutôt que de mettre 0.
+- Vérifie la cohérence arithmétique : TTC doit être proche de HT + TVA. Si un des trois est manquant ou visiblement corrompu par l'OCR (ex: chiffres illisibles, mélangés), recalcule-le à partir des deux autres.
+- Les erreurs OCR fréquentes sur les chiffres : 0↔O, 1↔l/I, 5↔S, 8↔B, virgule/point confondus, espaces insérés au milieu d'un nombre (ex: "12 500" = 12500). Corrige ces confusions en te basant sur le contexte (montant plausible en FCFA).
 - Le plus grand montant net proche des mots "Total"/"TTC"/"Net à payer" est presque toujours le TTC.
 
 Réponds UNIQUEMENT avec un objet JSON valide (aucun texte avant/après, aucun markdown), avec exactement ces clés :
 {"tiers": string (nom du client ou fournisseur), "numero": string, "date": string (format YYYY-MM-DD, déduis une date plausible si absente), "ht": number, "tva": number, "ttc": number, "confiance": "haute"|"moyenne"|"faible"}
 Les montants sont en FCFA, en nombres purs (sans espaces ni symboles).`;
-    let result;
-    try {
-      result = await _avecDelaiMax(
-        callGeminiVisionFacture(imageAEnvoyer, systemPrompt, 600, 0.0),
-        45000,
-        'analyse Gemini Vision'
-      );
-    } catch (eTimeout) {
-      throw new Error("Le service IA n'a pas répondu à temps (connexion lente ou service indisponible). Réessayez.");
-    }
-    if (!result || result.error) {
-      if (tentative < 2) {
-        // Échec de la 1ère tentative → on retente avec l'image d'origine
-        if (progressText) progressText.textContent = 'Nouvelle tentative avec l\'image d\'origine…';
-        return analyserFactureScan(imageDataUrl, tentative + 1);
+    // ── Mécanisme solide de transmission à l'IA ──
+    // On ne soumet JAMAIS l'image brute à une IA de vision (trop fragile en cas de flou,
+    // dépend d'un provider unique). On transmet uniquement le TEXTE déjà extrait par OCR
+    // (rawTextCombine ci-dessus) à une chaîne de secours entre plusieurs IA texte :
+    // Groq (OpenRouter) → Groq direct → Gemini (texte). Si un maillon échoue ou n'est pas
+    // configuré, on bascule automatiquement sur le suivant sans jamais bloquer l'utilisateur.
+    const promptFacture = [{ role: 'user', content: `Voici les 3 lectures OCR de la facture :\n\n${rawTextCombine}` }];
+    const fournisseursIA = [
+      { nom: 'Groq (OpenRouter)', appel: () => callGroqQueued(promptFacture, systemPrompt, 600, 0.0) },
+      { nom: 'Groq direct', appel: () => callGroqDirect(promptFacture, systemPrompt, 600, 0.0) },
+      { nom: 'Gemini', appel: () => callGemini(promptFacture, systemPrompt, 600, 0.0) },
+    ];
+    let result = null;
+    let dernierMsgErreur = "L'IA n'a pas pu normaliser la facture. Réessayez.";
+    for (const fournisseur of fournisseursIA) {
+      try {
+        const tentativeResult = await _avecDelaiMax(fournisseur.appel(), 45000, `normalisation IA (${fournisseur.nom})`);
+        if (tentativeResult && !tentativeResult.error && tentativeResult.data?.choices?.[0]?.message?.content) {
+          result = tentativeResult;
+          break;
+        }
+        if (tentativeResult?.msg) dernierMsgErreur = tentativeResult.msg;
+        console.warn(`[COMEO Scan Facture] Fournisseur ${fournisseur.nom} indisponible, passage au suivant...`);
+      } catch (eTimeout) {
+        console.warn(`[COMEO Scan Facture] Fournisseur ${fournisseur.nom} — délai dépassé, passage au suivant...`);
       }
-      throw new Error(result?.msg || "L'IA n'a pas pu normaliser la facture. Réessayez.");
+    }
+    if (!result) {
+      throw new Error(dernierMsgErreur);
     }
     const content = result.data.choices?.[0]?.message?.content?.trim() || '';
     const jsonMatch = content.match(/\{[\s\S]*\}/);
