@@ -6,8 +6,6 @@ import {
   signOut,
   onAuthStateChanged,
   sendPasswordResetEmail,
-  GoogleAuthProvider,
-  signInWithPopup,
 } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
 import {
   getFirestore,
@@ -441,41 +439,13 @@ function releaseGroqKey(idx) {
  * Retourne { data, keyIdx } ou null si toutes les clés échouent.
  */
 async function callGroqQueued(messages, systemPrompt, maxTokens = 6000, temperature = 0.02) {
-  const keyErrors = [];
-
-  // ── FOURNISSEUR 1 : GEMINI (prioritaire) ──
-  if (GEMINI_KEYS.length > 0) {
-    const geminiResult = await callGemini(messages, systemPrompt, maxTokens, temperature);
-    if (!geminiResult.error) {
-      console.log(`[COMEO] ✅ Gemini (prioritaire) réussi`);
-      return geminiResult;
-    }
-    keyErrors.push({ provider: 'Gemini', detail: geminiResult.msg });
-    console.warn(`[COMEO] Gemini indisponible → essai Groq direct`);
-  }
-
-  // ── FOURNISSEUR 2 : GROQ DIRECT ──
-  if (GROQ_DIRECT_KEYS.length > 0) {
-    const groqDirectResult = await callGroqDirect(messages, systemPrompt, maxTokens, temperature);
-    if (!groqDirectResult.error) {
-      console.log(`[COMEO] ✅ Groq direct réussi`);
-      return groqDirectResult;
-    }
-    keyErrors.push({ provider: 'Groq', detail: groqDirectResult.msg });
-    console.warn(`[COMEO] Groq direct indisponible → essai OpenRouter (dernier recours)`);
-  }
-
-  // ── FOURNISSEUR 3 : OPENROUTER (dernier recours, multi-clés avec file d'attente) ──
   if (GROQ_API_KEYS.length === 0) {
-    if (keyErrors.length > 0) {
-      const detail = keyErrors.map(e => `${e.provider} : ${e.detail}`).join('\n');
-      return { error: 'all_providers_failed', msg: `⚠️ Aucun fournisseur IA disponible.\n${detail}` };
-    }
-    return { error: 'no_keys', msg: '⚠️ Aucune clé API configurée dans le système (Gemini, Groq, OpenRouter).' };
+    return { error: 'no_keys', msg: '⚠️ Aucune clé API OpenRouter configurée dans le système.' };
   }
 
   const triedKeys = new Set();
   let keyIdx = await acquireGroqKey();
+  const keyErrors = [];
 
   try {
     while (triedKeys.size < GROQ_API_KEYS.length) {
@@ -509,12 +479,25 @@ async function callGroqQueued(messages, systemPrompt, maxTokens = 6000, temperat
         const errBody = await response.json().catch(() => ({}));
         const apiMsg = errBody?.error?.message || '';
 
-        if (status === 429 || status === 402) {
-          const raison = status === 429 ? 'Quota dépassé (rate limit)' : 'Crédits épuisés';
-          keyErrors.push({ provider: `OpenRouter ${keyShort}`, detail: `${raison}${apiMsg ? ' — ' + apiMsg : ''}` });
-          console.warn(`[COMEO Queue] ${keyShort} — ${raison} (${status}) → clé OpenRouter suivante`);
+        if (status === 429) {
+          keyErrors.push({ keyNum: keyIdx + 1, code: 429, detail: 'Quota dépassé (rate limit)' });
+          console.warn(`[COMEO Queue] ${keyShort} saturée (429) → essai Groq direct puis Gemini en fallback`);
           releaseGroqKey(keyIdx);
 
+          // 🔄 Basculer sur Groq natif si OpenRouter est saturé
+          const groqDirectResult = await callGroqDirect(messages, systemPrompt, maxTokens, temperature);
+          if (!groqDirectResult.error) {
+            console.log(`[COMEO] ✅ Fallback Groq direct réussi`);
+            return groqDirectResult;
+          }
+
+          // 🔄 Sinon basculer sur Gemini
+          const geminiResult = await callGemini(messages, systemPrompt, maxTokens, temperature);
+          if (!geminiResult.error) {
+            console.log(`[COMEO] ✅ Fallback Gemini réussi`);
+            return geminiResult;
+          }
+          
           let found = false;
           for (let i = 0; i < GROQ_API_KEYS.length; i++) {
             const candidate = (keyIdx + 1 + i) % GROQ_API_KEYS.length;
@@ -525,14 +508,14 @@ async function callGroqQueued(messages, systemPrompt, maxTokens = 6000, temperat
             }
           }
           if (!found) {
-            const detail = keyErrors.map(e => `${e.provider} : ${e.detail}`).join('\n');
-            return { error: 'all_exhausted', msg: `⚠️ Gemini, Groq et toutes les clés OpenRouter sont indisponibles.\n${detail}\n\nVeuillez patienter quelques instants et réessayez.` };
+            const detail = keyErrors.map(e => `clé ${e.keyNum} : ${e.detail}`).join(' · ');
+            return { error: 'all_rate_limited', msg: `⚠️ OpenRouter saturé, Groq direct et Gemini indisponibles.\n${detail}\n\nVeuillez patienter quelques instants et réessayez.` };
           }
           continue;
         }
 
         if (status === 401 || status === 403) {
-          keyErrors.push({ provider: `OpenRouter ${keyShort}`, detail: 'Clé invalide ou révoquée' });
+          keyErrors.push({ keyNum: keyIdx + 1, code: status, detail: 'Clé invalide ou révoquée' });
           console.warn(`[COMEO Queue] ${keyShort} invalide (${status})`);
           releaseGroqKey(keyIdx);
           let found = false;
@@ -545,13 +528,13 @@ async function callGroqQueued(messages, systemPrompt, maxTokens = 6000, temperat
             }
           }
           if (!found) {
-            const detail = keyErrors.map(e => `${e.provider} : ${e.detail}`).join('\n');
-            return { error: 'invalid_keys', msg: `🔑 Problème avec vos clés API.\n${detail}\n\nVérifiez vos clés dans le système.` };
+            const detail = keyErrors.map(e => `clé ${e.keyNum} : ${e.detail}`).join(' · ');
+            return { error: 'invalid_keys', msg: `🔑 Problème avec vos clés API OpenRouter.\n${detail}\n\nVérifiez vos clés dans le système.` };
           }
           continue;
         }
 
-        keyErrors.push({ provider: `OpenRouter ${keyShort}`, detail: apiMsg || `Erreur HTTP ${status}` });
+        keyErrors.push({ keyNum: keyIdx + 1, code: status, detail: apiMsg || `Erreur HTTP ${status}` });
         console.warn(`[COMEO Queue] ${keyShort} — erreur ${status} : ${apiMsg}`);
         return { error: 'api_error', msg: `❌ Erreur API OpenRouter (${status})${apiMsg ? ' : ' + apiMsg : ''}.` };
 
@@ -2764,49 +2747,6 @@ async function doLogin() {
     err.classList.add('show');
   }
 }
-async function doGoogleSignIn() {
-  const err = document.getElementById('l-err');
-  if (err) err.classList.remove('show');
-  try {
-    await waitForFirebase();
-    const provider = new GoogleAuthProvider();
-    const cred = await signInWithPopup(auth, provider);
-    const user = cred.user;
-    const uid = user.uid;
-    let snap = await window._fbGetDoc(window._fbDoc(window._db, 'profiles', uid));
-    if (!snap.exists()) {
-      // Premier login Google → on crée automatiquement un profil d'essai
-      const trialEndsAt = new Date(Date.now() + TRIAL_DURATION_MS).toISOString();
-      const profileData = {
-        company: user.displayName || 'Mon entreprise',
-        compte701: '701',
-        exercice: String(new Date().getFullYear()),
-        email: user.email || '',
-        createdAt: new Date().toISOString(),
-        trialEndsAt,
-        premiumUntil: null,
-        subscriptionStatus: 'trial',
-        authProvider: 'google',
-      };
-      await window._fbSetDoc(window._fbDoc(window._db, 'profiles', uid), profileData);
-      currentProfile = { ...profileData, id: uid };
-      toast("Profil créé avec Google ! 12 heures d'essai gratuit inclus.", 'success');
-    } else {
-      currentProfile = { ...snap.data(), id: uid };
-    }
-    conversationHistory = [];
-    await loadApp();
-    playWelcomeSound();
-  } catch (e) {
-    if (e.code === 'auth/popup-closed-by-user' || e.code === 'auth/cancelled-popup-request') return;
-    if (err) {
-      err.textContent = 'Connexion Google impossible : ' + (e.message || e.code || '');
-      err.classList.add('show');
-    }
-  }
-}
-window.doGoogleSignIn = doGoogleSignIn;
-
 async function doLogout() {
   if (!confirm('Se déconnecter ?')) return;
   if (subscriptionCheckInterval) clearInterval(subscriptionCheckInterval);
@@ -3144,12 +3084,6 @@ function navigate(view) {
     if (n.textContent.toLowerCase().includes(key)) n.classList.add('active');
   });
   if (RENDERERS[view]) RENDERERS[view]();
-
-  const cw = document.getElementById('critiqueWidget');
-  if (cw) {
-    if (view === 'dashboard-ceo') cw.classList.add('visible');
-    else { cw.classList.remove('visible'); cw.classList.remove('open'); }
-  }
 }
 
 // ══════════════════════════════════════════
@@ -4681,9 +4615,6 @@ function renderCeoDashboard() {
   const nameEl = document.getElementById('ceoCompanyName');
   if (nameEl) nameEl.textContent = currentProfile?.company || 'Votre entreprise';
 
-  const cw = document.getElementById('critiqueWidget');
-  if (cw) cw.classList.add('visible');
-
   const all = (ecritures || []).flatMap((e) => e.lignes);
   const ca = all.filter((l) => l.compte?.[0] === '7').reduce((s, l) => s + (l.credit || 0), 0);
   const entrees = all.filter((l) => l.compte?.[0] === '5').reduce((s, l) => s + (l.debit || 0), 0);
@@ -4747,40 +4678,9 @@ function getLast6MonthsBuckets() {
 let _ceoChartCaSolde = null;
 let _ceoChartComptes = null;
 
-// Attend que Chart.js soit chargé (jusqu'à ~6s) avant de dessiner, au lieu d'abandonner
-// silencieusement si le CDN est lent, bloqué par une extension, ou hors-ligne au 1er essai.
-// Si Chart.js n'arrive jamais, affiche un message visible plutôt qu'un cadre vide muet.
-function whenChartReady(cb, onGiveUp, tries) {
-  tries = tries || 0;
-  if (window.Chart) { cb(); return; }
-  if (tries > 60) {
-    console.warn('[SYSCOHADA] Chart.js indisponible après 6s — vérifiez que https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js se charge bien (Réseau, bloqueur de pub, extension de confidentialité).');
-    if (onGiveUp) onGiveUp();
-    return;
-  }
-  setTimeout(() => whenChartReady(cb, onGiveUp, tries + 1), 100);
-}
-function afficherChartIndisponible(canvasEl, msg) {
-  if (!canvasEl) return;
-  const wrap = canvasEl.parentElement;
-  if (wrap && !wrap.querySelector('.chart-placeholder-badge')) {
-    wrap.innerHTML = `<div class="empty-state"><p>${msg || 'Graphique indisponible — la bibliothèque Chart.js n\'a pas pu se charger.'}</p></div>`;
-  }
-}
-
 function dessinerGraphiquesCeoDashboard(all) {
-  whenChartReady(
-    () => requestAnimationFrame(() => dessinerGraphiquesCeoDashboardImpl(all)),
-    () => {
-      afficherChartIndisponible(document.getElementById('ceoChartCaSolde'));
-      afficherChartIndisponible(document.getElementById('ceoChartComptes'));
-    },
-  );
-}
-
-function dessinerGraphiquesCeoDashboardImpl(all) {
+  if (!window.Chart) return; // Chart.js non chargé (ex: hors-ligne) → on n'affiche pas de graphique fictif
   const buckets = getLast6MonthsBuckets();
-
 
   // ── Graphique 1 : CA mensuel + solde de trésorerie cumulé (données réelles issues des écritures) ──
   const caParMois = buckets.map((b) =>
@@ -4800,60 +4700,27 @@ function dessinerGraphiquesCeoDashboardImpl(all) {
     return cumulSolde;
   });
 
-  const aucuneDonnee1 = caParMois.every((v) => !v) && soldeParMois.every((v) => !v);
   const ctx1 = document.getElementById('ceoChartCaSolde');
   if (ctx1) {
     if (_ceoChartCaSolde) _ceoChartCaSolde.destroy();
-    const wrapC1 = ctx1.parentElement;
-    const oldBadgeC1 = wrapC1.querySelector('.chart-placeholder-badge');
-    if (oldBadgeC1) oldBadgeC1.remove();
-
-    if (aucuneDonnee1) {
-      // Aucune donnée réelle → courbe décorative en attendant les premières écritures
-      const demo = genererCourbeDemo(buckets.length);
-      const g = ctx1.getContext('2d');
-      const gradient = g.createLinearGradient(0, 0, 0, ctx1.clientHeight || 220);
-      gradient.addColorStop(0, 'rgba(212,168,83,.5)');
-      gradient.addColorStop(1, 'rgba(212,168,83,0)');
-      _ceoChartCaSolde = new Chart(ctx1, {
-        type: 'line',
-        data: {
-          labels: buckets.map((b) => b.label),
-          datasets: [{ data: demo, borderColor: 'rgba(212,168,83,.85)', backgroundColor: gradient, borderWidth: 2, fill: true, tension: .45, pointRadius: 0 }],
+    _ceoChartCaSolde = new Chart(ctx1, {
+      type: 'bar',
+      data: {
+        labels: buckets.map((b) => b.label),
+        datasets: [
+          { type: 'bar', label: "Chiffre d'affaires", data: caParMois, backgroundColor: 'rgba(212,168,83,.55)', borderRadius: 4, order: 2 },
+          { type: 'line', label: 'Solde de trésorerie cumulé', data: soldeParMois, borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,.12)', tension: .3, fill: true, order: 1, yAxisID: 'y' },
+        ],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: 'rgba(255,255,255,.7)', font: { size: 10.5 } } } },
+        scales: {
+          x: { ticks: { color: 'rgba(255,255,255,.5)' }, grid: { display: false } },
+          y: { ticks: { color: 'rgba(255,255,255,.5)' }, grid: { color: 'rgba(255,255,255,.06)' } },
         },
-        options: {
-          responsive: true, maintainAspectRatio: false,
-          plugins: { legend: { display: false }, tooltip: { enabled: false } },
-          scales: {
-            x: { ticks: { color: 'rgba(255,255,255,.3)' }, grid: { display: false } },
-            y: { display: false },
-          },
-        },
-      });
-      const badgeC1 = document.createElement('div');
-      badgeC1.className = 'chart-placeholder-badge';
-      badgeC1.textContent = "Aucune donnée pour l'instant";
-      wrapC1.appendChild(badgeC1);
-    } else {
-      _ceoChartCaSolde = new Chart(ctx1, {
-        type: 'bar',
-        data: {
-          labels: buckets.map((b) => b.label),
-          datasets: [
-            { type: 'bar', label: "Chiffre d'affaires", data: caParMois, backgroundColor: 'rgba(212,168,83,.55)', borderRadius: 4, order: 2 },
-            { type: 'line', label: 'Solde de trésorerie cumulé', data: soldeParMois, borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,.12)', tension: .3, fill: true, order: 1, yAxisID: 'y' },
-          ],
-        },
-        options: {
-          responsive: true, maintainAspectRatio: false,
-          plugins: { legend: { labels: { color: 'rgba(255,255,255,.7)', font: { size: 10.5 } } } },
-          scales: {
-            x: { ticks: { color: 'rgba(255,255,255,.5)' }, grid: { display: false } },
-            y: { ticks: { color: 'rgba(255,255,255,.5)' }, grid: { color: 'rgba(255,255,255,.06)' } },
-          },
-        },
-      });
-    }
+      },
+    });
   }
 
   // ── Graphique 2 : mouvements par compte de trésorerie (classe 5) — débit vs crédit réels ──
@@ -4862,11 +4729,9 @@ function dessinerGraphiquesCeoDashboardImpl(all) {
   const ctx2 = document.getElementById('ceoChartComptes');
   if (ctx2) {
     if (_ceoChartComptes) _ceoChartComptes.destroy();
-    const wrapC2 = ctx2.parentElement;
-    const oldBadgeC2 = wrapC2.querySelector('.chart-placeholder-badge');
-    if (oldBadgeC2) oldBadgeC2.remove();
-
-    if (comptesTreso.length) {
+    if (!comptesTreso.length) {
+      ctx2.parentElement.innerHTML = '<div class="empty-state"><p>Aucun mouvement de compte pour l\'instant</p></div>';
+    } else {
       _ceoChartComptes = new Chart(ctx2, {
         type: 'bar',
         data: {
@@ -4885,23 +4750,6 @@ function dessinerGraphiquesCeoDashboardImpl(all) {
           },
         },
       });
-    } else {
-      // Aucun compte mouvementé → anneau décoratif en attendant les premières écritures
-      _ceoChartComptes = new Chart(ctx2, {
-        type: 'doughnut',
-        data: {
-          labels: [''],
-          datasets: [{ data: [1], backgroundColor: ['rgba(212,168,83,.18)'], borderWidth: 0, hoverBackgroundColor: ['rgba(212,168,83,.18)'] }],
-        },
-        options: {
-          responsive: true, maintainAspectRatio: false, cutout: '72%',
-          plugins: { legend: { display: false }, tooltip: { enabled: false } },
-        },
-      });
-      const badgeC2 = document.createElement('div');
-      badgeC2.className = 'chart-placeholder-badge chart-placeholder-badge-center';
-      badgeC2.textContent = "Aucun mouvement de compte pour l'instant";
-      wrapC2.appendChild(badgeC2);
     }
   }
 }
@@ -4952,16 +4800,7 @@ function renderCompteBanque() {
       : '<div class="empty-state"><p>Aucun mouvement pour l\'instant</p></div>';
   }
 
-  whenChartReady(
-    () => requestAnimationFrame(() => renderCompteBanqueCharts(comptes)),
-    () => {
-      afficherChartIndisponible(document.getElementById('cbChartInOut'));
-      afficherChartIndisponible(document.getElementById('cbChartRepartition'));
-    },
-  );
-}
-
-function renderCompteBanqueCharts(comptes) {
+  if (!window.Chart) return;
   const buckets = getLast6MonthsBuckets();
   const entreesParMois = buckets.map((b) =>
     (ecritures || []).filter((e) => (e.date || '').startsWith(b.key)).flatMap((e) => e.lignes).filter((l) => l.compte?.[0] === '5').reduce((s, l) => s + (l.debit || 0), 0),
@@ -4969,70 +4808,33 @@ function renderCompteBanqueCharts(comptes) {
   const sortiesParMois = buckets.map((b) =>
     (ecritures || []).filter((e) => (e.date || '').startsWith(b.key)).flatMap((e) => e.lignes).filter((l) => l.compte?.[0] === '5').reduce((s, l) => s + (l.credit || 0), 0),
   );
-  const aucunMouvement = entreesParMois.every((v) => !v) && sortiesParMois.every((v) => !v);
 
   const ctx1 = document.getElementById('cbChartInOut');
   if (ctx1) {
     if (_cbChartInOut) _cbChartInOut.destroy();
-    const wrap1 = ctx1.parentElement;
-    const oldBadge1 = wrap1.querySelector('.chart-placeholder-badge');
-    if (oldBadge1) oldBadge1.remove();
-
-    if (aucunMouvement) {
-      // Aucune donnée réelle → courbe décorative en attendant les premiers mouvements
-      const demo = genererCourbeDemo(buckets.length);
-      const g = ctx1.getContext('2d');
-      const gradient = g.createLinearGradient(0, 0, 0, ctx1.clientHeight || 220);
-      gradient.addColorStop(0, 'rgba(212,168,83,.5)');
-      gradient.addColorStop(1, 'rgba(212,168,83,0)');
-      _cbChartInOut = new Chart(ctx1, {
-        type: 'line',
-        data: {
-          labels: buckets.map((b) => b.label),
-          datasets: [{ data: demo, borderColor: 'rgba(212,168,83,.85)', backgroundColor: gradient, borderWidth: 2, fill: true, tension: .45, pointRadius: 0 }],
+    _cbChartInOut = new Chart(ctx1, {
+      type: 'bar',
+      data: {
+        labels: buckets.map((b) => b.label),
+        datasets: [
+          { label: 'Entrées', data: entreesParMois, backgroundColor: 'rgba(34,197,94,.6)', borderRadius: 4 },
+          { label: 'Sorties', data: sortiesParMois, backgroundColor: 'rgba(239,68,68,.6)', borderRadius: 4 },
+        ],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: 'rgba(255,255,255,.7)', font: { size: 10.5 } } } },
+        scales: {
+          x: { ticks: { color: 'rgba(255,255,255,.5)' }, grid: { display: false } },
+          y: { ticks: { color: 'rgba(255,255,255,.5)' }, grid: { color: 'rgba(255,255,255,.06)' } },
         },
-        options: {
-          responsive: true, maintainAspectRatio: false,
-          plugins: { legend: { display: false }, tooltip: { enabled: false } },
-          scales: {
-            x: { ticks: { color: 'rgba(255,255,255,.3)' }, grid: { display: false } },
-            y: { display: false },
-          },
-        },
-      });
-      const badge1 = document.createElement('div');
-      badge1.className = 'chart-placeholder-badge';
-      badge1.textContent = "Aucun mouvement pour l'instant";
-      wrap1.appendChild(badge1);
-    } else {
-      _cbChartInOut = new Chart(ctx1, {
-        type: 'bar',
-        data: {
-          labels: buckets.map((b) => b.label),
-          datasets: [
-            { label: 'Entrées', data: entreesParMois, backgroundColor: 'rgba(34,197,94,.6)', borderRadius: 4 },
-            { label: 'Sorties', data: sortiesParMois, backgroundColor: 'rgba(239,68,68,.6)', borderRadius: 4 },
-          ],
-        },
-        options: {
-          responsive: true, maintainAspectRatio: false,
-          plugins: { legend: { labels: { color: 'rgba(255,255,255,.7)', font: { size: 10.5 } } } },
-          scales: {
-            x: { ticks: { color: 'rgba(255,255,255,.5)' }, grid: { display: false } },
-            y: { ticks: { color: 'rgba(255,255,255,.5)' }, grid: { color: 'rgba(255,255,255,.06)' } },
-          },
-        },
-      });
-    }
+      },
+    });
   }
 
   const ctx2 = document.getElementById('cbChartRepartition');
   if (ctx2) {
     if (_cbChartRepartition) _cbChartRepartition.destroy();
-    const wrap2 = ctx2.parentElement;
-    const oldBadge2 = wrap2.querySelector('.chart-placeholder-badge');
-    if (oldBadge2) oldBadge2.remove();
-
     if (comptes.length) {
       _cbChartRepartition = new Chart(ctx2, {
         type: 'doughnut',
@@ -5046,37 +4848,9 @@ function renderCompteBanqueCharts(comptes) {
         },
       });
     } else {
-      // Aucun compte mouvementé → anneau décoratif en attendant les premières écritures
-      _cbChartRepartition = new Chart(ctx2, {
-        type: 'doughnut',
-        data: {
-          labels: [''],
-          datasets: [{ data: [1], backgroundColor: ['rgba(212,168,83,.18)'], borderWidth: 0, hoverBackgroundColor: ['rgba(212,168,83,.18)'] }],
-        },
-        options: {
-          responsive: true, maintainAspectRatio: false, cutout: '72%',
-          plugins: { legend: { display: false }, tooltip: { enabled: false } },
-        },
-      });
-      const badge2 = document.createElement('div');
-      badge2.className = 'chart-placeholder-badge chart-placeholder-badge-center';
-      badge2.textContent = "Aucune donnée pour l'instant";
-      wrap2.appendChild(badge2);
+      ctx2.parentElement.innerHTML = '<div class="empty-state"><p>Aucune donnée pour l\'instant</p></div>';
     }
   }
-}
-window.renderCompteBanqueCharts = renderCompteBanqueCharts;
-
-// Génère une courbe lisse et organique (superposition de sinusoïdes) pour servir
-// d'aperçu décoratif tant qu'aucun mouvement réel n'existe sur le compte.
-function genererCourbeDemo(n) {
-  const vals = [];
-  for (let i = 0; i < n; i++) {
-    const t = i / Math.max(1, n - 1);
-    const v = 55 + 30 * Math.sin(t * Math.PI * 1.6) + 15 * Math.sin(t * Math.PI * 4.3 + 1.2);
-    vals.push(Math.max(8, Math.round(v)));
-  }
-  return vals;
 }
 window.renderCompteBanque = renderCompteBanque;
 
@@ -5192,38 +4966,13 @@ function pretraiterImageOCR(img, mode) {
   return canvas.toDataURL('image/png');
 }
 
-// ── Empêche un blocage silencieux : si une promesse ne se résout ni ne rejette
-//    jamais (worker CDN bloqué, requête réseau qui reste pendante...), on abandonne
-//    au bout de `ms` millisecondes au lieu de figer l'interface indéfiniment. ──
-function _avecDelaiMax(promise, ms, label) {
-  return new Promise((resolve, reject) => {
-    let regle = false;
-    const chrono = setTimeout(() => {
-      if (regle) return;
-      regle = true;
-      reject(new Error(`Délai dépassé (${label})`));
-    }, ms);
-    promise.then(
-      (v) => { if (!regle) { regle = true; clearTimeout(chrono); resolve(v); } },
-      (e) => { if (!regle) { regle = true; clearTimeout(chrono); reject(e); } }
-    );
-  });
-}
-
 // ── Une passe OCR Tesseract avec configuration donnée ──
 async function _ocrPass(dataUrl, config) {
-  if (!window.Tesseract) {
-    console.warn('[OCR] Tesseract non chargé (bibliothèque indisponible — CDN bloqué ?)');
-    return '';
-  }
+  if (!window.Tesseract) return '';
   try {
-    const res = await _avecDelaiMax(
-      window.Tesseract.recognize(dataUrl, config.lang || 'fra', {
-        tessedit_char_whitelist: config.whitelist || undefined,
-      }),
-      35000,
-      'lecture OCR'
-    );
+    const res = await window.Tesseract.recognize(dataUrl, config.lang || 'fra', {
+      tessedit_char_whitelist: config.whitelist || undefined,
+    });
     return res?.data?.text || '';
   } catch (e) {
     console.warn('[OCR] passe échouée', e);
@@ -5285,21 +5034,12 @@ RÈGLES IMPORTANTES POUR LES MONTANTS :
 Réponds UNIQUEMENT avec un objet JSON valide (aucun texte avant/après, aucun markdown), avec exactement ces clés :
 {"tiers": string (nom du client ou fournisseur), "numero": string, "date": string (format YYYY-MM-DD, déduis une date plausible si absente), "ht": number, "tva": number, "ttc": number, "confiance": "haute"|"moyenne"|"faible"}
 Les montants sont en FCFA, en nombres purs (sans espaces ni symboles).`;
-    let result;
-    try {
-      result = await _avecDelaiMax(
-        callGroqQueued(
-          [{ role: 'user', content: `Voici les 3 lectures OCR de la facture :\n\n${rawTextCombine}` }],
-          systemPrompt,
-          600,
-          0.0,
-        ),
-        45000,
-        'normalisation IA'
-      );
-    } catch (eTimeout) {
-      throw new Error("Le service IA n'a pas répondu à temps (connexion lente ou service indisponible). Réessayez.");
-    }
+    const result = await callGroqQueued(
+      [{ role: 'user', content: `Voici les 3 lectures OCR de la facture :\n\n${rawTextCombine}` }],
+      systemPrompt,
+      600,
+      0.0,
+    );
     if (!result || result.error) {
       throw new Error(result?.msg || "L'IA n'a pas pu normaliser la facture. Réessayez.");
     }
@@ -7303,7 +7043,6 @@ function renderFactures() {
       <td><span class="statut-badge statut-${f.statut}">${STATUT_LABELS[f.statut] || f.statut}</span></td>
       <td style="display:flex;gap:4px;flex-wrap:wrap">
         <button class="btn-action" onclick="exportFacturePDF(${f.id})">📄 PDF</button>
-        <button class="btn-action" onclick="envoyerFactureWhatsApp(${f.id})">💬 WhatsApp</button>
         <button class="btn-action" onclick="exportFactureWord(${f.id})">📝 Word</button>
         <button class="btn-action" onclick="exportFactureExcel(${f.id})">📊 CSV</button>
         ${f.statut !== 'payee' && f.statut !== 'annulee' ? `<button class="btn-action" onclick="marquerPayee(${f.id})">✓ Payée</button>` : ''}
@@ -7335,7 +7074,6 @@ function renderDevis() {
     <td>
       <button class="btn-action" onclick="convertirDevisEnFacture(${f.id})">→ Convertir</button>
       <button class="btn-action" onclick="exportFacturePDF(${f.id})">📄 PDF</button>
-      <button class="btn-action" onclick="envoyerFactureWhatsApp(${f.id})">💬 WhatsApp</button>
       <button class="btn-action danger" onclick="supprimerFacture(${f.id})">✕</button>
     </td>
   </tr>`,
@@ -7518,7 +7256,9 @@ function buildFactureHTMLContent(fac) {
     </div>`;
 }
 
-function construireFacturePDFDoc(fac) {
+function exportFacturePDF(id) {
+  const fac = facturesList.find((f) => f.id === id);
+  if (!fac) return;
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
   const company = currentProfile?.company || 'Mon Entreprise';
@@ -7645,140 +7385,9 @@ function construireFacturePDFDoc(fac) {
   doc.text('Reglement par ' + (fac.modeReglement || 'virement') + ' - Document genere par COMEO AI v4 - SYSCOHADA', 14, y + 5);
   doc.text(`Page 1/1`, pageW - 14, y + 5, { align: 'right' });
 
-  return doc;
-}
-
-function nomFichierFacture(fac) {
-  return `${(fac.type || 'facture').toUpperCase()}_${fac.numero}_${(fac.clientNom || '').replace(/\s+/g, '_')}.pdf`;
-}
-
-function exportFacturePDF(id) {
-  const fac = facturesList.find((f) => f.id === id);
-  if (!fac) return;
-  const doc = construireFacturePDFDoc(fac);
-  doc.save(nomFichierFacture(fac));
+  doc.save(`${fac.type.toUpperCase()}_${fac.numero}_${fac.clientNom?.replace(/\s+/g, '_')}.pdf`);
   toast('✓ PDF généré : ' + fac.numero, 'success');
 }
-
-// Formate un numéro de téléphone ivoirien pour un lien wa.me (indicatif 225 requis).
-function formatPhoneWhatsApp(tel) {
-  let digits = String(tel || '').replace(/\D/g, '');
-  if (!digits) return '';
-  if (!digits.startsWith('225') && digits.length === 10) digits = '225' + digits;
-  return digits;
-}
-
-// Envoie la facture/devis par WhatsApp : partage direct du PDF si le navigateur le permet
-// (Web Share API, surtout sur mobile), sinon téléchargement du PDF + ouverture de WhatsApp
-// avec un message pré-rempli pour que l'utilisateur joigne le fichier manuellement.
-async function envoyerFactureWhatsApp(id) {
-  const fac = facturesList.find((f) => f.id === id);
-  if (!fac) return;
-  const company = currentProfile?.company || 'Mon Entreprise';
-  const monnaie = fac.monnaie || 'FCFA';
-  const typeLabel = { facture: 'facture', proforma: 'devis', avoir: 'avoir', acompte: 'acompte' };
-  const texte = [
-    `Bonjour ${fac.clientNom || ''},`,
-    `Veuillez trouver votre ${typeLabel[fac.type] || 'facture'} ${fac.numero} de ${company}.`,
-    `Montant TTC : ${fn(fac.ttc)} ${monnaie}`,
-    fac.dateEcheance ? `Échéance : ${fac.dateEcheance}` : '',
-    'Merci de votre confiance.',
-  ].filter(Boolean).join('\n');
-  const fileName = nomFichierFacture(fac);
-  const telDigits = formatPhoneWhatsApp(fac.clientTel);
-
-  try {
-    const blob = construireFacturePDFDoc(fac).output('blob');
-    const file = new File([blob], fileName, { type: 'application/pdf' });
-    if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      await navigator.share({ files: [file], title: fileName, text: texte });
-      toast('✓ Partage WhatsApp lancé', 'success');
-      return;
-    }
-  } catch (e) {
-    if (e?.name === 'AbortError') return; // annulé par l'utilisateur
-    // sinon on continue avec le repli ci-dessous
-  }
-
-  // Repli : téléchargement du PDF + ouverture de WhatsApp avec message pré-rempli
-  try {
-    const blob = construireFacturePDFDoc(fac).output('blob');
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = fileName;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 4000);
-  } catch (e) {}
-
-  const waUrl = telDigits
-    ? `https://wa.me/${telDigits}?text=${encodeURIComponent(texte)}`
-    : `https://wa.me/?text=${encodeURIComponent(texte)}`;
-  window.open(waUrl, '_blank', 'noopener,noreferrer');
-  toast('📄 PDF téléchargé — joignez-le dans WhatsApp', 'success');
-}
-window.envoyerFactureWhatsApp = envoyerFactureWhatsApp;
-
-// ══════════════════════════════════════════
-// WIDGET DE CRITIQUES & SUGGESTIONS
-// ══════════════════════════════════════════
-function toggleCritiqueWidget() {
-  const w = document.getElementById('critiqueWidget');
-  if (!w) return;
-  const opening = !w.classList.contains('open');
-  w.classList.toggle('open');
-  if (opening) chargerCritiques();
-}
-window.toggleCritiqueWidget = toggleCritiqueWidget;
-
-async function chargerCritiques() {
-  const list = document.getElementById('critiqueMsgList');
-  if (!list) return;
-  try {
-    const ownerID = getOwnerProfileId();
-    const col = window._fbCollection(window._db, 'profiles', ownerID, 'critiques');
-    const snap = await window._fbGetDocs(col);
-    const msgs = snap.docs.map((d) => d.data()).sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || '')).slice(0, 5);
-    list.innerHTML = msgs.length
-      ? msgs.map((m) => `<div class="critique-msg-item"><span class="cmi-date">${new Date(m.createdAt).toLocaleString('fr-FR')}</span>${(m.message || '').replace(/</g, '&lt;')}</div>`).join('')
-      : '';
-  } catch (e) {
-    list.innerHTML = '';
-  }
-}
-
-async function envoyerCritique() {
-  const ta = document.getElementById('critiqueTexte');
-  const btn = document.querySelector('.critique-send-btn');
-  const message = (ta?.value || '').trim();
-  if (!message) {
-    toast('Écrivez un message avant d\'envoyer', 'error');
-    return;
-  }
-  if (btn) { btn.disabled = true; btn.textContent = 'Envoi...'; }
-  try {
-    const ownerID = getOwnerProfileId();
-    const col = window._fbCollection(window._db, 'profiles', ownerID, 'critiques');
-    await window._fbAddDoc(col, {
-      message,
-      company: currentProfile?.company || '',
-      email: currentProfile?.email || '',
-      auteurId: currentProfile?.id || ownerID,
-      createdAt: new Date().toISOString(),
-      lu: false,
-    });
-    ta.value = '';
-    toast('✓ Merci pour votre retour !', 'success');
-    chargerCritiques();
-  } catch (e) {
-    toast('Erreur lors de l\'envoi : ' + (e.message || ''), 'error');
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = 'Envoyer'; }
-  }
-}
-window.envoyerCritique = envoyerCritique;
 
 function exportFactureWord(id) {
   const fac = facturesList.find((f) => f.id === id);
@@ -10421,14 +10030,18 @@ document.addEventListener('firebase-ready', async () => {
   });
 });
 
-function doForgotPassword() {
-  const email = (document.getElementById('l-email')?.value || '').trim();
-  const lignes = [
-    "Bonjour, j'ai oublié mon mot de passe COMEO AI Pro et j'aimerais le récupérer.",
-    email ? `Email du compte : ${email}` : '',
-  ].filter(Boolean);
-  const message = encodeURIComponent(lignes.join('\n'));
-  window.open(`https://wa.me/${OWNER_WHATSAPP_NUMBER}?text=${message}`, '_blank', 'noopener,noreferrer');
+async function doForgotPassword() {
+  const email = document.getElementById('l-email').value.trim();
+  if (!email) {
+    toast('Entrez votre email puis cliquez sur ce lien', 'error');
+    return;
+  }
+  try {
+    await sendPasswordResetEmail(auth, email);
+    toast('Email de réinitialisation envoyé à ' + email, 'success');
+  } catch (e) {
+    toast('Erreur : ' + e.message, 'error');
+  }
 }
 window.doForgotPassword = doForgotPassword;
 window.openWavePayment = openWavePayment;
