@@ -5177,13 +5177,38 @@ function pretraiterImageOCR(img, mode) {
   return canvas.toDataURL('image/png');
 }
 
+// ── Empêche un blocage silencieux : si une promesse ne se résout ni ne rejette
+//    jamais (worker CDN bloqué, requête réseau qui reste pendante...), on abandonne
+//    au bout de `ms` millisecondes au lieu de figer l'interface indéfiniment. ──
+function _avecDelaiMax(promise, ms, label) {
+  return new Promise((resolve, reject) => {
+    let regle = false;
+    const chrono = setTimeout(() => {
+      if (regle) return;
+      regle = true;
+      reject(new Error(`Délai dépassé (${label})`));
+    }, ms);
+    promise.then(
+      (v) => { if (!regle) { regle = true; clearTimeout(chrono); resolve(v); } },
+      (e) => { if (!regle) { regle = true; clearTimeout(chrono); reject(e); } }
+    );
+  });
+}
+
 // ── Une passe OCR Tesseract avec configuration donnée ──
 async function _ocrPass(dataUrl, config) {
-  if (!window.Tesseract) return '';
+  if (!window.Tesseract) {
+    console.warn('[OCR] Tesseract non chargé (bibliothèque indisponible — CDN bloqué ?)');
+    return '';
+  }
   try {
-    const res = await window.Tesseract.recognize(dataUrl, config.lang || 'fra', {
-      tessedit_char_whitelist: config.whitelist || undefined,
-    });
+    const res = await _avecDelaiMax(
+      window.Tesseract.recognize(dataUrl, config.lang || 'fra', {
+        tessedit_char_whitelist: config.whitelist || undefined,
+      }),
+      35000,
+      'lecture OCR'
+    );
     return res?.data?.text || '';
   } catch (e) {
     console.warn('[OCR] passe échouée', e);
@@ -5245,12 +5270,21 @@ RÈGLES IMPORTANTES POUR LES MONTANTS :
 Réponds UNIQUEMENT avec un objet JSON valide (aucun texte avant/après, aucun markdown), avec exactement ces clés :
 {"tiers": string (nom du client ou fournisseur), "numero": string, "date": string (format YYYY-MM-DD, déduis une date plausible si absente), "ht": number, "tva": number, "ttc": number, "confiance": "haute"|"moyenne"|"faible"}
 Les montants sont en FCFA, en nombres purs (sans espaces ni symboles).`;
-    const result = await callGroqQueued(
-      [{ role: 'user', content: `Voici les 3 lectures OCR de la facture :\n\n${rawTextCombine}` }],
-      systemPrompt,
-      600,
-      0.0,
-    );
+    let result;
+    try {
+      result = await _avecDelaiMax(
+        callGroqQueued(
+          [{ role: 'user', content: `Voici les 3 lectures OCR de la facture :\n\n${rawTextCombine}` }],
+          systemPrompt,
+          600,
+          0.0,
+        ),
+        45000,
+        'normalisation IA'
+      );
+    } catch (eTimeout) {
+      throw new Error("Le service IA n'a pas répondu à temps (connexion lente ou service indisponible). Réessayez.");
+    }
     if (!result || result.error) {
       throw new Error(result?.msg || "L'IA n'a pas pu normaliser la facture. Réessayez.");
     }
