@@ -630,7 +630,7 @@ async function callGemini(messages, systemPrompt, maxTokens = 6000, temperature 
         }))
       ];
 
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${GEMINI_KEYS[geminiKeyIdx]}`, {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1/models/gemini-3.1-flash-lite:generateContent?key=${GEMINI_KEYS[geminiKeyIdx]}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
