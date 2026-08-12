@@ -29,10 +29,6 @@ import {
   get as rtdbGet,
   set as rtdbSet,
 } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js';
-import {
-  getFunctions,
-  httpsCallable,
-} from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-functions.js';
 
 // ── BASE DE DONNÉES ROBOT (cache des réponses)
 const robotFirebaseConfig = {
@@ -90,7 +86,6 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 const rtdb = getDatabase(app); // ── Base Realtime Database — utilisée pour les clés API (server_config)
-const functions = getFunctions(app, 'europe-west1'); // ── Cloud Functions — proxy sécurisé e-MECeF (token DGI côté serveur uniquement)
 
 window._db = db;
 window._fbCollection = collection;
@@ -635,7 +630,7 @@ async function callGemini(messages, systemPrompt, maxTokens = 6000, temperature 
         }))
       ];
 
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEYS[geminiKeyIdx]}`, {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1/models/gemini-3.1-flash-lite:generateContent?key=${GEMINI_KEYS[geminiKeyIdx]}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -5293,7 +5288,7 @@ Les montants sont en FCFA, en nombres purs (sans espaces ni symboles).`;
     let result;
     try {
       result = await _avecDelaiMax(
-        callGroqQueued(
+        callGemini(
           [{ role: 'user', content: `Voici les 3 lectures OCR de la facture :\n\n${rawTextCombine}` }],
           systemPrompt,
           600,
@@ -5409,75 +5404,35 @@ async function confirmerTransmissionFacture() {
  *       - un sceau fiscal électronique, matérialisé par un QR code imprimé sur la facture.
  *  3. Ce n'est qu'après cette validation que la facture est juridiquement valide.
  *
- * L'appel réel se fait via une Cloud Function ("emecefCreateInvoice" puis
- * "emecefConfirmInvoice") qui garde le jeton Bearer DGI côté serveur — jamais
- * exposé dans ce fichier client. Voir functions/index.js.
+ * Portail officiel : https://e-mecef.impots.bj/ (une plateforme de test/développeur
+ * avec documentation API est disponible pour les éditeurs de logiciels de facturation
+ * — c'est via cette voie que COMEO doit être certifié comme Système de Facturation
+ * d'Entreprise (SFE) agréé par la DGI).
  *
- * ⚠️ CHAMPS À COMPLÉTER : le modèle InvoiceRequestDataDto de la DGI exige des
- * champs que l'app ne capture pas encore (IFU de l'entreprise dans le profil,
- * IFU du client, groupe AIB, opérateur, ventilation TVA par ligne/taxGroup).
- * Ci-dessous une correspondance minimale — à affiner dès que ces champs
- * existeront dans l'UI (profil entreprise, formulaire de scan de facture).
+ * ⚠️ SIMULATION ACTUELLE : le pipeline (scan → OCR → normalisation IA → facture
+ * conforme SYSCOHADA) est opérationnel de bout en bout. Cette fonction simule la
+ * réponse du serveur e-MECeF (NIM + sceau fiscal factices) en attendant :
+ *   1. la certification de COMEO comme SFE agréé par la DGI,
+ *   2. l'obtention d'un jeton d'accès API e-MECeF (test puis production).
+ * Il suffira alors de remplacer le corps de cette fonction par l'appel réel
+ * (voir squelette ci-dessous, à adapter selon la doc API officielle).
  */
 async function validerFactureEMECeF(facture) {
   console.log('[COMEO → e-MECeF DGI Bénin] Facture envoyée pour validation (clearance) :', facture);
 
-  const ifuEntreprise = currentProfile?.ifu || null;
-  if (!ifuEntreprise) {
-    toast("⚠️ IFU de l'entreprise manquant dans le profil — transmission e-MECeF impossible", 'error');
-    return { statut: 'rejetee', nim: null, sceauFiscal: null, erreur: 'IFU_ENTREPRISE_MANQUANT' };
-  }
+  // TODO (branchement futur, dès obtention du jeton API e-MECeF) :
+  // const res = await fetch('https://e-mecef.impots.bj/api/v1/factures', {
+  //   method: 'POST',
+  //   headers: { 'Authorization': 'Bearer ' + EMECEF_API_TOKEN, 'Content-Type': 'application/json' },
+  //   body: JSON.stringify(facture),
+  // });
+  // const data = await res.json();
+  // return { statut: data.statut, nim: data.nim, sceauFiscal: data.qrCode };
 
-  const payload = {
-    ifu: ifuEntreprise,
-    aib: 'A', // TODO: rendre configurable selon le régime AIB réel de l'entreprise
-    type: 'FV', // Facture de Vente — TODO: mapper selon facture.type si d'autres types sont introduits
-    items: [
-      {
-        code: facture.numero || 'ITEM-1',
-        name: `Facture ${facture.numero || ''} — ${facture.clientNom}`.trim(),
-        price: facture.ht,
-        quantity: 1,
-        taxGroup: 'B', // TODO: groupe de taxe réel par ligne (A–F) — ici on suppose TVA standard 18%
-      },
-    ],
-    client: {
-      name: facture.clientNom,
-      ifu: facture.clientIfu || null, // TODO: capter l'IFU client dans le formulaire de scan
-    },
-    operator: {
-      id: auth.currentUser?.uid || 'op-1',
-      name: auth.currentUser?.displayName || auth.currentUser?.email || 'Opérateur',
-    },
-    payment: [{ name: 'ESPECES', amount: facture.ttc }], // TODO: refléter le vrai mode de paiement
-    reference: facture.numero || '',
-  };
-
-  try {
-    const createInvoice = httpsCallable(functions, 'emecefCreateInvoice');
-    const createResult = await createInvoice(payload);
-    const invoiceData = createResult.data;
-
-    if (invoiceData.errorCode) {
-      toast(`❌ e-MECeF a rejeté la facture : ${invoiceData.errorDesc || invoiceData.errorCode}`, 'error');
-      return { statut: 'rejetee', nim: null, sceauFiscal: null, erreur: invoiceData.errorCode };
-    }
-
-    const confirmInvoice = httpsCallable(functions, 'emecefConfirmInvoice');
-    const confirmResult = await confirmInvoice({ uid: invoiceData.uid });
-    const securityData = confirmResult.data;
-
-    if (securityData.errorCode) {
-      toast(`❌ Échec de la confirmation e-MECeF : ${securityData.errorDesc || securityData.errorCode}`, 'error');
-      return { statut: 'rejetee', nim: securityData.nim || null, sceauFiscal: null, erreur: securityData.errorCode };
-    }
-
-    return { statut: 'validee', nim: securityData.nim, sceauFiscal: securityData.qrCode };
-  } catch (e) {
-    console.error('[e-MECeF] Erreur d\'appel Cloud Function :', e);
-    toast('❌ Erreur de connexion au service e-MECeF : ' + e.message, 'error');
-    return { statut: 'rejetee', nim: null, sceauFiscal: null, erreur: e.message };
-  }
+  // Simulation en attendant la certification SFE / le jeton d'accès e-MECeF réel :
+  await new Promise((r) => setTimeout(r, 400));
+  const nimSimule = 'SIMU-' + Math.random().toString(36).slice(2, 10).toUpperCase();
+  return { statut: 'en_attente', nim: nimSimule, sceauFiscal: null };
 }
 
 window.renderCeoDashboard = renderCeoDashboard;
