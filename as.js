@@ -5288,7 +5288,7 @@ Les montants sont en FCFA, en nombres purs (sans espaces ni symboles).`;
     let result;
     try {
       result = await _avecDelaiMax(
-        callGroqQueued(
+        callGemini(
           [{ role: 'user', content: `Voici les 3 lectures OCR de la facture :\n\n${rawTextCombine}` }],
           systemPrompt,
           600,
