@@ -3129,6 +3129,12 @@ function navigate(view) {
     if (n.textContent.toLowerCase().includes(key)) n.classList.add('active');
   });
   if (RENDERERS[view]) RENDERERS[view]();
+
+  const cw = document.getElementById('critiqueWidget');
+  if (cw) {
+    if (view === 'dashboard-ceo') cw.classList.add('visible');
+    else { cw.classList.remove('visible'); cw.classList.remove('open'); }
+  }
 }
 
 // ══════════════════════════════════════════
@@ -4659,6 +4665,9 @@ function renderTresorerie() {
 function renderCeoDashboard() {
   const nameEl = document.getElementById('ceoCompanyName');
   if (nameEl) nameEl.textContent = currentProfile?.company || 'Votre entreprise';
+
+  const cw = document.getElementById('critiqueWidget');
+  if (cw) cw.classList.add('visible');
 
   const all = (ecritures || []).flatMap((e) => e.lignes);
   const ca = all.filter((l) => l.compte?.[0] === '7').reduce((s, l) => s + (l.credit || 0), 0);
@@ -7277,6 +7286,7 @@ function renderDevis() {
     <td>
       <button class="btn-action" onclick="convertirDevisEnFacture(${f.id})">→ Convertir</button>
       <button class="btn-action" onclick="exportFacturePDF(${f.id})">📄 PDF</button>
+      <button class="btn-action" onclick="envoyerFactureWhatsApp(${f.id})">💬 WhatsApp</button>
       <button class="btn-action danger" onclick="supprimerFacture(${f.id})">✕</button>
     </td>
   </tr>`,
@@ -7661,6 +7671,65 @@ async function envoyerFactureWhatsApp(id) {
   toast('📄 PDF téléchargé — joignez-le dans WhatsApp', 'success');
 }
 window.envoyerFactureWhatsApp = envoyerFactureWhatsApp;
+
+// ══════════════════════════════════════════
+// WIDGET DE CRITIQUES & SUGGESTIONS
+// ══════════════════════════════════════════
+function toggleCritiqueWidget() {
+  const w = document.getElementById('critiqueWidget');
+  if (!w) return;
+  const opening = !w.classList.contains('open');
+  w.classList.toggle('open');
+  if (opening) chargerCritiques();
+}
+window.toggleCritiqueWidget = toggleCritiqueWidget;
+
+async function chargerCritiques() {
+  const list = document.getElementById('critiqueMsgList');
+  if (!list) return;
+  try {
+    const ownerID = getOwnerProfileId();
+    const col = window._fbCollection(window._db, 'profiles', ownerID, 'critiques');
+    const snap = await window._fbGetDocs(col);
+    const msgs = snap.docs.map((d) => d.data()).sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || '')).slice(0, 5);
+    list.innerHTML = msgs.length
+      ? msgs.map((m) => `<div class="critique-msg-item"><span class="cmi-date">${new Date(m.createdAt).toLocaleString('fr-FR')}</span>${(m.message || '').replace(/</g, '&lt;')}</div>`).join('')
+      : '';
+  } catch (e) {
+    list.innerHTML = '';
+  }
+}
+
+async function envoyerCritique() {
+  const ta = document.getElementById('critiqueTexte');
+  const btn = document.querySelector('.critique-send-btn');
+  const message = (ta?.value || '').trim();
+  if (!message) {
+    toast('Écrivez un message avant d\'envoyer', 'error');
+    return;
+  }
+  if (btn) { btn.disabled = true; btn.textContent = 'Envoi...'; }
+  try {
+    const ownerID = getOwnerProfileId();
+    const col = window._fbCollection(window._db, 'profiles', ownerID, 'critiques');
+    await window._fbAddDoc(col, {
+      message,
+      company: currentProfile?.company || '',
+      email: currentProfile?.email || '',
+      auteurId: currentProfile?.id || ownerID,
+      createdAt: new Date().toISOString(),
+      lu: false,
+    });
+    ta.value = '';
+    toast('✓ Merci pour votre retour !', 'success');
+    chargerCritiques();
+  } catch (e) {
+    toast('Erreur lors de l\'envoi : ' + (e.message || ''), 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Envoyer'; }
+  }
+}
+window.envoyerCritique = envoyerCritique;
 
 function exportFactureWord(id) {
   const fac = facturesList.find((f) => f.id === id);
