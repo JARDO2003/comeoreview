@@ -6,6 +6,8 @@ import {
   signOut,
   onAuthStateChanged,
   sendPasswordResetEmail,
+  GoogleAuthProvider,
+  signInWithPopup,
 } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
 import {
   getFirestore,
@@ -2747,6 +2749,49 @@ async function doLogin() {
     err.classList.add('show');
   }
 }
+async function doGoogleSignIn() {
+  const err = document.getElementById('l-err');
+  if (err) err.classList.remove('show');
+  try {
+    await waitForFirebase();
+    const provider = new GoogleAuthProvider();
+    const cred = await signInWithPopup(auth, provider);
+    const user = cred.user;
+    const uid = user.uid;
+    let snap = await window._fbGetDoc(window._fbDoc(window._db, 'profiles', uid));
+    if (!snap.exists()) {
+      // Premier login Google → on crée automatiquement un profil d'essai
+      const trialEndsAt = new Date(Date.now() + TRIAL_DURATION_MS).toISOString();
+      const profileData = {
+        company: user.displayName || 'Mon entreprise',
+        compte701: '701',
+        exercice: String(new Date().getFullYear()),
+        email: user.email || '',
+        createdAt: new Date().toISOString(),
+        trialEndsAt,
+        premiumUntil: null,
+        subscriptionStatus: 'trial',
+        authProvider: 'google',
+      };
+      await window._fbSetDoc(window._fbDoc(window._db, 'profiles', uid), profileData);
+      currentProfile = { ...profileData, id: uid };
+      toast("Profil créé avec Google ! 12 heures d'essai gratuit inclus.", 'success');
+    } else {
+      currentProfile = { ...snap.data(), id: uid };
+    }
+    conversationHistory = [];
+    await loadApp();
+    playWelcomeSound();
+  } catch (e) {
+    if (e.code === 'auth/popup-closed-by-user' || e.code === 'auth/cancelled-popup-request') return;
+    if (err) {
+      err.textContent = 'Connexion Google impossible : ' + (e.message || e.code || '');
+      err.classList.add('show');
+    }
+  }
+}
+window.doGoogleSignIn = doGoogleSignIn;
+
 async function doLogout() {
   if (!confirm('Se déconnecter ?')) return;
   if (subscriptionCheckInterval) clearInterval(subscriptionCheckInterval);
@@ -7200,6 +7245,7 @@ function renderFactures() {
       <td><span class="statut-badge statut-${f.statut}">${STATUT_LABELS[f.statut] || f.statut}</span></td>
       <td style="display:flex;gap:4px;flex-wrap:wrap">
         <button class="btn-action" onclick="exportFacturePDF(${f.id})">📄 PDF</button>
+        <button class="btn-action" onclick="envoyerFactureWhatsApp(${f.id})">💬 WhatsApp</button>
         <button class="btn-action" onclick="exportFactureWord(${f.id})">📝 Word</button>
         <button class="btn-action" onclick="exportFactureExcel(${f.id})">📊 CSV</button>
         ${f.statut !== 'payee' && f.statut !== 'annulee' ? `<button class="btn-action" onclick="marquerPayee(${f.id})">✓ Payée</button>` : ''}
@@ -7413,9 +7459,7 @@ function buildFactureHTMLContent(fac) {
     </div>`;
 }
 
-function exportFacturePDF(id) {
-  const fac = facturesList.find((f) => f.id === id);
-  if (!fac) return;
+function construireFacturePDFDoc(fac) {
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
   const company = currentProfile?.company || 'Mon Entreprise';
@@ -7542,9 +7586,81 @@ function exportFacturePDF(id) {
   doc.text('Reglement par ' + (fac.modeReglement || 'virement') + ' - Document genere par COMEO AI v4 - SYSCOHADA', 14, y + 5);
   doc.text(`Page 1/1`, pageW - 14, y + 5, { align: 'right' });
 
-  doc.save(`${fac.type.toUpperCase()}_${fac.numero}_${fac.clientNom?.replace(/\s+/g, '_')}.pdf`);
+  return doc;
+}
+
+function nomFichierFacture(fac) {
+  return `${(fac.type || 'facture').toUpperCase()}_${fac.numero}_${(fac.clientNom || '').replace(/\s+/g, '_')}.pdf`;
+}
+
+function exportFacturePDF(id) {
+  const fac = facturesList.find((f) => f.id === id);
+  if (!fac) return;
+  const doc = construireFacturePDFDoc(fac);
+  doc.save(nomFichierFacture(fac));
   toast('✓ PDF généré : ' + fac.numero, 'success');
 }
+
+// Formate un numéro de téléphone ivoirien pour un lien wa.me (indicatif 225 requis).
+function formatPhoneWhatsApp(tel) {
+  let digits = String(tel || '').replace(/\D/g, '');
+  if (!digits) return '';
+  if (!digits.startsWith('225') && digits.length === 10) digits = '225' + digits;
+  return digits;
+}
+
+// Envoie la facture/devis par WhatsApp : partage direct du PDF si le navigateur le permet
+// (Web Share API, surtout sur mobile), sinon téléchargement du PDF + ouverture de WhatsApp
+// avec un message pré-rempli pour que l'utilisateur joigne le fichier manuellement.
+async function envoyerFactureWhatsApp(id) {
+  const fac = facturesList.find((f) => f.id === id);
+  if (!fac) return;
+  const company = currentProfile?.company || 'Mon Entreprise';
+  const monnaie = fac.monnaie || 'FCFA';
+  const typeLabel = { facture: 'facture', proforma: 'devis', avoir: 'avoir', acompte: 'acompte' };
+  const texte = [
+    `Bonjour ${fac.clientNom || ''},`,
+    `Veuillez trouver votre ${typeLabel[fac.type] || 'facture'} ${fac.numero} de ${company}.`,
+    `Montant TTC : ${fn(fac.ttc)} ${monnaie}`,
+    fac.dateEcheance ? `Échéance : ${fac.dateEcheance}` : '',
+    'Merci de votre confiance.',
+  ].filter(Boolean).join('\n');
+  const fileName = nomFichierFacture(fac);
+  const telDigits = formatPhoneWhatsApp(fac.clientTel);
+
+  try {
+    const blob = construireFacturePDFDoc(fac).output('blob');
+    const file = new File([blob], fileName, { type: 'application/pdf' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title: fileName, text: texte });
+      toast('✓ Partage WhatsApp lancé', 'success');
+      return;
+    }
+  } catch (e) {
+    if (e?.name === 'AbortError') return; // annulé par l'utilisateur
+    // sinon on continue avec le repli ci-dessous
+  }
+
+  // Repli : téléchargement du PDF + ouverture de WhatsApp avec message pré-rempli
+  try {
+    const blob = construireFacturePDFDoc(fac).output('blob');
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  } catch (e) {}
+
+  const waUrl = telDigits
+    ? `https://wa.me/${telDigits}?text=${encodeURIComponent(texte)}`
+    : `https://wa.me/?text=${encodeURIComponent(texte)}`;
+  window.open(waUrl, '_blank', 'noopener,noreferrer');
+  toast('📄 PDF téléchargé — joignez-le dans WhatsApp', 'success');
+}
+window.envoyerFactureWhatsApp = envoyerFactureWhatsApp;
 
 function exportFactureWord(id) {
   const fac = facturesList.find((f) => f.id === id);
@@ -10187,18 +10303,14 @@ document.addEventListener('firebase-ready', async () => {
   });
 });
 
-async function doForgotPassword() {
-  const email = document.getElementById('l-email').value.trim();
-  if (!email) {
-    toast('Entrez votre email puis cliquez sur ce lien', 'error');
-    return;
-  }
-  try {
-    await sendPasswordResetEmail(auth, email);
-    toast('Email de réinitialisation envoyé à ' + email, 'success');
-  } catch (e) {
-    toast('Erreur : ' + e.message, 'error');
-  }
+function doForgotPassword() {
+  const email = (document.getElementById('l-email')?.value || '').trim();
+  const lignes = [
+    "Bonjour, j'ai oublié mon mot de passe COMEO AI Pro et j'aimerais le récupérer.",
+    email ? `Email du compte : ${email}` : '',
+  ].filter(Boolean);
+  const message = encodeURIComponent(lignes.join('\n'));
+  window.open(`https://wa.me/${OWNER_WHATSAPP_NUMBER}?text=${message}`, '_blank', 'noopener,noreferrer');
 }
 window.doForgotPassword = doForgotPassword;
 window.openWavePayment = openWavePayment;
