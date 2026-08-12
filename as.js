@@ -85,7 +85,7 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const rtdb = getDatabase(app); // ── Base Realtime Database — non utilisée pour les clés API (voir Firestore server_config/api_keys)
+const rtdb = getDatabase(app); // ── Base Realtime Database — utilisée pour les clés API (server_config)
 
 window._db = db;
 window._fbCollection = collection;
@@ -106,13 +106,13 @@ window._rtdbSet = rtdbSet;
 document.dispatchEvent(new Event('firebase-ready'));
 
 // ══════════════════════════════════════════
-// CONFIGURATION SERVEUR — Chargée depuis Firestore (collection server_config, document api_keys)
+// CONFIGURATION SERVEUR — Chargée depuis Realtime Database (server_config)
 // Les clés API sont gérées via la page d'admin azur.html (protégée par mot de passe)
 // JAMAIS de clé API en dur dans ce fichier
 // ══════════════════════════════════════════
 // ── Clés API multiples (OpenRouter + Groq direct + Gemini fallback) ──
-// Ne JAMAIS mettre de clé en dur ici : elles sont chargées depuis Firestore
-// (document server_config/api_keys, champs openrouter_keys, groq_keys, gemini_keys)
+// Ne JAMAIS mettre de clé en dur ici : elles sont chargées depuis Realtime Database
+// (chemins server_config/openrouter_keys, server_config/groq_keys, server_config/gemini_keys)
 // par loadServerConfig(). Ces clés sont administrées depuis azur.html.
 let OPENROUTER_KEYS = [];
 let GEMINI_KEYS = [];
@@ -131,7 +131,7 @@ let serverConfigLoaded = false;
 const aiMemoryCache = new Map(); // clé → réponse (RAM, vidé au rechargement)
 const AI_CACHE_MAX = 500;        // maximum d'entrées en mémoire
 
-// ── Normalise ce qui est lu dans Firestore (server_config/api_keys) en simple tableau de chaînes ──
+// ── Normalise ce qui est lu dans Realtime Database en simple tableau de chaînes ──
 // Accepte : ["clé1","clé2"]  OU  {0:"clé1",1:"clé2"}  OU  [{id:1,value:"clé1"}, ...]
 function normalizeRtdbKeys(raw) {
   if (!raw) return [];
@@ -141,51 +141,51 @@ function normalizeRtdbKeys(raw) {
 
 async function loadServerConfig() {
   try {
-    // Charger les clés OpenRouter depuis Firestore (server_config/openrouter_keys, champ "key")
+    // Charger les clés OpenRouter depuis Realtime Database (server_config/openrouter_keys)
     try {
-      const snap = await getDoc(doc(db, 'server_config', 'openrouter_keys'));
+      const snap = await rtdbGet(rtdbRef(rtdb, 'server_config/openrouter_keys'));
       if (snap.exists()) {
-        OPENROUTER_KEYS = normalizeRtdbKeys(snap.data()?.key);
+        OPENROUTER_KEYS = normalizeRtdbKeys(snap.val());
         GROQ_API_KEYS = OPENROUTER_KEYS; // GROQ_API_KEYS = clés utilisées par callGroqQueued (openrouter.ai)
       }
     } catch (e) {
-      console.warn('[COMEO] Erreur chargement clés OpenRouter depuis Firestore :', e.message);
+      console.warn('[COMEO] Erreur chargement clés OpenRouter depuis Realtime Database :', e.message);
     }
 
-    // Charger les clés Groq natives depuis Firestore (server_config/groq_keys, champ "key")
+    // Charger les clés Groq natives depuis Realtime Database (server_config/groq_keys)
     try {
-      const snap = await getDoc(doc(db, 'server_config', 'groq_keys'));
+      const snap = await rtdbGet(rtdbRef(rtdb, 'server_config/groq_keys'));
       if (snap.exists()) {
-        GROQ_DIRECT_KEYS = normalizeRtdbKeys(snap.data()?.key);
+        GROQ_DIRECT_KEYS = normalizeRtdbKeys(snap.val());
       }
     } catch (e) {
-      console.warn('[COMEO] Erreur chargement clés Groq depuis Firestore :', e.message);
+      console.warn('[COMEO] Erreur chargement clés Groq depuis Realtime Database :', e.message);
     }
 
-    // Charger les clés Gemini depuis Firestore (server_config/gemini_keys, champ "key")
+    // Charger les clés Gemini depuis Realtime Database (server_config/gemini_keys)
     try {
-      const snap = await getDoc(doc(db, 'server_config', 'gemini_keys'));
+      const snap = await rtdbGet(rtdbRef(rtdb, 'server_config/gemini_keys'));
       if (snap.exists()) {
-        GEMINI_KEYS = normalizeRtdbKeys(snap.data()?.key);
+        GEMINI_KEYS = normalizeRtdbKeys(snap.val());
       }
     } catch (e) {
-      console.warn('[COMEO] Erreur chargement clés Gemini depuis Firestore :', e.message);
+      console.warn('[COMEO] Erreur chargement clés Gemini depuis Realtime Database :', e.message);
     }
 
     groqKeyBusy = new Array(GROQ_API_KEYS.length).fill(false);
 
-    // Charger les modèles depuis Firestore (server_config/models, champ "key")
+    // Charger les modèles depuis Realtime Database (server_config/models)
     try {
-      const snap = await getDoc(doc(db, 'server_config', 'models'));
+      const snap = await rtdbGet(rtdbRef(rtdb, 'server_config/models'));
       if (snap.exists()) {
-        const val = snap.data()?.key;
-        GROQ_MODELS = Array.isArray(val) ? val.filter(Boolean) : normalizeRtdbKeys(val);
+        const val = snap.val();
+        GROQ_MODELS = Array.isArray(val) ? val.filter(Boolean) : Object.values(val || {}).filter(Boolean);
       }
     } catch (e) {
-      console.warn('[COMEO] Erreur chargement modèles depuis Firestore :', e.message);
+      console.warn('[COMEO] Erreur chargement modèles depuis Realtime Database :', e.message);
     }
 
-    // Valeurs par défaut si le document Firestore est vide
+    // Valeurs par défaut si Realtime Database vide
     if (GROQ_MODELS.length === 0) {
       GROQ_MODELS = ['llama-3.3-70b-versatile', 'qwen/qwen3-32b', 'meta-llama/llama-4-scout-17b-16e-instruct'];
     }
@@ -7376,9 +7376,8 @@ function updateExportOptions() {
 
 // ══════════════════════════════════════════
 // CONFIGURATION SERVEUR — Les clés API ne sont plus en dur ici.
-// Elles sont chargées depuis Firestore (collection server_config, documents
-// openrouter_keys, groq_keys, gemini_keys et models — chacun avec un champ "key")
-// par loadServerConfig(), déclarée plus haut (ligne ~126).
+// Elles sont chargées depuis Realtime Database (server_config/openrouter_keys,
+// server_config/groq_keys et server_config/gemini_keys) par loadServerConfig(), déclarée plus haut (ligne ~126).
 // Administration des clés : voir azur.html (protégé par mot de passe).
 // ══════════════════════════════════════════
 
@@ -7397,14 +7396,13 @@ window.setGroqKeysFromCC = function(keys, models) {
   aiServiceAvailable = GROQ_API_KEYS.length > 0;
   updateServiceAvailabilityUI();
   console.log(`[COMEO CC] ${GROQ_API_KEYS.length} clé(s) OpenRouter chargée(s) depuis CC.html`);
-  // Sauvegarder dans Firestore (server_config/openrouter_keys, champ "key") pour persistance
-  if (window._db) {
-    const keyField = GROQ_API_KEYS.map((value, i) => ({ id: i + 1, value }));
-    window._fbSetDoc(window._fbDoc(window._db, 'server_config', 'openrouter_keys'), { key: keyField }, { merge: true })
-      .then(() => console.log('[COMEO CC] Clés OpenRouter sauvegardées dans Firestore'))
-      .catch((e) => console.warn('[COMEO CC] Erreur sauvegarde Firestore:', e.message));
+  // Sauvegarder dans Realtime Database pour persistance
+  if (window._rtdb) {
+    window._rtdbSet(window._rtdbRef(window._rtdb, 'server_config/openrouter_keys'), GROQ_API_KEYS)
+      .then(() => console.log('[COMEO CC] Clés OpenRouter sauvegardées dans Realtime Database'))
+      .catch((e) => console.warn('[COMEO CC] Erreur sauvegarde Realtime Database:', e.message));
     if (models && models.length > 0) {
-      window._fbSetDoc(window._fbDoc(window._db, 'server_config', 'models'), { key: models }, { merge: true }).catch(() => {});
+      window._rtdbSet(window._rtdbRef(window._rtdb, 'server_config/models'), models).catch(() => {});
     }
   }
 };
