@@ -11,6 +11,7 @@
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script src="chart.umd.min.js" onerror="var s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js';s.onerror=function(){var s2=document.createElement('script');s2.src='https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js';document.head.appendChild(s2);};document.head.appendChild(s);console.warn('[SYSCOHADA] chart.umd.min.js local introuvable, bascule sur CDN.');"></script>
 <link rel="stylesheet" href="as.css">
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 </head>
 <body>
 
@@ -2098,11 +2099,29 @@
         <div class="sr-field"><span class="sr-label">TVA</span><input class="af-input" type="text" inputmode="decimal" id="sr-tva" placeholder="0" oninput="recalculerTTCScan()"></div>
         <div class="sr-field"><span class="sr-label">Montant TTC</span><input class="af-input" type="text" inputmode="decimal" id="sr-ttc" placeholder="0"></div>
       </div>
-      <p class="scan-result-note">Vérifiez les champs détectés par l'IA avant confirmation. Une fois confirmée, la facture normalisée sera enregistrée et placée en file de transmission vers la DGI / Ministère de l'Économie et des Finances du Bénin (norme e-facturation). L'envoi effectif sera activé dès l'intégration de l'API officielle.</p>
+      <p class="scan-result-note">Vérifiez les champs détectés par l'IA avant confirmation. Une fois confirmée, la facture normalisée est transmise en temps réel à la DGI Bénin (système e-MECeF) pour validation et attribution du sceau fiscal (NIM + QR code).</p>
       <button class="btn btn-gold" style="width:100%" onclick="confirmerTransmissionFacture()">✓ Confirmer et transmettre</button>
     </div>
 
     <button class="premium-logout-btn" style="margin-top:10px" onclick="closeScanFactureModal()">Annuler</button>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════
+     MODAL SCEAU FISCAL e-MECeF (QR code DGI)
+     ═══════════════════════════════════ -->
+<div id="sceauFiscalModal" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeSceauFiscalModal()">
+  <div class="modal-box scan-modal-box sceau-modal-box">
+    <div class="modal-title">🔏 Sceau fiscal e-MECeF</div>
+    <div class="modal-sub">Facture certifiée par la DGI Bénin — à conserver / imprimer avec la facture</div>
+    <div id="sceauQrWrap" class="sceau-qr-wrap">
+      <canvas id="sceauQrCanvas"></canvas>
+    </div>
+    <div id="sceauDetails" class="sceau-details"></div>
+    <div class="modal-actions" style="margin-top:16px">
+      <button class="btn-modal-cancel" onclick="closeSceauFiscalModal()">Fermer</button>
+      <button class="btn-modal-ok" onclick="window.print()">🖨 Imprimer</button>
+    </div>
   </div>
 </div>
 
