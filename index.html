@@ -11,7 +11,7 @@
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script src="chart.umd.min.js" onerror="var s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js';s.onerror=function(){var s2=document.createElement('script');s2.src='https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js';document.head.appendChild(s2);};document.head.appendChild(s);console.warn('[SYSCOHADA] chart.umd.min.js local introuvable, bascule sur CDN.');"></script>
 <link rel="stylesheet" href="as.css">
-<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js" onerror="var s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js';s.onerror=function(){var s2=document.createElement('script');s2.src='https://unpkg.com/qrcode@1.5.3/build/qrcode.min.js';document.head.appendChild(s2);};document.head.appendChild(s);console.warn('[COMEO] qrcode.min.js CDN principal indisponible, bascule.');"></script>
 </head>
 <body>
 
@@ -53,51 +53,43 @@
   <div class="af-field"><label class="af-label">Mot de passe (min 6 car.)</label><input class="af-input" type="password" id="r-pass" placeholder="Minimum 6 caractères"></div>
   <div class="auth-err" id="r-err"></div>
   <button class="auth-btn" onclick="doRegister()">✓ Créer mon profil</button>
-  <p class="auth-trial-note">🎁 12 heures d'essai gratuit · puis 15&nbsp;000 FCFA/mois via Wave</p>
+  <p class="auth-trial-note">🎁 12 heures d'essai gratuit · puis 15&nbsp;000 FCFA/mois — abonnement via WhatsApp</p>
 </div>
   </div>
 </div>
 
-<!-- PAYWALL PREMIUM WAVE -->
+<!-- PAYWALL PREMIUM — ABONNEMENT VIA WHATSAPP -->
 <div id="premiumPaywall" class="premium-paywall" style="display:none">
   <div class="premium-paywall-inner">
 
-    <!-- Étape 1 & 2 : Paiement + confirmation -->
+    <!-- Étape unique : redirection vers le service client WhatsApp -->
     <div id="paywallPaymentForm">
       <div class="premium-emblem">⭐ COMEO Premium</div>
       <h2 class="premium-title">Abonnement mensuel</h2>
       <p class="premium-desc" id="paywallTrialInfo">Essai gratuit 12 h à la création du compte, puis abonnement requis.</p>
       <div class="premium-price">15&nbsp;000 <span>FCFA / mois</span></div>
 
-      <p class="premium-step-label">Étape 1 — Payer avec Wave</p>
-      <button type="button" class="premium-wave-btn" onclick="openWavePayment()">
-        <span class="wave-icon">W</span> Payer 15 000 FCFA avec Wave
+      <p class="premium-step-label">S'abonner</p>
+      <button type="button" class="premium-whatsapp-btn" onclick="ouvrirAbonnementWhatsApp()">
+        <span class="whatsapp-icon">📱</span> S'abonner via WhatsApp
       </button>
-      <p class="premium-wave-hint" id="wavePayHint" style="display:none">✅ Wave ouvert — effectuez le paiement puis revenez ici.</p>
+      <p class="premium-whatsapp-hint">Vous serez redirigé vers notre service client sur WhatsApp (+225 05 08 46 30 03) pour finaliser votre paiement et recevoir votre accès Premium.</p>
 
-      <div class="premium-divider">Étape 2 — Confirmer votre paiement</div>
-      <p class="premium-form-desc">Remplissez exactement les informations utilisées sur Wave :</p>
-      <input type="text" id="wavePayerName" class="premium-code-input" placeholder="Nom complet (comme sur Wave)" autocomplete="name" maxlength="80">
-      <input type="tel" id="wavePayerNumber" class="premium-code-input" placeholder="Numéro Wave (ex: 07 XX XX XX XX)" autocomplete="tel" maxlength="20">
-      <div class="auth-err" id="paymentFormErr"></div>
-      <button type="button" class="premium-activate-btn" id="confirmWaveBtn" onclick="confirmWavePaymentManual()">
-        ✓ Confirmer mon paiement
-      </button>
       <button type="button" class="premium-logout-btn" onclick="doLogout()">Se déconnecter</button>
     </div>
 
-    <!-- Étape 3 : Merci — en attente validation -->
+    <!-- Confirmation : demande envoyée, en attente de validation -->
     <div id="paywallSuccessPanel" class="paywall-success-panel" style="display:none">
       <div class="paywall-stickers">🎉 ✅ 🙏 ⏳ 💙</div>
       <h2 class="premium-title">Merci !</h2>
       <p class="paywall-success-text">
-        Votre demande a bien été enregistrée.<br><br>
-        <strong>Veuillez patienter 12 à 24 heures</strong> pendant que nous vérifions votre paiement Wave.<br><br>
+        Votre demande a bien été transmise à notre service client sur WhatsApp.<br><br>
+        <strong>Continuez la conversation sur WhatsApp</strong> pour finaliser votre paiement.<br><br>
         Vous recevrez l'accès Premium dès validation par notre équipe.
       </p>
       <div class="paywall-success-box">
         <span>⏰</span> Délai habituel : 12 h – 24 h<br>
-        <span>📱</span> Conservez votre reçu Wave<br>
+        <span>📱</span> Service client : +225 05 08 46 30 03<br>
         <span>✨</span> Merci pour votre confiance !
       </div>
       <button type="button" class="premium-logout-btn" onclick="doLogout()">Fermer et se déconnecter</button>
@@ -293,7 +285,7 @@
   <div class="nav-item" onclick="navigate('paie');closeMobileSidebar()"><span class="nav-icon">💳</span> Paie & Bulletins</div>
   <div class="nav-item" onclick="navigate('tresorerie');closeMobileSidebar()"><span class="nav-icon">💰</span> Trésorerie + Réconciliation</div>
   <div class="nav-item" onclick="navigate('taxes');closeMobileSidebar()"><span class="nav-icon">📋</span> Taxes & Déclarations</div>
-  <div class="nav-item" onclick="navigate('appels');closeMobileSidebar()"><span class="nav-icon">🎥</span> Appels vidéo 3D</div>
+  <div class="nav-item" onclick="navigate('appels');closeMobileSidebar()"><span class="nav-icon">💬</span> Messagerie</div>
 </div>
 <div class="sb-section">
   <div class="sb-title">Référentiel</div>
@@ -1477,44 +1469,36 @@
       </div>
     </div>
 
-    <!-- ═══════════════════ APPELS VIDÉO 3D ═══════════════════ -->
+    <!-- ═══════════════════ MESSAGERIE (collaborateur ↔ propriétaire) ═══════════════════ -->
     <div class="view" id="view-appels">
       <div class="ph">
-        <div><h1>Appels vidéo 3D</h1><p>Communicat vidéo innovante · Partage d'écran · Historique</p></div>
+        <div><h1>Messagerie</h1><p id="msg-sous-titre">Discussion en temps réel · Appels vidéo · Audio · Images & vidéos</p></div>
         <div class="ph-actions">
-          <button class="btn btn-ink" onclick="openNouveau3DCall()">🎥 Nouvel appel 3D</button>
-          <button class="btn btn-sm-wire" onclick="exportHistoriqueAppels()">↓ Historique</button>
+          <button class="btn btn-ink" onclick="ouvrirAppelVideo()">📹 Appel vidéo</button>
         </div>
       </div>
       <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
-        <div class="kpi"><div class="kpi-label">Appels</div><div class="kpi-value" id="video-kpi-total" style="color:var(--warm)">0</div><div class="kpi-sub">total</div></div>
-        <div class="kpi"><div class="kpi-label">Durée moyenne</div><div class="kpi-value" id="video-kpi-durée" style="color:var(--blue)">0:00</div><div class="kpi-sub">minutes</div></div>
-        <div class="kpi"><div class="kpi-label">Participants</div><div class="kpi-value" id="video-kpi-users" style="color:var(--green)">0</div><div class="kpi-sub">connectés</div></div>
-        <div class="kpi"><div class="kpi-label">Cette session</div><div class="kpi-value" id="video-kpi-session" style="color:var(--muted)">—</div><div class="kpi-sub">durée</div></div>
+        <div class="kpi"><div class="kpi-label">Messages</div><div class="kpi-value" id="msg-kpi-total" style="color:var(--warm)">0</div><div class="kpi-sub">total</div></div>
+        <div class="kpi"><div class="kpi-label">Aujourd'hui</div><div class="kpi-value" id="msg-kpi-jour" style="color:var(--blue)">0</div><div class="kpi-sub">messages</div></div>
+        <div class="kpi"><div class="kpi-label">Médias partagés</div><div class="kpi-value" id="msg-kpi-medias" style="color:var(--green)">0</div><div class="kpi-sub">images/audio/vidéo</div></div>
+        <div class="kpi"><div class="kpi-label">Avec</div><div class="kpi-value" id="msg-kpi-avec" style="color:var(--muted);font-size:14px">—</div><div class="kpi-sub">interlocuteur</div></div>
       </div>
-      <div class="card" id="appealsContent">
-        <div id="videoCallPanel" style="display:none;padding:20px;background:rgba(34,197,94,.08);border-radius:10px;margin-bottom:16px">
-          <div style="display:flex;gap:12px;align-items:center;margin-bottom:16px">
-            <div style="width:60px;height:60px;background:var(--surface2);border-radius:50%;display:flex;align-items:center;justify-content:center;border:2px solid var(--warm)">
-              <span style="font-size:24px">📹</span>
-            </div>
-            <div>
-              <div style="font-weight:600;font-size:14px">Appel vidéo en cours</div>
-              <div style="font-size:12px;color:var(--muted)" id="video-duration">00:00</div>
-            </div>
-            <button onclick="terminerAppel()" style="margin-left:auto;background:var(--rust);color:white;border:none;padding:8px 16px;border-radius:6px;cursor:pointer">Terminer</button>
-          </div>
-          <div id="videoContainer" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
-            <video id="localVideo3D" autoplay muted playsinline style="width:100%;border-radius:6px;background:var(--surface2)"></video>
-            <video id="remoteVideo3D" autoplay playsinline style="width:100%;border-radius:6px;background:var(--surface2)"></video>
-          </div>
-          <div style="display:flex;gap:8px;justify-content:center">
-            <button onclick="toggleMic()" style="padding:10px 14px;background:var(--surface2);border:1px solid var(--line);border-radius:6px;cursor:pointer">🎤 Micro</button>
-            <button onclick="toggleCam()" style="padding:10px 14px;background:var(--surface2);border:1px solid var(--line);border-radius:6px;cursor:pointer">📹 Caméra</button>
-            <button onclick="shareScreen()" style="padding:10px 14px;background:var(--surface2);border:1px solid var(--line);border-radius:6px;cursor:pointer">🖥️ Partager</button>
-          </div>
+      <div class="card msg-chat-card">
+        <div id="msgListWrap" class="msg-chat-list">
+          <div class="empty-state"><div class="icon">💬</div><p>Aucun message pour le moment. Écrivez le premier !</p></div>
         </div>
-        <div class="empty-state"><div class="icon">🎥</div><p>Aucun appel actif. Cliquez sur "Nouvel appel 3D" pour commencer.</p></div>
+        <div id="msgRecordingBar" class="msg-recording-bar" style="display:none">
+          <span class="msg-rec-dot"></span> Enregistrement audio… <span id="msgRecTimer">00:00</span>
+          <button class="msg-rec-cancel" onclick="annulerEnregistrementAudio()">Annuler</button>
+          <button class="msg-rec-stop" onclick="arreterEnregistrementAudio()">✓ Envoyer</button>
+        </div>
+        <div class="msg-input-row">
+          <input type="file" id="msgAttachInput" accept="image/*,video/*" style="display:none" onchange="handleAttachmentSelect(event)">
+          <button class="msg-icon-btn" title="Joindre une image ou vidéo" onclick="document.getElementById('msgAttachInput').click()">📎</button>
+          <button class="msg-icon-btn" id="msgAudioBtn" title="Message audio" onclick="demarrerEnregistrementAudio()">🎤</button>
+          <input type="text" id="msgTextInput" class="msg-text-input" placeholder="Écrire un message…" onkeydown="if(event.key==='Enter'){envoyerMessageTexte();}">
+          <button class="msg-send-btn" onclick="envoyerMessageTexte()">➤</button>
+        </div>
       </div>
     </div>
 
@@ -1991,6 +1975,7 @@
         <div style="position:absolute;bottom:8px;right:8px;display:flex;gap:6px" id="localVideoControls">
           <button id="btnMicToggle" onclick="toggleMic()" style="width:30px;height:30px;border-radius:50%;background:rgba(0,0,0,.6);border:1px solid rgba(255,255,255,.2);color:#fff;font-size:13px;cursor:pointer" title="Micro">🎤</button>
           <button id="btnCamToggle" onclick="toggleCam()" style="width:30px;height:30px;border-radius:50%;background:rgba(0,0,0,.6);border:1px solid rgba(255,255,255,.2);color:#fff;font-size:13px;cursor:pointer" title="Caméra">📷</button>
+          <button id="btnShareScreen" onclick="shareScreen()" style="width:30px;height:30px;border-radius:50%;background:rgba(0,0,0,.6);border:1px solid rgba(255,255,255,.2);color:#fff;font-size:13px;cursor:pointer" title="Partager l'écran">🖥️</button>
         </div>
       </div>
       <!-- Vidéo distante -->
