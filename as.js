@@ -293,7 +293,7 @@ function isActionQuery(queryLow) {
 // ══════════════════════════════════════════
 const TRIAL_DURATION_MS = 12 * 60 * 60 * 1000;
 const PREMIUM_MONTH_MS = 30 * 24 * 60 * 60 * 1000;
-const WAVE_AMOUNT_FCFA = 15000;
+const ABONNEMENT_AMOUNT_FCFA = 15000;
 const COMEO_SERVICE_MSG = 'Veuillez patienter quelques instants ou revenez plus tard.';
 
 let aiServiceAvailable = true;
@@ -301,17 +301,12 @@ let subscriptionCheckInterval = null;
 
 const OWNER_WHATSAPP_NUMBER = '2250508463003';
 
-function getWavePaymentUrl() {
-  const p = ['https://pay.wave.com/m/', 'M_ci_iqMcg8KwRE-W', '/c/ci/?amount=', String(WAVE_AMOUNT_FCFA)];
-  return p.join('');
-}
-
-// ── Construit le message WhatsApp de réabonnement envoyé au propriétaire ──
+// ── Construit le message WhatsApp de réabonnement envoyé au service client ──
 function buildReabonnementWhatsAppUrl() {
   const company = currentProfile?.company || '';
   const email = currentProfile?.email || '';
   const lignes = [
-    `Bonjour, je souhaite renouveler mon abonnement COMEO AI Pro (${WAVE_AMOUNT_FCFA.toLocaleString('fr-FR')} FCFA / mois).`,
+    `Bonjour, je souhaite m'abonner à COMEO AI Pro (${ABONNEMENT_AMOUNT_FCFA.toLocaleString('fr-FR')} FCFA / mois).`,
     company ? `Entreprise : ${company}` : '',
     email ? `Email : ${email}` : '',
   ].filter(Boolean);
@@ -741,95 +736,26 @@ function startSubscriptionMonitor() {
   }, 60000);
 }
 
-async function activatePremiumWithCode() {
-  const input = document.getElementById('activationCode');
-  const errEl = document.getElementById('activationErr');
-  const code = (input?.value || '').trim();
-  if (!code || !currentProfile?.id) return;
-  if (errEl) {
-    errEl.classList.remove('show');
-    errEl.textContent = '';
-  }
-  try {
-    await waitForFirebase();
-    const snap = await window._fbGetDoc(window._fbDoc(window._db, 'server_config', 'wave_settings'));
-    const hashExpected = snap.exists() ? snap.data().activationCodeHash : null;
-    if (!hashExpected) {
-      if (errEl) {
-        errEl.textContent = 'Activation non configurée. Contactez le support.';
-        errEl.classList.add('show');
-      }
-      return;
-    }
-    const hashGot = await sha256Hex(code);
-    if (hashGot !== hashExpected) {
-      if (errEl) {
-        errEl.textContent = 'Code invalide. Vérifiez le code reçu après paiement Wave.';
-        errEl.classList.add('show');
-      }
-      return;
-    }
-    const premiumUntil = new Date(Date.now() + PREMIUM_MONTH_MS).toISOString();
-    await window._fbSetDoc(
-      window._fbDoc(window._db, 'profiles', currentProfile.id),
-      {
-        premiumUntil,
-        subscriptionStatus: 'active',
-        lastActivationAt: new Date().toISOString(),
-        activationMethod: 'wave_code',
-      },
-      { merge: true },
-    );
-    currentProfile.premiumUntil = premiumUntil;
-    currentProfile.subscriptionStatus = 'active';
-    hidePremiumPaywall();
-    document.getElementById('appShell').style.display = 'grid';
-    toast('Abonnement Premium activé pour 30 jours.', 'success');
-    await loadApp();
-  } catch (e) {
-    if (errEl) {
-      errEl.textContent = e.message || 'Erreur activation';
-      errEl.classList.add('show');
-    }
-  }
-}
+// (Ancien système d'activation par code Wave — supprimé. L'abonnement passe désormais
+// exclusivement par une demande envoyée au service client via WhatsApp, voir
+// ouvrirAbonnementWhatsApp() / confirmerDemandeReabonnement() plus bas.)
 
 async function claimWavePayment() {
-  if (!currentProfile?.id) return;
-  const btn = document.getElementById('claimWaveBtn');
-  if (btn) btn.disabled = true;
-  try {
-    await waitForFirebase();
-    await window._fbAddDoc(window._fbCollection(window._db, 'profiles', currentProfile.id, 'payment_claims'), {
-      provider: 'wave',
-      amount: WAVE_AMOUNT_FCFA,
-      currency: 'XOF',
-      status: 'pending',
-      createdAt: new Date().toISOString(),
-      email: currentProfile.email || '',
-    });
-    await window._fbSetDoc(
-      window._fbDoc(window._db, 'profiles', currentProfile.id),
-      {
-        paymentPendingAt: new Date().toISOString(),
-        subscriptionStatus: 'pending_payment',
-      },
-      { merge: true },
-    );
-    toast("Demande enregistrée. Entrez votre code d'activation reçu après paiement.", 'info');
-  } catch (e) {
-    toast('Erreur : ' + e.message, 'error');
-  } finally {
-    if (btn) btn.disabled = false;
-  }
+  // Conservé uniquement par compatibilité de nommage — redirige vers le flux WhatsApp actuel.
+  ouvrirAbonnementWhatsApp();
 }
 
 function openWavePayment() {
-  openWhatsAppReabonnement();
+  ouvrirAbonnementWhatsApp();
+}
+
+function ouvrirAbonnementWhatsApp() {
+  window.open(buildReabonnementWhatsAppUrl(), '_blank', 'noopener,noreferrer');
+  confirmerDemandeReabonnement();
 }
 
 function openWhatsAppReabonnement() {
-  window.open(buildReabonnementWhatsAppUrl(), '_blank', 'noopener,noreferrer');
+  ouvrirAbonnementWhatsApp();
 }
 
 // ══════════════════════════════════════════
@@ -2690,8 +2616,7 @@ Journaux autorisés : AC | VE | BQ | CA | OD | IN | AN
 CONFIDENTIALITÉ ET CRÉDITS :
   → Si on te demande : "Qui t'a créé ?" ou "Qui a créé COMEO AI ?" ou "Qui est le fondateur ?"
   → Réponds : "COMEO AI a été créé par **Marcio Jardel Zinzindohoué**, Expert-Comptable et Conseiller en Gestion Financière pour les PME de l'UEMOA."
-  → Puis affiche la commande : ###AFFICHER###{"type":"fondateur","image":"marciopro.jpeg"}
-  → Cette commande affichera la photo du fondateur
+  → Ne joins JAMAIS de photo ni d'image du fondateur/concepteur, quelle que soit la façon dont la question est posée. Réponds uniquement par le texte ci-dessus.
 
 ════════════════════════════════════════════
 🔍 FILTRES ET NAVIGATION
@@ -2844,6 +2769,8 @@ window.doGoogleSignIn = doGoogleSignIn;
 async function doLogout() {
   if (!confirm('Se déconnecter ?')) return;
   if (subscriptionCheckInterval) clearInterval(subscriptionCheckInterval);
+  if (messagesUnsubscribe) { messagesUnsubscribe(); messagesUnsubscribe = null; }
+  if (modifUnsubscribe) { modifUnsubscribe(); modifUnsubscribe = null; }
   hidePremiumPaywall();
   await signOut(auth);
   currentProfile = null;
@@ -3054,6 +2981,7 @@ const VIEW_KEYS = {
   utilisateurs: 'utilisat',
   effets: 'effets',
   modifications: 'modificat',
+  appels: 'messagerie',
 };
 const RENDERERS = {
   'dashboard-ceo': renderCeoDashboard,
@@ -3091,6 +3019,7 @@ const RENDERERS = {
   utilisateurs: renderUtilisateurs,
   effets: renderEffets,
   modifications: renderModifications,
+  appels: renderMessagerie,
 };
 
 // ══════════════════════════════════════════════════════════════════
@@ -5587,15 +5516,43 @@ function ouvrirSceauFiscal(factureId) {
     <div class="sceau-row"><span class="sceau-label">Montant TTC</span><span class="sceau-value">${(f.ttc || 0).toLocaleString('fr-FR')} FCFA</span></div>
   `;
   modal.style.display = 'flex';
-  // Génération du QR code côté client (canvas) à partir de la chaîne fournie par la DGI
-  setTimeout(() => {
+  // Génération du QR code côté client (canvas) à partir de la chaîne fournie par la DGI.
+  // Résilience : la lib peut ne pas être encore chargée (CDN lent/bloqué) → on retente
+  // quelques fois avant d'afficher un repli textuel (le code reste vérifiable manuellement).
+  let tentatives = 0;
+  const essayerDessiner = () => {
     const canvas = document.getElementById('sceauQrCanvas');
-    if (canvas && window.QRCode) {
+    if (!canvas) return;
+    if (window.QRCode && typeof window.QRCode.toCanvas === 'function') {
       window.QRCode.toCanvas(canvas, f.sceauFiscal, { width: 220, margin: 1 }, (err) => {
-        if (err) console.error('[e-MECeF] Erreur génération QR code :', err);
+        if (err) {
+          console.error('[e-MECeF] Erreur génération QR code :', err);
+          afficherReplisQr(f.sceauFiscal);
+        }
       });
+      return;
     }
-  }, 0);
+    tentatives++;
+    if (tentatives < 15) {
+      setTimeout(essayerDessiner, 200); // la lib QRCode charge encore (CDN)
+    } else {
+      console.warn('[e-MECeF] Librairie QRCode indisponible après plusieurs tentatives — repli textuel affiché.');
+      afficherReplisQr(f.sceauFiscal);
+    }
+  };
+  setTimeout(essayerDessiner, 0);
+}
+
+// Repli si la génération graphique du QR échoue : affiche le code brut, vérifiable manuellement.
+function afficherReplisQr(code) {
+  const wrap = document.getElementById('sceauQrWrap');
+  if (wrap) {
+    wrap.innerHTML = `<div class="sceau-qr-fallback">
+      <div style="font-size:22px;margin-bottom:8px">🔏</div>
+      <div style="font-size:9.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px">Code de vérification (QR indisponible)</div>
+      <div style="font-family:var(--font-mono);font-size:11px;word-break:break-all;color:var(--ink);padding:0 8px">${code}</div>
+    </div>`;
+  }
 }
 
 function closeSceauFiscalModal() {
@@ -6207,11 +6164,10 @@ const sendToAI = async function(context) {
         const jsonMatch = clean.match(/(\{[\s\S]*?\})/);
         if (jsonMatch) {
           const affichage = JSON.parse(jsonMatch[1]);
-          if (affichage.type === 'fondateur' && affichage.image) {
-            // Afficher le fondateur avec sa photo
+          if (affichage.type === 'fondateur') {
+            // Politique COMEO : ne jamais afficher de photo du fondateur/concepteur, texte uniquement.
             const founderHTML = `
               <div style="text-align:center;padding:20px;background:rgba(212,168,83,.05);border-radius:8px;margin:15px 0">
-                <img src="${affichage.image}" alt="Marcio Jardel Zinzindohoué" style="width:120px;height:120px;border-radius:50%;border:3px solid var(--gold);margin-bottom:15px">
                 <div style="font-size:16px;font-weight:700;color:var(--gold);margin-bottom:5px">Marcio Jardel Zinzindohoué</div>
                 <div style="font-size:13px;color:var(--muted)">Fondateur de COMEO AI<br>Expert-Comptable & Conseiller en Gestion Financière<br>Spécialisé PME de l'UEMOA</div>
               </div>
@@ -10600,10 +10556,10 @@ function doForgotPassword() {
   window.open(`https://wa.me/${OWNER_WHATSAPP_NUMBER}?text=${message}`, '_blank', 'noopener,noreferrer');
 }
 window.doForgotPassword = doForgotPassword;
+window.ouvrirAbonnementWhatsApp = ouvrirAbonnementWhatsApp;
 window.openWavePayment = openWavePayment;
 window.openWhatsAppReabonnement = openWhatsAppReabonnement;
 window.claimWavePayment = claimWavePayment;
-window.activatePremiumWithCode = activatePremiumWithCode;
 // ══════════════════════════════════════════
 // EXPOSITION GLOBALE
 // ══════════════════════════════════════════
@@ -12166,6 +12122,235 @@ function toggleCam() {
 }
 
 // ══════════════════════════════════════════════════════════════════
+// ██  MODULE MESSAGERIE — Chat temps réel collaborateur ↔ propriétaire
+// ██  Texte + audio (MediaRecorder) + images/vidéos (upload Cloudinary)
+// ══════════════════════════════════════════════════════════════════
+const CLOUDINARY_CONFIG = { cloudName: 'djxcqczh1', uploadPreset: 'database' };
+
+let chatMessages = [];
+let messagesUnsubscribe = null;
+let msgMediaCount = 0;
+
+// Identité unique de l'expéditeur — currentProfile.id vaut l'UID du PROPRIÉTAIRE
+// même côté collaborateur (voir chargerDonneesProprietaire), donc on utilise
+// _realUid pour distinguer chaque collaborateur individuellement.
+function getMonSenderId() {
+  return isCollabMode ? (currentProfile._realUid || currentProfile.email || 'collab') : currentProfile.id;
+}
+function getMonSenderName() {
+  return isCollabMode ? (currentProfile.email || 'Collaborateur') : (currentProfile.company || 'Propriétaire');
+}
+function getMonSenderRole() {
+  return isCollabMode ? 'collaborateur' : 'proprietaire';
+}
+
+function renderMessagerie() {
+  const sousTitre = document.getElementById('msg-sous-titre');
+  const avecEl = document.getElementById('msg-kpi-avec');
+  if (sousTitre) sousTitre.textContent = isCollabMode
+    ? 'Discussion avec le propriétaire · Temps réel'
+    : 'Discussion avec vos collaborateurs · Temps réel';
+  if (avecEl) avecEl.textContent = isCollabMode ? 'Propriétaire' : 'Collaborateur(s)';
+  ecouterMessagesTempsReel();
+}
+
+function ecouterMessagesTempsReel() {
+  if (!window._fbReady || !currentProfile?.id) return;
+  if (messagesUnsubscribe) return; // déjà en écoute pour cette session
+  const { onSnapshot, collection } = window._firebaseFirestore || {};
+  if (!onSnapshot || !collection) return;
+  const ownerID = getOwnerProfileId();
+  messagesUnsubscribe = onSnapshot(collection(window._db, 'profiles', ownerID, 'messages'), (snap) => {
+    chatMessages = [];
+    snap.forEach((d) => chatMessages.push({ ...d.data(), _docId: d.id }));
+    chatMessages.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
+    renderMessagesList();
+  }, (err) => {
+    console.error('[Messagerie] Erreur écoute temps réel :', err.message);
+  });
+}
+
+function renderMessagesList() {
+  const wrap = document.getElementById('msgListWrap');
+  if (!wrap) return;
+  const monId = getMonSenderId();
+
+  document.getElementById('msg-kpi-total').textContent = chatMessages.length;
+  const aujourdhui = new Date().toISOString().slice(0, 10);
+  document.getElementById('msg-kpi-jour').textContent = chatMessages.filter((m) => (m.ts || '').slice(0, 10) === aujourdhui).length;
+  document.getElementById('msg-kpi-medias').textContent = chatMessages.filter((m) => m.type !== 'text').length;
+
+  if (!chatMessages.length) {
+    wrap.innerHTML = '<div class="empty-state"><div class="icon">💬</div><p>Aucun message pour le moment. Écrivez le premier !</p></div>';
+    return;
+  }
+
+  wrap.innerHTML = chatMessages.map((m) => {
+    const mine = m.senderId === monId;
+    const heure = m.ts ? new Date(m.ts).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : '';
+    const initiale = (m.senderName || '?').trim().charAt(0).toUpperCase();
+    let contenuHTML = '';
+    if (m.type === 'image') {
+      contenuHTML = `<img src="${m.content}" class="msg-media-img" onclick="window.open('${m.content}','_blank')" alt="image">`;
+    } else if (m.type === 'video') {
+      contenuHTML = `<video src="${m.content}" controls class="msg-media-video"></video>`;
+    } else if (m.type === 'audio') {
+      contenuHTML = `<audio src="${m.content}" controls class="msg-media-audio"></audio>`;
+    } else {
+      contenuHTML = `<div class="msg-text">${escapeHtml(m.content || '')}</div>`;
+    }
+    return `
+      <div class="msg ${mine ? 'me' : 'other'}">
+        <div class="msg-av" title="${m.senderName || ''}">${initiale}</div>
+        <div class="msg-body">
+          ${!mine ? `<div class="msg-sender-name">${m.senderName || ''}</div>` : ''}
+          ${contenuHTML}
+          <div class="msg-time">${heure}</div>
+        </div>
+      </div>`;
+  }).join('');
+  wrap.scrollTop = wrap.scrollHeight;
+}
+
+function escapeHtml(str) {
+  const d = document.createElement('div');
+  d.textContent = str;
+  return d.innerHTML;
+}
+
+async function envoyerMessageAuChat(type, content) {
+  if (!window._fbReady || !currentProfile?.id) { toast('Connexion Firebase indisponible', 'error'); return; }
+  const ownerID = getOwnerProfileId();
+  const msg = {
+    type,
+    content,
+    senderId: getMonSenderId(),
+    senderName: getMonSenderName(),
+    senderRole: getMonSenderRole(),
+    ts: new Date().toISOString(),
+  };
+  try {
+    await window._fbAddDoc(window._fbCollection(window._db, 'profiles', ownerID, 'messages'), msg);
+  } catch (e) {
+    toast('Erreur envoi message : ' + e.message, 'error');
+  }
+}
+
+function envoyerMessageTexte() {
+  const input = document.getElementById('msgTextInput');
+  const texte = (input?.value || '').trim();
+  if (!texte) return;
+  input.value = '';
+  envoyerMessageAuChat('text', texte);
+}
+
+// ── Upload Cloudinary (unsigned) — images, vidéos, audio ──────────────────
+async function uploadVersCloudinary(file, onProgressLabel) {
+  const url = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CONFIG.cloudName}/auto/upload`;
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('upload_preset', CLOUDINARY_CONFIG.uploadPreset);
+  const res = await fetch(url, { method: 'POST', body: formData });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData?.error?.message || `Échec upload Cloudinary (HTTP ${res.status})`);
+  }
+  const data = await res.json();
+  return data.secure_url;
+}
+
+async function handleAttachmentSelect(event) {
+  const file = event.target.files?.[0];
+  event.target.value = '';
+  if (!file) return;
+  const type = file.type.startsWith('video/') ? 'video' : 'image';
+  const maxMB = type === 'video' ? 50 : 10;
+  if (file.size > maxMB * 1024 * 1024) {
+    toast(`Fichier trop volumineux (max ${maxMB} Mo)`, 'error');
+    return;
+  }
+  toast('Envoi en cours…', 'info');
+  try {
+    const url = await uploadVersCloudinary(file);
+    await envoyerMessageAuChat(type, url);
+  } catch (e) {
+    toast('Erreur upload : ' + e.message, 'error');
+  }
+}
+
+// ── Enregistrement audio (MediaRecorder) ───────────────────────────────────
+let msgMediaRecorder = null;
+let msgAudioChunks = [];
+let msgRecordingInterval = null;
+let msgRecordingSeconds = 0;
+let msgRecordingStream = null;
+
+async function demarrerEnregistrementAudio() {
+  try {
+    msgRecordingStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    msgAudioChunks = [];
+    msgMediaRecorder = new MediaRecorder(msgRecordingStream);
+    msgMediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) msgAudioChunks.push(e.data); };
+    msgMediaRecorder.start();
+
+    msgRecordingSeconds = 0;
+    document.getElementById('msgRecordingBar').style.display = 'flex';
+    document.getElementById('msgAudioBtn').style.display = 'none';
+    msgRecordingInterval = setInterval(() => {
+      msgRecordingSeconds++;
+      const m = String(Math.floor(msgRecordingSeconds / 60)).padStart(2, '0');
+      const s = String(msgRecordingSeconds % 60).padStart(2, '0');
+      const el = document.getElementById('msgRecTimer');
+      if (el) el.textContent = `${m}:${s}`;
+    }, 1000);
+  } catch (e) {
+    toast(e.name === 'NotAllowedError' ? 'Accès micro refusé.' : 'Erreur micro : ' + e.message, 'error');
+  }
+}
+
+function stopperFluxEnregistrement() {
+  if (msgRecordingInterval) { clearInterval(msgRecordingInterval); msgRecordingInterval = null; }
+  if (msgRecordingStream) { msgRecordingStream.getTracks().forEach((t) => t.stop()); msgRecordingStream = null; }
+  document.getElementById('msgRecordingBar').style.display = 'none';
+  document.getElementById('msgAudioBtn').style.display = 'inline-flex';
+}
+
+function annulerEnregistrementAudio() {
+  if (msgMediaRecorder && msgMediaRecorder.state !== 'inactive') {
+    msgMediaRecorder.onstop = null;
+    msgMediaRecorder.stop();
+  }
+  msgAudioChunks = [];
+  stopperFluxEnregistrement();
+}
+
+function arreterEnregistrementAudio() {
+  if (!msgMediaRecorder || msgMediaRecorder.state === 'inactive') return;
+  msgMediaRecorder.onstop = async () => {
+    stopperFluxEnregistrement();
+    if (!msgAudioChunks.length) return;
+    const blob = new Blob(msgAudioChunks, { type: 'audio/webm' });
+    if (blob.size < 500) { toast('Enregistrement trop court', 'error'); return; }
+    toast('Envoi du message vocal…', 'info');
+    try {
+      const file = new File([blob], `audio_${Date.now()}.webm`, { type: 'audio/webm' });
+      const url = await uploadVersCloudinary(file);
+      await envoyerMessageAuChat('audio', url);
+    } catch (e) {
+      toast('Erreur envoi audio : ' + e.message, 'error');
+    }
+  };
+  msgMediaRecorder.stop();
+}
+
+window.renderMessagerie = renderMessagerie;
+window.envoyerMessageTexte = envoyerMessageTexte;
+window.handleAttachmentSelect = handleAttachmentSelect;
+window.demarrerEnregistrementAudio = demarrerEnregistrementAudio;
+window.arreterEnregistrementAudio = arreterEnregistrementAudio;
+window.annulerEnregistrementAudio = annulerEnregistrementAudio;
+
+// ══════════════════════════════════════════════════════════════════
 // RENDER UTILISATEURS (mis à jour)
 // ══════════════════════════════════════════════════════════════════
 
@@ -12834,21 +13019,6 @@ async function initAppel3D(recipientId) {
   }
 }
 
-async function terminerAppel() {
-  try {
-    if (localStream) {
-      localStream.getTracks().forEach(track => track.stop());
-    }
-    if (peerConnection) {
-      peerConnection.close();
-    }
-    videoCallActive = false;
-    toast('Appel terminé', 'info');
-  } catch(e) {
-    console.error('Erreur fermeture appel:', e);
-  }
-}
-
 // ════════════════════════════════════════════════════════════════════════════════
 // ✅ FONCTION UTILITY — Log d'audit
 // ════════════════════════════════════════════════════════════════════════════════
@@ -12879,12 +13049,6 @@ async function logAudit(action, module, detail, user) {
 function exportDeclFiscalePDF() { exportDeclarationPDF(); }
 
 function openDeclTaxeModal() { navigate('declarations'); toast('Sélectionnez le type de déclaration ci-dessous', 'info'); }
-
-function openNouveau3DCall() { 
-  const panel = document.getElementById('videoCallPanel');
-  if (panel) panel.style.display = 'block';
-  toast('Appel 3D — Fonctionnalité WebRTC en cours d\'activation', 'info'); 
-}
 
 function exportHistoriqueAppels() {
   try {
@@ -12937,7 +13101,7 @@ const __globalExports = [
   'lancerLettrage','navigate','onClickTopValidate','openBudgetModal','openCentreModal',
   'openClientModal','openCollabModal','openDeclTaxeModal','openDevisModal',
   'openEffetModal','openExportModal','openFactureModal','openFournisseurModal',
-  'openImmobModal','openImportModal','openNouveau3DCall','openPaieModal','openSocieteModal',
+  'openImmobModal','openImportModal','openPaieModal','openSocieteModal',
   'openStockModal','openWavePayment','openWhatsAppReabonnement','confirmerDemandeReabonnement','ouvrirAppelVideo','ouvrirNouvelExercice',
   'previewFacturePDF','rejoindreCollab','renderBalance','renderBilan','renderClients',
   'renderFactures','renderFournisseurs','renderGrandLivre','renderJournal',
@@ -12945,7 +13109,7 @@ const __globalExports = [
   'resetJournalFiltre','revoquerTousCollab','saveBudget','saveCentre','saveClient',
   'saveEffet','saveFacture','saveFournisseur','saveImmob','saveImputation','savePaie',
   'saveSociete','saveStock','searchClientDrop','selectExport','sendToAI',
-  'skipToNextEcriture','switchTab','terminerAppel','terminerAppelVideo','toast',
+  'skipToNextEcriture','switchTab','terminerAppelVideo','toast',
   'toggleCam','toggleMic','toggleMobileSidebar','updateBudgetAccountSuggest',
   'updateExportOptions','updateFacTotaux','updateImmobCompte','updateImputMontant',
   'updateStats','verifierCloture',
@@ -12986,16 +13150,30 @@ const __scope = { addFacLigne, addLigne, afficherDeclaration, afficherLettrage,
   saveSociete, saveStock, searchClientDrop, selectExport, sendToAI,
   skipToNextEcriture, switchTab, terminerAppelVideo, toast,
   toggleCam, toggleMic, toggleMobileSidebar, shareScreen: () => {
-    if (!document.getElementById('videoCallPanel') || navigator.mediaDevices?.getDisplayMedia === undefined) return;
+    const modal = document.getElementById('videoCallModal');
+    if (!modal || modal.style.display !== 'flex' || navigator.mediaDevices?.getDisplayMedia === undefined) {
+      toast('Aucun appel vidéo en cours', 'error');
+      return;
+    }
     navigator.mediaDevices.getDisplayMedia({ video: true }).then(stream => {
       const track = stream.getVideoTracks()[0];
-      if (window._peerConn) {
-        const sender = window._peerConn.getSenders().find(s => s.track?.kind === 'video');
+      if (peerConnection) {
+        const sender = peerConnection.getSenders().find(s => s.track?.kind === 'video');
         if (sender) sender.replaceTrack(track);
       }
       const vid = document.getElementById('localVideo');
       if (vid) vid.srcObject = stream;
-      track.onended = () => { if (localStream) { const vid2 = document.getElementById('localVideo'); if (vid2) vid2.srcObject = localStream; } };
+      track.onended = () => {
+        if (localStream) {
+          const camTrack = localStream.getVideoTracks()[0];
+          if (peerConnection && camTrack) {
+            const sender = peerConnection.getSenders().find(s => s.track?.kind === 'video');
+            if (sender) sender.replaceTrack(camTrack);
+          }
+          const vid2 = document.getElementById('localVideo');
+          if (vid2) vid2.srcObject = localStream;
+        }
+      };
     }).catch(() => {});
   }, updateExportOptions,
   updateFacTotaux, updateImmobCompte, updateImputMontant,
@@ -13016,7 +13194,7 @@ Object.assign(window, __scope);
 
 // Functions that may not exist yet — safe optional exports
 const __optional = ['confirmWavePaymentManual','confirmerDemandeReabonnement','openWhatsAppReabonnement','exportDeclFiscalePDF','openDeclTaxeModal',
-  'openNouveau3DCall','exportHistoriqueAppels','terminerAppel','previewFacturePDF',
+  'exportHistoriqueAppels','previewFacturePDF',
   'autoSaveAllFromNotif','hideSaisieNotif',
   'updateBudgetAccountSuggest','exportAuditPDF','exportBalanceAgeePDF',
   'exportBudgetPDF','exportEffetsPDF','exportInventairePDF','exportRapprochementPDF',
