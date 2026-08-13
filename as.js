@@ -121,6 +121,17 @@ let GROQ_DIRECT_KEYS = []; // Clés Groq natives (utilisées par callGroqDirect 
 let GROQ_MODELS = [];      // Chargées depuis server_config/models
 let groqKeyIdx = 0;        // Index rotation clés OpenRouter
 let groqModelIdx = 0;      // Index rotation modèles Groq
+// ── Configuration e-MECeF (DGI Bénin) — chargée depuis server_config/emecef (RTDB) ──
+// Champs attendus dans RTDB : { token, baseUrl, ifu, nim, operatorId, operatorName, aib }
+// JAMAIS de jeton en dur ici : administré depuis azur.html comme les autres clés.
+let EMECEF_TOKEN = null;
+let EMECEF_BASE_URL = 'https://developpeur.impots.bj/sygmef-emcf'; // plateforme de TEST par défaut
+let EMECEF_IFU = null;          // IFU de l'entreprise (fournisseur)
+let EMECEF_NIM = null;          // NIM de l'e-MCF attribué par la DGI
+let EMECEF_OPERATOR_ID = null;
+let EMECEF_OPERATOR_NAME = null;
+let EMECEF_AIB = 'A';           // Groupe AIB par défaut ("A" ou "B") — à confirmer avec la DGI
+let EMECEF_TAXGROUPS_CACHE = null; // Cache des taux {a,b,c,d,e,f,aibA,aibB} (GET /api/info/taxGroups)
 // File d'attente : requêtes en attente d'une clé libre
 const groqQueue = [];
 // État d'occupation de chaque clé : groqKeyBusy[i] = true si la clé i est en cours d'utilisation
@@ -170,6 +181,23 @@ async function loadServerConfig() {
       }
     } catch (e) {
       console.warn('[COMEO] Erreur chargement clés Gemini depuis Realtime Database :', e.message);
+    }
+
+    // Charger la configuration e-MECeF (jeton + IFU + NIM + opérateur) depuis Realtime Database (server_config/emecef)
+    try {
+      const snap = await rtdbGet(rtdbRef(rtdb, 'server_config/emecef'));
+      if (snap.exists()) {
+        const cfg = snap.val() || {};
+        EMECEF_TOKEN = cfg.token ? String(cfg.token).trim() : null;
+        if (cfg.baseUrl) EMECEF_BASE_URL = String(cfg.baseUrl).trim().replace(/\/$/, '');
+        EMECEF_IFU = cfg.ifu ? String(cfg.ifu).trim() : null;
+        EMECEF_NIM = cfg.nim ? String(cfg.nim).trim() : null;
+        EMECEF_OPERATOR_ID = cfg.operatorId ? String(cfg.operatorId).trim() : null;
+        EMECEF_OPERATOR_NAME = cfg.operatorName ? String(cfg.operatorName).trim() : null;
+        if (cfg.aib === 'A' || cfg.aib === 'B') EMECEF_AIB = cfg.aib;
+      }
+    } catch (e) {
+      console.warn('[COMEO] Erreur chargement config e-MECeF depuis Realtime Database :', e.message);
     }
 
     groqKeyBusy = new Array(GROQ_API_KEYS.length).fill(false);
@@ -5379,6 +5407,9 @@ async function confirmerTransmissionFacture() {
       facturesList[idxF].emecefStatut = emecefResult.statut;
       facturesList[idxF].nim = emecefResult.nim;
       facturesList[idxF].sceauFiscal = emecefResult.sceauFiscal;
+      facturesList[idxF].emecefCodeMECeFDGI = emecefResult.codeMECeFDGI || null;
+      facturesList[idxF].emecefUid = emecefResult.uid || null;
+      facturesList[idxF].emecefErreur = emecefResult.erreur || null;
       if (facturesList[idxF]._docId) {
         await window._fbSetDoc(window._fbDoc(window._db, 'profiles', getOwnerProfileId(), 'factures', facturesList[idxF]._docId), facturesList[idxF]);
       }
@@ -5386,7 +5417,13 @@ async function confirmerTransmissionFacture() {
 
     closeScanFactureModal();
     renderCeoDashboard();
-    toast(`✓ Facture ${numero} normalisée — en attente de validation e-MECeF (DGI Bénin)`, 'success');
+    if (emecefResult.statut === 'validee') {
+      toast(`✓ Facture ${numero} validée par la DGI (e-MECeF) — NIM ${emecefResult.nim || ''}`, 'success');
+    } else if (emecefResult.statut === 'rejetee') {
+      toast(`⚠️ Facture ${numero} enregistrée, mais rejetée par la DGI : ${emecefResult.erreur || 'erreur inconnue'}`, 'error');
+    } else {
+      toast(`✓ Facture ${numero} normalisée — en attente de validation e-MECeF (DGI Bénin)`, 'success');
+    }
   } catch (e) {
     toast('Erreur : ' + e.message, 'error');
   }
@@ -5396,43 +5433,131 @@ async function confirmerTransmissionFacture() {
  * Validation de la facture normalisée auprès du système e-MECeF de la DGI Bénin
  * (Système dématérialisé des Machines Électroniques Certifiées de Facturation).
  *
- * Fonctionnement réel du système officiel (modèle "clearance") :
- *  1. La facture normalisée est envoyée EN TEMPS RÉEL au serveur e-MECeF, AVANT
- *     d'être remise au client.
- *  2. La DGI valide la facture et lui attribue :
- *       - un NIM (Numéro d'Identification de la Machine)
- *       - un sceau fiscal électronique, matérialisé par un QR code imprimé sur la facture.
- *  3. Ce n'est qu'après cette validation que la facture est juridiquement valide.
+ * Flux réel (modèle "clearance"), conforme à la spec OpenAPI officielle
+ * (/sygmef-emcf/swagger/index.html) :
+ *  1. POST /api/invoice        → crée la facture, la DGI calcule les taxes, retourne un "uid"
+ *  2. PUT  /api/invoice/{uid}/confirm → valide définitivement, retourne le sceau fiscal
+ *     (qrCode, codeMECeFDGI) et le NIM.
  *
- * Portail officiel : https://e-mecef.impots.bj/ (une plateforme de test/développeur
- * avec documentation API est disponible pour les éditeurs de logiciels de facturation
- * — c'est via cette voie que COMEO doit être certifié comme Système de Facturation
- * d'Entreprise (SFE) agréé par la DGI).
- *
- * ⚠️ SIMULATION ACTUELLE : le pipeline (scan → OCR → normalisation IA → facture
- * conforme SYSCOHADA) est opérationnel de bout en bout. Cette fonction simule la
- * réponse du serveur e-MECeF (NIM + sceau fiscal factices) en attendant :
- *   1. la certification de COMEO comme SFE agréé par la DGI,
- *   2. l'obtention d'un jeton d'accès API e-MECeF (test puis production).
- * Il suffira alors de remplacer le corps de cette fonction par l'appel réel
- * (voir squelette ci-dessous, à adapter selon la doc API officielle).
+ * ⚠️ Configuration requise dans Realtime Database, chemin server_config/emecef :
+ *   { "token": "...", "baseUrl": "https://developpeur.impots.bj/sygmef-emcf",
+ *     "ifu": "IFU de l'entreprise", "nim": "...", "operatorId": "...",
+ *     "operatorName": "...", "aib": "A" }
+ * Tant que EMECEF_TOKEN n'est pas configuré, la fonction retombe sur un mode simulation
+ * (NIM factice) pour ne jamais bloquer l'utilisateur.
  */
+async function callEmecefApi(method, path, body) {
+  if (!EMECEF_TOKEN) throw new Error('Jeton API e-MECeF non configuré (server_config/emecef/token)');
+  const res = await fetch(EMECEF_BASE_URL + path, {
+    method,
+    headers: {
+      'Authorization': 'Bearer ' + EMECEF_TOKEN,
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const text = await res.text();
+  let data;
+  try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
+  if (!res.ok) {
+    const msg = data?.errorDesc || data?.title || data?.errorCode || `HTTP ${res.status}`;
+    throw new Error(`e-MECeF ${method} ${path} — ${msg}`);
+  }
+  return data;
+}
+
+// Récupère (et met en cache) les taux de taxe officiels {a,b,c,d,e,f,aibA,aibB}
+async function getEmecefTaxGroups() {
+  if (EMECEF_TAXGROUPS_CACHE) return EMECEF_TAXGROUPS_CACHE;
+  EMECEF_TAXGROUPS_CACHE = await callEmecefApi('GET', '/api/info/taxGroups');
+  return EMECEF_TAXGROUPS_CACHE;
+}
+
+// Détermine le groupe de taxe (A-F) dont le taux correspond le mieux au taux HT/TVA de la facture scannée
+async function resolveTaxGroup(ht, tva) {
+  const tauxCible = ht > 0 ? (tva / ht) * 100 : 0;
+  try {
+    const groups = await getEmecefTaxGroups();
+    const lettres = ['a', 'b', 'c', 'd', 'e', 'f'];
+    let meilleure = 'A', ecartMin = Infinity;
+    for (const l of lettres) {
+      if (typeof groups[l] !== 'number') continue;
+      const ecart = Math.abs(groups[l] - tauxCible);
+      if (ecart < ecartMin) { ecartMin = ecart; meilleure = l.toUpperCase(); }
+    }
+    return meilleure;
+  } catch (e) {
+    console.warn('[e-MECeF] Impossible de récupérer les groupes de taxe, groupe "A" utilisé par défaut :', e.message);
+    return 'A';
+  }
+}
+
 async function validerFactureEMECeF(facture) {
   console.log('[COMEO → e-MECeF DGI Bénin] Facture envoyée pour validation (clearance) :', facture);
 
-  // TODO (branchement futur, dès obtention du jeton API e-MECeF) :
-  // const res = await fetch('https://e-mecef.impots.bj/api/v1/factures', {
-  //   method: 'POST',
-  //   headers: { 'Authorization': 'Bearer ' + EMECEF_API_TOKEN, 'Content-Type': 'application/json' },
-  //   body: JSON.stringify(facture),
-  // });
-  // const data = await res.json();
-  // return { statut: data.statut, nim: data.nim, sceauFiscal: data.qrCode };
+  // Pas encore de jeton configuré → mode simulation (ne bloque jamais l'utilisateur)
+  if (!EMECEF_TOKEN) {
+    console.warn('[e-MECeF] Aucun jeton configuré (server_config/emecef/token) — mode simulation.');
+    await new Promise((r) => setTimeout(r, 400));
+    const nimSimule = 'SIMU-' + Math.random().toString(36).slice(2, 10).toUpperCase();
+    return { statut: 'en_attente', nim: nimSimule, sceauFiscal: null };
+  }
 
-  // Simulation en attendant la certification SFE / le jeton d'accès e-MECeF réel :
-  await new Promise((r) => setTimeout(r, 400));
-  const nimSimule = 'SIMU-' + Math.random().toString(36).slice(2, 10).toUpperCase();
-  return { statut: 'en_attente', nim: nimSimule, sceauFiscal: null };
+  try {
+    const taxGroup = await resolveTaxGroup(facture.ht, facture.tva);
+
+    // 1) Création de la facture — la DGI calcule elle-même les taxes à partir du prix HT et du taxGroup
+    const payload = {
+      ifu: EMECEF_IFU || undefined,
+      aib: EMECEF_AIB,           // "A" ou "B" — voir server_config/emecef/aib
+      type: 'FV',                 // Facture de Vente
+      items: [
+        {
+          code: facture.numero || 'ART-001',
+          name: (facture.clientNom ? `Facture ${facture.numero}` : 'Article').slice(0, 200),
+          price: Math.round(facture.ht),     // prix unitaire HT, en FCFA (entier)
+          quantity: 1,
+          taxGroup,
+        },
+      ],
+      client: {
+        name: facture.clientNom || undefined,
+      },
+      operator: {
+        id: EMECEF_OPERATOR_ID || undefined,
+        name: EMECEF_OPERATOR_NAME || undefined,
+      },
+      payment: [
+        { name: 'CREDIT', amount: Math.round(facture.ttc) },
+      ],
+      reference: facture.numero || undefined,
+    };
+
+    const created = await callEmecefApi('POST', '/api/invoice', payload);
+    if (created.errorCode) {
+      throw new Error(created.errorDesc || created.errorCode);
+    }
+    const uid = created.uid;
+    if (!uid) throw new Error("La DGI n'a pas retourné d'identifiant de facture (uid).");
+
+    // 2) Confirmation — obtention du sceau fiscal (QR code) et du NIM
+    const confirmed = await callEmecefApi('PUT', `/api/invoice/${uid}/confirm`, undefined);
+    if (confirmed.errorCode) {
+      throw new Error(confirmed.errorDesc || confirmed.errorCode);
+    }
+
+    return {
+      statut: 'validee',
+      nim: confirmed.nim || EMECEF_NIM || null,
+      sceauFiscal: confirmed.qrCode || null,
+      codeMECeFDGI: confirmed.codeMECeFDGI || null,
+      uid,
+    };
+  } catch (e) {
+    console.error('[e-MECeF] Échec de la validation :', e.message);
+    return { statut: 'rejetee', nim: null, sceauFiscal: null, erreur: e.message };
+  }
 }
 
 window.renderCeoDashboard = renderCeoDashboard;
