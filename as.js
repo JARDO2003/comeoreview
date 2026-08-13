@@ -125,7 +125,7 @@ let groqModelIdx = 0;      // Index rotation modèles Groq
 // Champs attendus dans RTDB : { token, baseUrl, ifu, nim, operatorId, operatorName, aib }
 // JAMAIS de jeton en dur ici : administré depuis azur.html comme les autres clés.
 let EMECEF_TOKEN = null;
-let EMECEF_BASE_URL = 'https://developpeur.impots.bj/sygmef-emcf'; // plateforme de TEST par défaut
+let EMECEF_BASE_URL = 'https://developper.impots.bj/sygmef-emcf'; // plateforme de TEST par défaut
 let EMECEF_IFU = null;          // IFU de l'entreprise (fournisseur)
 let EMECEF_NIM = null;          // NIM de l'e-MCF attribué par la DGI
 let EMECEF_OPERATOR_ID = null;
@@ -191,6 +191,12 @@ async function loadServerConfig() {
         EMECEF_TOKEN = cfg.token ? String(cfg.token).trim() : null;
         if (cfg.baseUrl) EMECEF_BASE_URL = String(cfg.baseUrl).trim().replace(/\/$/, '');
         EMECEF_IFU = cfg.ifu ? String(cfg.ifu).trim() : null;
+        // Filet de sécurité : si Firebase a stocké l'IFU comme un nombre, le zéro initial
+        // (fréquent pour les IFU béninois) a pu être perdu au passage — on le restaure.
+        if (EMECEF_IFU && EMECEF_IFU.length === 12 && /^\d+$/.test(EMECEF_IFU)) {
+          console.warn('[e-MECeF] IFU à 12 chiffres détecté (zéro initial probablement perdu par Firebase) — correction automatique à 13 chiffres.');
+          EMECEF_IFU = '0' + EMECEF_IFU;
+        }
         EMECEF_NIM = cfg.nim ? String(cfg.nim).trim() : null;
         EMECEF_OPERATOR_ID = cfg.operatorId ? String(cfg.operatorId).trim() : null;
         EMECEF_OPERATOR_NAME = cfg.operatorName ? String(cfg.operatorName).trim() : null;
@@ -4748,9 +4754,9 @@ function renderCeoDashboard() {
     const enAttente = (facturesList || []).filter((f) => f.emecefStatut === 'en_attente' || f.emecefStatut === 'validee');
     queueEl.innerHTML = enAttente.length
       ? enAttente.slice(0, 5).map((f) => `
-        <div class="ceo-recent-item">
+        <div class="ceo-recent-item${f.emecefStatut === 'validee' ? ' ceo-recent-item-clickable' : ''}" ${f.emecefStatut === 'validee' ? `onclick="ouvrirSceauFiscal('${f.id}')"` : ''}>
           <span>${f.numero || 'Facture'} — ${(f.clientNom || '')}${f.nim ? `<br><span style="font-size:9.5px;color:var(--muted)">NIM ${f.nim}</span>` : ''}</span>
-          <span class="transmission-badge ${f.emecefStatut === 'validee' ? 'sent' : 'pending'}">${f.emecefStatut === 'validee' ? '✓ Validée e-MECeF' : '⏳ En attente e-MECeF'}</span>
+          <span class="transmission-badge ${f.emecefStatut === 'validee' ? 'sent' : 'pending'}">${f.emecefStatut === 'validee' ? '✓ Validée e-MECeF 🔏' : '⏳ En attente e-MECeF'}</span>
         </div>`).join('')
       : '<div class="empty-state"><p>Rien en attente</p></div>';
   }
@@ -5440,7 +5446,7 @@ async function confirmerTransmissionFacture() {
  *     (qrCode, codeMECeFDGI) et le NIM.
  *
  * ⚠️ Configuration requise dans Realtime Database, chemin server_config/emecef :
- *   { "token": "...", "baseUrl": "https://developpeur.impots.bj/sygmef-emcf",
+ *   { "token": "...", "baseUrl": "https://developper.impots.bj/sygmef-emcf",
  *     "ifu": "IFU de l'entreprise", "nim": "...", "operatorId": "...",
  *     "operatorName": "...", "aib": "A" }
  * Tant que EMECEF_TOKEN n'est pas configuré, la fonction retombe sur un mode simulation
@@ -5560,6 +5566,44 @@ async function validerFactureEMECeF(facture) {
   }
 }
 
+/**
+ * Ouvre le modal du sceau fiscal e-MECeF pour une facture validée : affiche le QR code
+ * (généré à partir de la chaîne "qrCode" retournée par la DGI à la confirmation) ainsi
+ * que le NIM, le code MECeF DGI et la date/heure de validation.
+ */
+function ouvrirSceauFiscal(factureId) {
+  const f = (facturesList || []).find((x) => String(x.id) === String(factureId));
+  if (!f || !f.sceauFiscal) {
+    toast("Sceau fiscal indisponible pour cette facture", 'error');
+    return;
+  }
+  const modal = document.getElementById('sceauFiscalModal');
+  const detailsEl = document.getElementById('sceauDetails');
+  detailsEl.innerHTML = `
+    <div class="sceau-row"><span class="sceau-label">N° Facture</span><span class="sceau-value">${f.numero || ''}</span></div>
+    <div class="sceau-row"><span class="sceau-label">Client</span><span class="sceau-value">${f.clientNom || ''}</span></div>
+    <div class="sceau-row"><span class="sceau-label">NIM</span><span class="sceau-value">${f.nim || ''}</span></div>
+    ${f.emecefCodeMECeFDGI ? `<div class="sceau-row"><span class="sceau-label">Code MECeF DGI</span><span class="sceau-value">${f.emecefCodeMECeFDGI}</span></div>` : ''}
+    <div class="sceau-row"><span class="sceau-label">Montant TTC</span><span class="sceau-value">${(f.ttc || 0).toLocaleString('fr-FR')} FCFA</span></div>
+  `;
+  modal.style.display = 'flex';
+  // Génération du QR code côté client (canvas) à partir de la chaîne fournie par la DGI
+  setTimeout(() => {
+    const canvas = document.getElementById('sceauQrCanvas');
+    if (canvas && window.QRCode) {
+      window.QRCode.toCanvas(canvas, f.sceauFiscal, { width: 220, margin: 1 }, (err) => {
+        if (err) console.error('[e-MECeF] Erreur génération QR code :', err);
+      });
+    }
+  }, 0);
+}
+
+function closeSceauFiscalModal() {
+  document.getElementById('sceauFiscalModal').style.display = 'none';
+}
+
+window.ouvrirSceauFiscal = ouvrirSceauFiscal;
+window.closeSceauFiscalModal = closeSceauFiscalModal;
 window.renderCeoDashboard = renderCeoDashboard;
 window.openScanFactureModal = openScanFactureModal;
 window.closeScanFactureModal = closeScanFactureModal;
