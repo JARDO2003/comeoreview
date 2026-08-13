@@ -2029,6 +2029,35 @@ mark.hl { background:rgba(212,168,83,.3); color:var(--warm); border-radius:2px; 
 .scan-result-note { font-size:10.5px; color:var(--muted); line-height:1.5; margin-bottom:14px; }
 .sb-comptable-banner { margin:0 10px 4px; padding:8px 10px; background:rgba(37,99,235,.12); color:var(--blue); border:1px solid rgba(37,99,235,.25); border-radius:8px; font-size:9.5px; font-weight:800; letter-spacing:.12em; text-align:center; }
 
+/* Modale sceau fiscal e-MECeF (QR code DGI) */
+.sceau-modal-box { width:400px; }
+.sceau-qr-wrap { display:flex; align-items:center; justify-content:center; padding:16px; background:#fff; border-radius:10px; margin-bottom:14px; }
+.sceau-qr-wrap canvas { max-width:100%; height:auto !important; }
+.sceau-details { display:flex; flex-direction:column; gap:8px; }
+.sceau-row { display:flex; justify-content:space-between; align-items:baseline; gap:10px; padding:7px 10px; background:var(--surface2); border-radius:8px; font-size:12px; }
+.sceau-label { color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.08em; font-weight:700; flex-shrink:0; }
+.sceau-value { color:var(--ink); font-weight:600; text-align:right; word-break:break-word; }
+.ceo-recent-item-clickable { cursor:pointer; transition:background .15s; }
+.ceo-recent-item-clickable:hover { background:var(--warm-glow); }
+
+/* Responsive — modales scan facture & sceau fiscal sur petit écran */
+@media(max-width:480px) {
+  .modal-box { padding:18px; }
+  .scan-modal-box, .sceau-modal-box { width:100%; }
+  .scan-result-grid { grid-template-columns:1fr; }
+  .scan-dropzone { padding:28px 14px; }
+  .scan-dropzone-icon { font-size:30px; }
+  .sceau-qr-wrap canvas { width:170px !important; }
+  .sceau-row { flex-direction:column; align-items:flex-start; gap:2px; }
+  .sceau-value { text-align:left; }
+}
+@media print {
+  .modal-overlay:not(:has(#sceauFiscalModal[style*="flex"])) { display:none !important; }
+  #sceauFiscalModal { position:static; background:#fff; padding:0; }
+  #sceauFiscalModal .modal-box { box-shadow:none; border:none; width:100%; }
+  #sceauFiscalModal .modal-actions { display:none; }
+}
+
 /* Graphiques dirigeant */
 .ceo-charts-row { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px; }
 @media(max-width:800px){ .ceo-charts-row { grid-template-columns:1fr; } }
