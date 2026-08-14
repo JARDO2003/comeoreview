@@ -2309,3 +2309,36 @@ mark.hl { background:rgba(212,168,83,.3); color:var(--warm); border-radius:2px; 
   .incoming-call-box { padding:32px 20px; }
   .incoming-call-name { font-size:17px; }
 }
+
+/* ══════════════════════════════════════════════════════════════════
+   CENTRE DE TESTS e-MECeF — scénarios SFE pour dossier d'agrément DGI
+   ══════════════════════════════════════════════════════════════════ */
+.emecef-test-box { width:560px; max-height:85vh; display:flex; flex-direction:column; }
+.emecef-test-config { display:flex; flex-direction:column; gap:6px; margin:14px 0 18px; padding:12px 14px; background:var(--surface2); border-radius:10px; border:1px solid var(--line); }
+.emecef-config-row { display:flex; justify-content:space-between; font-size:12px; }
+.emecef-config-row span { color:var(--muted); }
+.emecef-config-row b { color:var(--ink); font-weight:700; }
+.emecef-badge-test { color:#c0392b; }
+.emecef-badge-prod { color:#16a34a; }
+
+.emecef-test-list { flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:6px; max-height:340px; padding-right:4px; }
+.emecef-test-row { display:flex; gap:10px; align-items:flex-start; padding:9px 12px; border-radius:9px; background:var(--surface2); border:1px solid var(--line); transition:background .2s; }
+.emecef-test-row.emecef-test-running { background:rgba(37,99,235,.06); border-color:rgba(37,99,235,.25); }
+.emecef-test-row.emecef-test-pass { background:rgba(22,163,74,.06); border-color:rgba(22,163,74,.22); }
+.emecef-test-row.emecef-test-fail { background:rgba(192,57,43,.06); border-color:rgba(192,57,43,.22); }
+.emecef-test-row.emecef-test-skip { opacity:.55; }
+.emecef-test-icon { font-size:14px; flex-shrink:0; margin-top:1px; }
+.emecef-test-name { font-size:12px; font-weight:700; color:var(--ink); }
+.emecef-test-detail { font-size:10.5px; color:var(--muted); margin-top:2px; line-height:1.5; word-break:break-word; }
+
+@media(max-width:640px) {
+  .emecef-test-box { width:100%; }
+  .emecef-test-list { max-height:50vh; }
+}
+
+/* Sections et QR inline dans le Centre de tests e-MECeF */
+.emecef-test-section { font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:.08em; color:var(--warm); margin:14px 0 6px; padding-top:8px; border-top:1px dashed var(--line); }
+.emecef-test-section:first-child { margin-top:0; padding-top:0; border-top:none; }
+.emecef-config-note { margin-top:10px; padding-top:10px; border-top:1px solid var(--line); font-size:10.5px; color:var(--muted); line-height:1.6; }
+.emecef-config-note b { color:var(--ink); }
+.emecef-test-qr { margin-top:8px; border-radius:6px; background:#fff; padding:4px; }
