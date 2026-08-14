@@ -2049,11 +2049,24 @@ mark.hl { background:rgba(212,168,83,.3); color:var(--warm); border-radius:2px; 
   .sceau-row { flex-direction:column; align-items:flex-start; gap:2px; }
   .sceau-value { text-align:left; }
 }
+/* Impression du sceau fiscal — n'affiche QUE la modale, jamais le tableau de bord derrière.
+   Activé/désactivé via la classe body.print-sceau-only (voir imprimerSceauFiscal() dans as.js). */
 @media print {
-  .modal-overlay:not(:has(#sceauFiscalModal[style*="flex"])) { display:none !important; }
-  #sceauFiscalModal { position:static; background:#fff; padding:0; }
-  #sceauFiscalModal .modal-box { box-shadow:none; border:none; width:100%; }
-  #sceauFiscalModal .modal-actions { display:none; }
+  body.print-sceau-only .sidebar,
+  body.print-sceau-only .topbar,
+  body.print-sceau-only .shell,
+  body.print-sceau-only .main,
+  body.print-sceau-only .comeo-box,
+  body.print-sceau-only .chips,
+  body.print-sceau-only .robot-fab {
+    display:none !important;
+  }
+  body.print-sceau-only .modal-overlay:not(#sceauFiscalModal) { display:none !important; }
+  body.print-sceau-only #sceauFiscalModal {
+    position:static !important; display:block !important; background:#fff; padding:0;
+  }
+  body.print-sceau-only #sceauFiscalModal .modal-box { box-shadow:none; border:none; width:100%; max-width:100%; margin:0; }
+  body.print-sceau-only #sceauFiscalModal .modal-actions { display:none; }
 }
 
 /* ══════════════════════════════════════════════════════════════════
