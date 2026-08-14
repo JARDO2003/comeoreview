@@ -5615,8 +5615,18 @@ function closeSceauFiscalModal() {
   document.getElementById('sceauFiscalModal').style.display = 'none';
 }
 
+// Impression du sceau fiscal seul (sans le tableau de bord derrière) — voir CSS body.print-sceau-only.
+function imprimerSceauFiscal() {
+  document.body.classList.add('print-sceau-only');
+  const retirerClasse = () => document.body.classList.remove('print-sceau-only');
+  window.addEventListener('afterprint', retirerClasse, { once: true });
+  setTimeout(retirerClasse, 5000); // filet de sécurité si 'afterprint' ne se déclenche pas (certains navigateurs mobiles)
+  setTimeout(() => window.print(), 50); // laisse le temps au navigateur d'appliquer la classe avant impression
+}
+
 window.ouvrirSceauFiscal = ouvrirSceauFiscal;
 window.closeSceauFiscalModal = closeSceauFiscalModal;
+window.imprimerSceauFiscal = imprimerSceauFiscal;
 window.renderCeoDashboard = renderCeoDashboard;
 window.openScanFactureModal = openScanFactureModal;
 window.closeScanFactureModal = closeScanFactureModal;
@@ -11196,6 +11206,7 @@ let videoCallInterval = null;
 let videoCallSeconds = 0;
 let micEnabled = true;
 let camEnabled = true;
+let _callListenersUnsub = []; // écouteurs Firestore actifs pour l'appel en cours (nettoyés à la fin, évite les états SDP invalides sur un appel suivant)
 
 const ROLES = {
   admin:       { label: 'Administrateur', couleur: 'var(--warm)',  perms: ['*'] },
@@ -12044,6 +12055,10 @@ async function ouvrirAppelVideo() {
 }
 
 async function initialiserWebRTC(ownerUid, jeSuisAppelant) {
+  // Filet de sécurité : nettoie tout écouteur resté actif d'une tentative précédente non fermée proprement.
+  _callListenersUnsub.forEach((unsub) => { try { unsub(); } catch (e) {} });
+  _callListenersUnsub = [];
+
   peerConnection = new RTCPeerConnection(ICE_SERVERS);
 
   // Ajouter les tracks locaux
@@ -12084,24 +12099,35 @@ async function initialiserWebRTC(ownerUid, jeSuisAppelant) {
     // Écouter la réponse
     const { onSnapshot, doc } = window._firebaseFirestore || {};
     if (onSnapshot) {
+      let reponseAppliquee = false; // verrou synchrone anti-doublon (l'onSnapshot peut refeu rapidement avant la fin de l'await)
       const unsubAns = onSnapshot(doc(window._db, 'video_calls', ownerUid), async (snap) => {
         const d = snap.data();
-        if (d?.answer && peerConnection && !peerConnection.currentRemoteDescription) {
-          await peerConnection.setRemoteDescription(new RTCSessionDescription(d.answer));
+        // N'applique la réponse que si le peer est bien en attente d'une réponse (évite l'InvalidStateError
+        // si un écouteur périmé d'un appel précédent se déclenche sur la connexion actuelle).
+        if (d?.answer && peerConnection && !reponseAppliquee && peerConnection.signalingState === 'have-local-offer') {
+          reponseAppliquee = true;
+          try {
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(d.answer));
+          } catch (e) {
+            console.error('[Appel vidéo] setRemoteDescription (réponse) :', e.message);
+            reponseAppliquee = false;
+          }
         }
         if (d?.ended && videoCallActive) {
           document.getElementById('videoCallStatus').textContent = d.declinedBy ? '❌ Appel refusé' : '📴 Appel terminé';
           setTimeout(() => { if (videoCallActive) terminerAppelVideo(); }, 1800);
         }
       });
+      _callListenersUnsub.push(unsubAns);
       // ICE candidates du callee
-      onSnapshot(window._fbCollection(window._db, 'video_calls', ownerUid, 'calleeCandidates'), (snap) => {
+      const unsubIce = onSnapshot(window._fbCollection(window._db, 'video_calls', ownerUid, 'calleeCandidates'), (snap) => {
         snap.docChanges().forEach(async ch => {
-          if (ch.type === 'added' && peerConnection) {
+          if (ch.type === 'added' && peerConnection && peerConnection.signalingState !== 'closed') {
             try { await peerConnection.addIceCandidate(new RTCIceCandidate(ch.doc.data())); } catch (e) {}
           }
         });
       });
+      _callListenersUnsub.push(unsubIce);
     }
   } else {
     await repondreAppelVideo(ownerUid);
@@ -12122,13 +12148,14 @@ async function repondreAppelVideo(ownerUid) {
   // ICE candidates du caller
   const { onSnapshot } = window._firebaseFirestore || {};
   if (onSnapshot) {
-    onSnapshot(window._fbCollection(window._db, 'video_calls', ownerUid, 'callerCandidates'), (snap) => {
+    const unsubIce = onSnapshot(window._fbCollection(window._db, 'video_calls', ownerUid, 'callerCandidates'), (snap) => {
       snap.docChanges().forEach(async ch => {
-        if (ch.type === 'added' && peerConnection) {
+        if (ch.type === 'added' && peerConnection && peerConnection.signalingState !== 'closed') {
           try { await peerConnection.addIceCandidate(new RTCIceCandidate(ch.doc.data())); } catch (e) {}
         }
       });
     });
+    _callListenersUnsub.push(unsubIce);
   }
 }
 
@@ -12148,6 +12175,10 @@ async function terminerAppelVideo() {
   if (peerConnection) { peerConnection.close(); peerConnection = null; }
   if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
   if (videoCallInterval) { clearInterval(videoCallInterval); videoCallInterval = null; }
+  // Désabonner tous les écouteurs Firestore de cet appel (évite qu'un écouteur périmé
+  // ne déclenche une InvalidStateError sur le prochain appel).
+  _callListenersUnsub.forEach((unsub) => { try { unsub(); } catch (e) {} });
+  _callListenersUnsub = [];
   document.getElementById('videoCallModal').style.display = 'none';
   document.getElementById('localVideo').srcObject = null;
   document.getElementById('remoteVideo').srcObject = null;
