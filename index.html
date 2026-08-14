@@ -48,6 +48,32 @@
    <div id="form-register" class="auth-form" style="display:none">
   <div class="af-field"><label class="af-label">Nom de l'entreprise</label><input class="af-input" type="text" id="r-company" placeholder="ex: SOTRA SARL"></div>
   <div class="af-field"><label class="af-label">Email professionnel</label><input class="af-input" type="email" id="r-email" placeholder="contact@sotra.ci"></div>
+  <div class="af-field">
+    <label class="af-label">Secteur d'activité</label>
+    <select class="af-input" id="r-secteur" onchange="toggleSecteurActiviteField()">
+      <option value="">— Sélectionner —</option>
+      <option value="commerce">Commerce (achat/revente de marchandises)</option>
+      <option value="services">Services</option>
+      <option value="industrie">Industrie / Production</option>
+      <option value="btp">BTP / Construction</option>
+      <option value="agriculture">Agriculture / Agroalimentaire</option>
+      <option value="transport">Transport / Logistique</option>
+      <option value="hotellerie">Hôtellerie / Restauration</option>
+      <option value="sante">Santé</option>
+      <option value="education">Éducation / Formation</option>
+      <option value="tech">Technologie / Numérique</option>
+      <option value="finance">Finance / Assurance</option>
+      <option value="autre">Autre</option>
+    </select>
+  </div>
+  <div class="af-field" id="r-activite-wrap" style="display:none">
+    <label class="af-label">Que vend l'entreprise ?</label>
+    <input class="af-input" type="text" id="r-activite" placeholder="ex: pièces détachées automobiles, textiles, produits électroniques...">
+  </div>
+  <div class="af-field" id="r-activite-autre-wrap" style="display:none">
+    <label class="af-label">Précisez votre activité</label>
+    <input class="af-input" type="text" id="r-activite-autre" placeholder="ex: agence événementielle, atelier de couture...">
+  </div>
   <div class="af-field"><label class="af-label">N° Compte ventes</label><input class="af-input" type="text" id="r-compte701" placeholder="701" value="701"></div>
   <div class="af-field"><label class="af-label">Exercice comptable</label><input class="af-input" type="text" id="r-exercice" placeholder="2024" value="2024" maxlength="4"></div>
   <div class="af-field"><label class="af-label">Mot de passe (min 6 car.)</label><input class="af-input" type="password" id="r-pass" placeholder="Minimum 6 caractères"></div>
