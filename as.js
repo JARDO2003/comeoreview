@@ -2839,7 +2839,6 @@ async function loadApp() {
     loadTresorerie(),    // ✅ NOUVEAU
     loadTaxes(),         // ✅ NOUVEAU
     loadDeclFiscales(),  // ✅ NOUVEAU
-    loadAppelsVideo(),   // ✅ NOUVEAU
     loadLockedPeriods(), // 🔒 Périodes verrouillées
     loadModifications(), // ✎ Demandes de modification (collaborateurs)
   ]);
@@ -12812,10 +12811,7 @@ window.loadTaxes = loadTaxes;
 window.declaredTVA = declaredTVA;
 window.loadDeclFiscales = loadDeclFiscales;
 
-// ✅ Exports VIDÉO 3D
-window.loadAppelsVideo = loadAppelsVideo;
-window.initAppel3D = initAppel3D;
-window.terminerAppel = terminerAppel;
+// (Ancien module "Vidéo 3D" — supprimé, remplacé par la Messagerie + ouvrirAppelVideo())
 
 // ✅ Exports UTILITIES
 window.logAudit = logAudit;
@@ -12962,62 +12958,6 @@ async function loadDeclFiscales() {
 // ════════════════════════════════════════════════════════════════════════════════
 let videoCallActive = false, videoAppels = [];
 // Note: localStream and peerConnection are declared earlier in the file
-
-async function loadAppelsVideo() {
-  try {
-    const ownerID = getOwnerProfileId();
-    const snap = await window._fbGetDocs(window._fbCollection(window._db, 'profiles', ownerID, 'video_appels'));
-    videoAppels = snap.docs.map(d => ({ ...d.data(), _docId: d.id }));
-  } catch(e) { console.error('Erreur vidéo:', e); }
-}
-
-// Lancer un appel vidéo 3D
-async function initAppel3D(recipientId) {
-  try {
-    // Demander accès caméra/micro
-    localStream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true },
-      video: { width: 1280, height: 720 }
-    });
-    
-    videoCallActive = true;
-    
-    // Configuration WebRTC
-    const servers = {
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-      ]
-    };
-    
-    peerConnection = new RTCPeerConnection(servers);
-    
-    // Ajouter stream local
-    localStream.getTracks().forEach(track => {
-      peerConnection.addTrack(track, localStream);
-    });
-    
-    // Log appel
-    const appel = {
-      from: currentProfile.email,
-      to: recipientId,
-      startTime: new Date().toISOString(),
-      type: '3D_VIDEO',
-    };
-    
-    const ownerID = getOwnerProfileId();
-    const ref = await window._fbAddDoc(
-      window._fbCollection(window._db, 'profiles', ownerID, 'video_appels'),
-      appel
-    );
-    
-    toast('✓ Appel vidéo 3D initié', 'success');
-    return ref.id;
-  } catch(e) {
-    toast('Erreur accès caméra: ' + e.message, 'error');
-    console.error(e);
-  }
-}
 
 // ════════════════════════════════════════════════════════════════════════════════
 // ✅ FONCTION UTILITY — Log d'audit
