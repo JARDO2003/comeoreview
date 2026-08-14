@@ -4743,6 +4743,24 @@ function dessinerGraphiquesCeoDashboard(all) {
   );
 }
 
+// Palette & rendu premium des graphiques dirigeant — cohérent avec le thème clair de l'app.
+const CEO_CHART_INK = '#0a0b10';
+const CEO_CHART_MUTED = 'rgba(10,11,16,.5)';
+const CEO_CHART_GRID = 'rgba(10,11,16,.06)';
+
+// Plugin Chart.js : ombre portée douce sous barres/lignes → effet de profondeur/relief premium.
+const comeoShadowPlugin = {
+  id: 'comeoShadow',
+  beforeDatasetsDraw(chart) {
+    const ctx = chart.ctx;
+    ctx.save();
+    ctx.shadowColor = 'rgba(10,11,16,.16)';
+    ctx.shadowBlur = 12;
+    ctx.shadowOffsetY = 6;
+  },
+  afterDatasetsDraw(chart) { chart.ctx.restore(); },
+};
+
 function dessinerGraphiquesCeoDashboardImpl(all) {
   const buckets = getLast6MonthsBuckets();
 
@@ -4772,25 +4790,27 @@ function dessinerGraphiquesCeoDashboardImpl(all) {
     const wrapC1 = ctx1.parentElement;
     const oldBadgeC1 = wrapC1.querySelector('.chart-placeholder-badge');
     if (oldBadgeC1) oldBadgeC1.remove();
+    const h1 = ctx1.clientHeight || 220;
 
     if (aucuneDonnee1) {
       // Aucune donnée réelle → courbe décorative en attendant les premières écritures
       const demo = genererCourbeDemo(buckets.length);
       const g = ctx1.getContext('2d');
-      const gradient = g.createLinearGradient(0, 0, 0, ctx1.clientHeight || 220);
-      gradient.addColorStop(0, 'rgba(212,168,83,.5)');
+      const gradient = g.createLinearGradient(0, 0, 0, h1);
+      gradient.addColorStop(0, 'rgba(212,168,83,.45)');
       gradient.addColorStop(1, 'rgba(212,168,83,0)');
       _ceoChartCaSolde = new Chart(ctx1, {
         type: 'line',
+        plugins: [comeoShadowPlugin],
         data: {
           labels: buckets.map((b) => b.label),
-          datasets: [{ data: demo, borderColor: 'rgba(212,168,83,.85)', backgroundColor: gradient, borderWidth: 2, fill: true, tension: .45, pointRadius: 0 }],
+          datasets: [{ data: demo, borderColor: '#d4a853', backgroundColor: gradient, borderWidth: 3, fill: true, tension: .45, pointRadius: 0, cubicInterpolationMode: 'monotone' }],
         },
         options: {
           responsive: true, maintainAspectRatio: false,
           plugins: { legend: { display: false }, tooltip: { enabled: false } },
           scales: {
-            x: { ticks: { color: 'rgba(255,255,255,.3)' }, grid: { display: false } },
+            x: { ticks: { color: CEO_CHART_MUTED, font: { size: 10.5, weight: '600' } }, grid: { display: false } },
             y: { display: false },
           },
         },
@@ -4800,21 +4820,37 @@ function dessinerGraphiquesCeoDashboardImpl(all) {
       badgeC1.textContent = "Aucune donnée pour l'instant";
       wrapC1.appendChild(badgeC1);
     } else {
+      const g1 = ctx1.getContext('2d');
+      const barGrad = g1.createLinearGradient(0, 0, 0, h1);
+      barGrad.addColorStop(0, '#e8c374');
+      barGrad.addColorStop(1, '#c99a3e');
+      const lineGrad = g1.createLinearGradient(0, 0, 0, h1);
+      lineGrad.addColorStop(0, 'rgba(37,99,235,.28)');
+      lineGrad.addColorStop(1, 'rgba(37,99,235,0)');
       _ceoChartCaSolde = new Chart(ctx1, {
         type: 'bar',
+        plugins: [comeoShadowPlugin],
         data: {
           labels: buckets.map((b) => b.label),
           datasets: [
-            { type: 'bar', label: "Chiffre d'affaires", data: caParMois, backgroundColor: 'rgba(212,168,83,.55)', borderRadius: 4, order: 2 },
-            { type: 'line', label: 'Solde de trésorerie cumulé', data: soldeParMois, borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,.12)', tension: .3, fill: true, order: 1, yAxisID: 'y' },
+            { type: 'bar', label: "Chiffre d'affaires", data: caParMois, backgroundColor: barGrad, hoverBackgroundColor: '#d4a853', borderRadius: 8, borderSkipped: false, maxBarThickness: 34, order: 2 },
+            { type: 'line', label: 'Solde de trésorerie cumulé', data: soldeParMois, borderColor: '#2563eb', backgroundColor: lineGrad, borderWidth: 3, pointBackgroundColor: '#2563eb', pointBorderColor: '#fff', pointBorderWidth: 2, pointRadius: 4, pointHoverRadius: 6, tension: .35, fill: true, cubicInterpolationMode: 'monotone', order: 1, yAxisID: 'y' },
           ],
         },
         options: {
           responsive: true, maintainAspectRatio: false,
-          plugins: { legend: { labels: { color: 'rgba(255,255,255,.7)', font: { size: 10.5 } } } },
+          interaction: { mode: 'index', intersect: false },
+          plugins: {
+            legend: { position: 'top', align: 'end', labels: { color: CEO_CHART_INK, font: { size: 11, weight: '600' }, boxWidth: 10, boxHeight: 10, usePointStyle: true, pointStyle: 'circle' } },
+            tooltip: {
+              backgroundColor: '#0a0b10', titleColor: '#fff', bodyColor: '#f0e6d2', titleFont: { weight: '700' },
+              padding: 10, cornerRadius: 8, displayColors: true, boxPadding: 4,
+              callbacks: { label: (c) => `${c.dataset.label} : ${Number(c.raw).toLocaleString('fr-FR')} FCFA` },
+            },
+          },
           scales: {
-            x: { ticks: { color: 'rgba(255,255,255,.5)' }, grid: { display: false } },
-            y: { ticks: { color: 'rgba(255,255,255,.5)' }, grid: { color: 'rgba(255,255,255,.06)' } },
+            x: { ticks: { color: CEO_CHART_MUTED, font: { size: 10.5, weight: '600' } }, grid: { display: false } },
+            y: { ticks: { color: CEO_CHART_MUTED, font: { size: 10 }, callback: (v) => v.toLocaleString('fr-FR') }, grid: { color: CEO_CHART_GRID }, border: { display: false } },
           },
         },
       });
@@ -4830,33 +4866,51 @@ function dessinerGraphiquesCeoDashboardImpl(all) {
     const wrapC2 = ctx2.parentElement;
     const oldBadgeC2 = wrapC2.querySelector('.chart-placeholder-badge');
     if (oldBadgeC2) oldBadgeC2.remove();
+    const h2 = ctx2.clientHeight || 220;
 
     if (comptesTreso.length) {
+      const g2 = ctx2.getContext('2d');
+      const gradEntree = g2.createLinearGradient(0, 0, ctx2.clientWidth || 300, 0);
+      gradEntree.addColorStop(0, '#16a34a'); gradEntree.addColorStop(1, '#4ade80');
+      const gradSortie = g2.createLinearGradient(0, 0, ctx2.clientWidth || 300, 0);
+      gradSortie.addColorStop(0, '#c0392b'); gradSortie.addColorStop(1, '#e0685a');
       _ceoChartComptes = new Chart(ctx2, {
         type: 'bar',
+        plugins: [comeoShadowPlugin],
         data: {
           labels: comptesTreso.map(([c]) => libelleCompte(c).substring(0, 16)),
           datasets: [
-            { label: 'Entrées', data: comptesTreso.map(([, a]) => a.debit), backgroundColor: 'rgba(34,197,94,.6)', borderRadius: 4 },
-            { label: 'Sorties', data: comptesTreso.map(([, a]) => a.credit), backgroundColor: 'rgba(239,68,68,.6)', borderRadius: 4 },
+            { label: 'Entrées', data: comptesTreso.map(([, a]) => a.debit), backgroundColor: gradEntree, borderRadius: 8, borderSkipped: false, maxBarThickness: 16 },
+            { label: 'Sorties', data: comptesTreso.map(([, a]) => a.credit), backgroundColor: gradSortie, borderRadius: 8, borderSkipped: false, maxBarThickness: 16 },
           ],
         },
         options: {
           responsive: true, maintainAspectRatio: false, indexAxis: 'y',
-          plugins: { legend: { labels: { color: 'rgba(255,255,255,.7)', font: { size: 10.5 } } } },
+          plugins: {
+            legend: { position: 'top', align: 'end', labels: { color: CEO_CHART_INK, font: { size: 11, weight: '600' }, boxWidth: 10, boxHeight: 10, usePointStyle: true, pointStyle: 'circle' } },
+            tooltip: {
+              backgroundColor: '#0a0b10', titleColor: '#fff', bodyColor: '#f0e6d2', titleFont: { weight: '700' },
+              padding: 10, cornerRadius: 8,
+              callbacks: { label: (c) => `${c.dataset.label} : ${Number(c.raw).toLocaleString('fr-FR')} FCFA` },
+            },
+          },
           scales: {
-            x: { ticks: { color: 'rgba(255,255,255,.5)' }, grid: { color: 'rgba(255,255,255,.06)' } },
-            y: { ticks: { color: 'rgba(255,255,255,.5)', font: { size: 10 } }, grid: { display: false } },
+            x: { ticks: { color: CEO_CHART_MUTED, font: { size: 10 }, callback: (v) => v.toLocaleString('fr-FR') }, grid: { color: CEO_CHART_GRID }, border: { display: false } },
+            y: { ticks: { color: CEO_CHART_INK, font: { size: 10.5, weight: '600' } }, grid: { display: false } },
           },
         },
       });
     } else {
       // Aucun compte mouvementé → anneau décoratif en attendant les premières écritures
+      const g2b = ctx2.getContext('2d');
+      const ringGrad = g2b.createLinearGradient(0, 0, ctx2.clientWidth || 220, h2);
+      ringGrad.addColorStop(0, 'rgba(212,168,83,.35)');
+      ringGrad.addColorStop(1, 'rgba(212,168,83,.12)');
       _ceoChartComptes = new Chart(ctx2, {
         type: 'doughnut',
         data: {
           labels: [''],
-          datasets: [{ data: [1], backgroundColor: ['rgba(212,168,83,.18)'], borderWidth: 0, hoverBackgroundColor: ['rgba(212,168,83,.18)'] }],
+          datasets: [{ data: [1], backgroundColor: [ringGrad], borderWidth: 0, hoverBackgroundColor: [ringGrad] }],
         },
         options: {
           responsive: true, maintainAspectRatio: false, cutout: '72%',
