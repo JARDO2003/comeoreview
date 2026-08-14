@@ -2249,3 +2249,49 @@ mark.hl { background:rgba(212,168,83,.3); color:var(--warm); border-radius:2px; 
   .critique-widget { bottom: 70px; }
   .critique-panel { width: calc(100vw - 24px); margin-right: 12px; }
 }
+/* ══════════════════════════════════════════════════════════════════
+   PLEIN ÉCRAN — modal d'appel vidéo (partage d'écran bien visible)
+   ══════════════════════════════════════════════════════════════════ */
+#videoCallModal:fullscreen,
+#videoCallModal:-webkit-full-screen {
+  padding:0; background:#000;
+}
+#videoCallModal:fullscreen > div,
+#videoCallModal:-webkit-full-screen > div {
+  width:100%; height:100%; max-width:100%; max-height:100%; border-radius:0; display:flex; flex-direction:column;
+}
+#videoCallModal:fullscreen #videoGrid,
+#videoCallModal:-webkit-full-screen #videoGrid {
+  flex:1; min-height:0;
+}
+#videoCallModal:fullscreen #videoGrid video,
+#videoCallModal:-webkit-full-screen #videoGrid video {
+  height:100% !important;
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   APPEL ENTRANT — overlay global (sonnerie + accepter/refuser)
+   ══════════════════════════════════════════════════════════════════ */
+.incoming-call-overlay { z-index:99999; background:rgba(10,10,15,.88); backdrop-filter:blur(6px); }
+.incoming-call-box { text-align:center; padding:40px 32px; background:var(--surface); border-radius:20px; width:320px; max-width:92vw; box-shadow:0 20px 60px rgba(0,0,0,.4); }
+.incoming-call-ripple { position:relative; width:88px; height:88px; margin:0 auto 22px; display:flex; align-items:center; justify-content:center; }
+.incoming-call-ripple::before, .incoming-call-ripple::after {
+  content:''; position:absolute; inset:0; border-radius:50%; background:var(--warm); opacity:.35;
+  animation:comeo-ring-ripple 1.8s ease-out infinite;
+}
+.incoming-call-ripple::after { animation-delay:.6s; }
+.incoming-call-avatar { width:72px; height:72px; border-radius:50%; background:var(--ink); color:var(--warm); font-size:28px; display:flex; align-items:center; justify-content:center; z-index:1; box-shadow:0 0 0 4px var(--surface); }
+@keyframes comeo-ring-ripple { 0% { transform:scale(.8); opacity:.5; } 100% { transform:scale(1.6); opacity:0; } }
+.incoming-call-title { font-size:11px; text-transform:uppercase; letter-spacing:.1em; color:var(--muted); font-weight:700; margin-bottom:6px; }
+.incoming-call-name { font-size:19px; font-weight:800; color:var(--ink); margin-bottom:28px; }
+.incoming-call-actions { display:flex; gap:14px; }
+.incoming-call-btn { flex:1; padding:13px 10px; border-radius:14px; border:none; font-size:13px; font-weight:700; cursor:pointer; display:flex; flex-direction:column; align-items:center; gap:4px; transition:transform .12s; }
+.incoming-call-btn:active { transform:scale(.95); }
+.incoming-call-btn span { font-size:20px; }
+.incoming-call-btn.decline { background:rgba(220,38,38,.12); color:#dc2626; }
+.incoming-call-btn.accept { background:linear-gradient(135deg,#22c55e,#16a34a); color:#fff; }
+
+@media(max-width:480px) {
+  .incoming-call-box { padding:32px 20px; }
+  .incoming-call-name { font-size:17px; }
+}
