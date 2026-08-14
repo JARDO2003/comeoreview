@@ -2771,6 +2771,8 @@ async function doLogout() {
   if (subscriptionCheckInterval) clearInterval(subscriptionCheckInterval);
   if (messagesUnsubscribe) { messagesUnsubscribe(); messagesUnsubscribe = null; }
   if (modifUnsubscribe) { modifUnsubscribe(); modifUnsubscribe = null; }
+  if (appelEntrantUnsubscribe) { appelEntrantUnsubscribe(); appelEntrantUnsubscribe = null; }
+  masquerAppelEntrant();
   hidePremiumPaywall();
   await signOut(auth);
   currentProfile = null;
@@ -2817,6 +2819,7 @@ async function loadApp() {
   updateServiceAvailabilityUI();
   updateSubscriptionBadge(sub);
   startSubscriptionMonitor();
+  ecouterAppelEntrant(getOwnerProfileId()); // 🔔 sonnerie appel entrant, active sur toute l'app
   
   // ✅ Charger TOUTES les données avec le propriétaire si collaborateur
   await Promise.all([
@@ -11971,17 +11974,22 @@ async function ouvrirAppelVideo() {
     localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
     document.getElementById('localVideo').srcObject = localStream;
     document.getElementById('videoCallStatus').textContent = '⏳ Connexion au pair...';
+    videoCallActive = true;
 
-    await initialiserWebRTC();
+    const ownerUid = isCollabMode ? collabOwnerUid : currentProfile.id;
+    // Détecte si un appel est déjà en attente de réponse (initié par l'autre partie)
+    // → dans ce cas je réponds ; sinon j'initie un nouvel appel (système bidirectionnel).
+    const snap = await window._fbGetDoc(window._fbDoc(window._db, 'video_calls', ownerUid));
+    const d = snap.exists() ? snap.data() : null;
+    const appelEnAttente = d?.offer && !d?.ended && d?.callerId && d.callerId !== getMonSenderId();
+
+    await initialiserWebRTC(ownerUid, !appelEnAttente);
   } catch(e) {
     document.getElementById('videoCallStatus').textContent = '❌ ' + (e.name === 'NotAllowedError' ? 'Accès caméra refusé.' : e.message);
   }
 }
 
-async function initialiserWebRTC() {
-  const ownerUid = isCollabMode ? collabOwnerUid : currentProfile.id;
-  const isOwner = !isCollabMode;
-
+async function initialiserWebRTC(ownerUid, jeSuisAppelant) {
   peerConnection = new RTCPeerConnection(ICE_SERVERS);
 
   // Ajouter les tracks locaux
@@ -11993,65 +12001,55 @@ async function initialiserWebRTC() {
     remoteVideo.srcObject = event.streams[0];
     document.getElementById('remoteVideoPlaceholder').style.display = 'none';
     document.getElementById('videoCallStatus').textContent = '✅ Appel en cours';
-    document.getElementById('videoCallTitle').textContent = isOwner ? 'Avec collaborateur' : 'Avec propriétaire';
+    document.getElementById('videoCallTitle').textContent = isCollabMode ? 'Avec propriétaire' : 'Avec collaborateur';
     demarrerTimerAppel();
   };
 
   // ICE candidates → Firestore
   peerConnection.onicecandidate = async (event) => {
     if (!event.candidate) return;
-    const path = isOwner ? 'callerCandidates' : 'calleeCandidates';
-    await window._fbAddDoc(
-      window._fbCollection(window._db, 'video_calls', ownerUid, path),
-      event.candidate.toJSON()
-    );
+    const path = jeSuisAppelant ? 'callerCandidates' : 'calleeCandidates';
+    try {
+      await window._fbAddDoc(window._fbCollection(window._db, 'video_calls', ownerUid, path), event.candidate.toJSON());
+    } catch (e) { /* non-bloquant */ }
   };
 
-  if (isOwner) {
-    // Créer l'offre
+  if (jeSuisAppelant) {
     const offer = await peerConnection.createOffer();
     await peerConnection.setLocalDescription(offer);
     await window._fbSetDoc(window._fbDoc(window._db, 'video_calls', ownerUid), {
       offer: { sdp: offer.sdp, type: offer.type },
+      answer: null,
+      ended: false,
+      declinedBy: null,
+      callerId: getMonSenderId(),
+      callerName: getMonSenderName(),
       createdAt: new Date().toISOString(),
     });
 
     // Écouter la réponse
     const { onSnapshot, doc } = window._firebaseFirestore || {};
     if (onSnapshot) {
-      onSnapshot(doc(window._db, 'video_calls', ownerUid), async (snap) => {
+      const unsubAns = onSnapshot(doc(window._db, 'video_calls', ownerUid), async (snap) => {
         const d = snap.data();
-        if (d?.answer && !peerConnection.remoteDescription) {
+        if (d?.answer && peerConnection && !peerConnection.currentRemoteDescription) {
           await peerConnection.setRemoteDescription(new RTCSessionDescription(d.answer));
+        }
+        if (d?.ended && videoCallActive) {
+          document.getElementById('videoCallStatus').textContent = d.declinedBy ? '❌ Appel refusé' : '📴 Appel terminé';
+          setTimeout(() => { if (videoCallActive) terminerAppelVideo(); }, 1800);
         }
       });
       // ICE candidates du callee
-      const { getDocs, collection } = window._firebaseFirestore || {};
       onSnapshot(window._fbCollection(window._db, 'video_calls', ownerUid, 'calleeCandidates'), (snap) => {
         snap.docChanges().forEach(async ch => {
-          if (ch.type === 'added') {
-            await peerConnection.addIceCandidate(new RTCIceCandidate(ch.doc.data()));
+          if (ch.type === 'added' && peerConnection) {
+            try { await peerConnection.addIceCandidate(new RTCIceCandidate(ch.doc.data())); } catch (e) {}
           }
         });
       });
     }
   } else {
-    // Collaborateur : lire l'offre
-    const snap = await window._fbGetDoc(window._fbDoc(window._db, 'video_calls', ownerUid));
-    if (!snap.exists() || !snap.data()?.offer) {
-      document.getElementById('videoCallStatus').textContent = '⏳ En attente que le propriétaire démarre l\'appel...';
-      // Écoute
-      const { onSnapshot, doc } = window._firebaseFirestore || {};
-      if (onSnapshot) {
-        const unsub = onSnapshot(doc(window._db, 'video_calls', ownerUid), async (s) => {
-          if (s.data()?.offer && !peerConnection.remoteDescription) {
-            unsub();
-            await repondreAppelVideo(ownerUid);
-          }
-        });
-      }
-      return;
-    }
     await repondreAppelVideo(ownerUid);
   }
 }
@@ -12059,6 +12057,7 @@ async function initialiserWebRTC() {
 async function repondreAppelVideo(ownerUid) {
   const snap = await window._fbGetDoc(window._fbDoc(window._db, 'video_calls', ownerUid));
   const offer = snap.data()?.offer;
+  if (!offer) { document.getElementById('videoCallStatus').textContent = '⏳ En attente d\'un appel...'; return; }
   await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
   const answer = await peerConnection.createAnswer();
   await peerConnection.setLocalDescription(answer);
@@ -12071,8 +12070,8 @@ async function repondreAppelVideo(ownerUid) {
   if (onSnapshot) {
     onSnapshot(window._fbCollection(window._db, 'video_calls', ownerUid, 'callerCandidates'), (snap) => {
       snap.docChanges().forEach(async ch => {
-        if (ch.type === 'added') {
-          await peerConnection.addIceCandidate(new RTCIceCandidate(ch.doc.data()));
+        if (ch.type === 'added' && peerConnection) {
+          try { await peerConnection.addIceCandidate(new RTCIceCandidate(ch.doc.data())); } catch (e) {}
         }
       });
     });
@@ -12098,6 +12097,8 @@ async function terminerAppelVideo() {
   document.getElementById('videoCallModal').style.display = 'none';
   document.getElementById('localVideo').srcObject = null;
   document.getElementById('remoteVideo').srcObject = null;
+  videoCallActive = false;
+  if (document.fullscreenElement) { document.exitFullscreen().catch(() => {}); }
   // Nettoyer Firestore signaling
   const ownerUid = isCollabMode ? collabOwnerUid : currentProfile.id;
   try {
@@ -12119,6 +12120,123 @@ function toggleCam() {
   localStream.getVideoTracks().forEach(t => t.enabled = camEnabled);
   document.getElementById('btnCamToggle').style.opacity = camEnabled ? '1' : '0.4';
 }
+
+function toggleFullscreenAppel() {
+  const modal = document.getElementById('videoCallModal');
+  if (!document.fullscreenElement) {
+    (modal.requestFullscreen?.() || modal.webkitRequestFullscreen?.())?.catch?.(() => {});
+  } else {
+    (document.exitFullscreen?.() || document.webkitExitFullscreen?.())?.catch?.(() => {});
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════
+// ██  APPEL ENTRANT — sonnerie + Accepter/Refuser, visible sur TOUTE l'app
+// ══════════════════════════════════════════════════════════════════
+let appelEntrantUnsubscribe = null;
+let appelEntrantActif = false;
+let appelEntrantOwnerUid = null;
+let sonnerieCtx = null;
+let sonnerieInterval = null;
+let sonnerieTimeoutId = null;
+
+// Écoute globale (attachée une fois par session, propriétaire ET collaborateur) : détecte
+// qu'un appel a été initié par L'AUTRE partie et déclenche la sonnerie + l'overlay Accepter/Refuser,
+// même si l'utilisateur n'est pas sur la page Messagerie.
+function ecouterAppelEntrant(ownerUid) {
+  if (appelEntrantUnsubscribe) return;
+  const { onSnapshot, doc } = window._firebaseFirestore || {};
+  if (!onSnapshot || !doc) return;
+  appelEntrantUnsubscribe = onSnapshot(doc(window._db, 'video_calls', ownerUid), (snap) => {
+    const d = snap.data();
+    const moi = getMonSenderId();
+    const callModalOuvert = document.getElementById('videoCallModal')?.style.display === 'flex';
+    const appelActifPourMoi = d?.offer && !d?.ended && d?.callerId && d.callerId !== moi;
+    if (appelActifPourMoi && !callModalOuvert) {
+      afficherAppelEntrant(ownerUid, d.callerName || 'Un collaborateur');
+    } else if (!appelActifPourMoi) {
+      masquerAppelEntrant();
+    }
+  }, (err) => console.error('[Appel entrant] Erreur écoute :', err.message));
+}
+
+function afficherAppelEntrant(ownerUid, nomAppelant) {
+  if (appelEntrantActif) return; // déjà affiché
+  appelEntrantActif = true;
+  appelEntrantOwnerUid = ownerUid;
+  const nameEl = document.getElementById('incomingCallName');
+  const overlay = document.getElementById('incomingCallOverlay');
+  if (nameEl) nameEl.textContent = nomAppelant;
+  if (overlay) overlay.style.display = 'flex';
+  demarrerSonnerie();
+  navigator.vibrate?.([500, 250, 500, 250, 500]);
+  clearTimeout(sonnerieTimeoutId);
+  sonnerieTimeoutId = setTimeout(() => refuserAppelEntrant(true), 45000); // 45s sans réponse → appel manqué
+}
+
+function masquerAppelEntrant() {
+  appelEntrantActif = false;
+  const overlay = document.getElementById('incomingCallOverlay');
+  if (overlay) overlay.style.display = 'none';
+  arreterSonnerie();
+  clearTimeout(sonnerieTimeoutId);
+}
+
+async function accepterAppelEntrant() {
+  const ownerUid = appelEntrantOwnerUid;
+  masquerAppelEntrant();
+  await ouvrirAppelVideo();
+  void ownerUid;
+}
+
+async function refuserAppelEntrant(manque = false) {
+  const ownerUid = appelEntrantOwnerUid;
+  masquerAppelEntrant();
+  if (!ownerUid) return;
+  try {
+    await window._fbSetDoc(window._fbDoc(window._db, 'video_calls', ownerUid), {
+      ended: true, declinedBy: manque ? null : getMonSenderId(), missed: manque,
+    }, { merge: true });
+  } catch (e) {}
+}
+
+// Sonnerie générée via Web Audio API (aucun fichier audio externe nécessaire).
+// Remarque : les navigateurs exigent une interaction utilisateur préalable sur la page pour
+// autoriser l'audio automatique — comme l'utilisateur navigue déjà dans l'app, cette condition
+// est normalement déjà remplie. La vibration (mobile) et l'overlay visuel fonctionnent dans tous les cas.
+function demarrerSonnerie() {
+  try {
+    sonnerieCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const jouerTonalite = () => {
+      if (!sonnerieCtx) return;
+      [880, 1050].forEach((freq, i) => {
+        const t0 = sonnerieCtx.currentTime + i * 0.5;
+        const osc = sonnerieCtx.createOscillator();
+        const gain = sonnerieCtx.createGain();
+        osc.type = 'sine'; osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.0001, t0);
+        gain.gain.exponentialRampToValueAtTime(0.28, t0 + 0.05);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.4);
+        osc.connect(gain); gain.connect(sonnerieCtx.destination);
+        osc.start(t0); osc.stop(t0 + 0.42);
+      });
+    };
+    sonnerieCtx.resume?.().catch(() => {});
+    jouerTonalite();
+    sonnerieInterval = setInterval(jouerTonalite, 2000);
+  } catch (e) {
+    console.warn('[Sonnerie] Web Audio API indisponible :', e.message);
+  }
+}
+
+function arreterSonnerie() {
+  if (sonnerieInterval) { clearInterval(sonnerieInterval); sonnerieInterval = null; }
+  if (sonnerieCtx) { sonnerieCtx.close().catch(() => {}); sonnerieCtx = null; }
+}
+
+window.toggleFullscreenAppel = toggleFullscreenAppel;
+window.accepterAppelEntrant = accepterAppelEntrant;
+window.refuserAppelEntrant = refuserAppelEntrant;
 
 // ══════════════════════════════════════════════════════════════════
 // ██  MODULE MESSAGERIE — Chat temps réel collaborateur ↔ propriétaire
@@ -12153,11 +12271,16 @@ function renderMessagerie() {
   ecouterMessagesTempsReel();
 }
 
-function ecouterMessagesTempsReel() {
-  if (!window._fbReady || !currentProfile?.id) return;
+async function ecouterMessagesTempsReel() {
   if (messagesUnsubscribe) return; // déjà en écoute pour cette session
+  if (!currentProfile?.id) return;
+  await waitForFirebase(); // ⚠️ attend que Firebase soit prêt (corrige le cas où la Messagerie
+                            // était ouverte avant la fin de l'initialisation Firebase → liste vide)
   const { onSnapshot, collection } = window._firebaseFirestore || {};
-  if (!onSnapshot || !collection) return;
+  if (!onSnapshot || !collection) {
+    console.error('[Messagerie] Firestore indisponible — impossible d\'écouter les messages.');
+    return;
+  }
   const ownerID = getOwnerProfileId();
   messagesUnsubscribe = onSnapshot(collection(window._db, 'profiles', ownerID, 'messages'), (snap) => {
     chatMessages = [];
@@ -13103,7 +13226,11 @@ const __scope = { addFacLigne, addLigne, afficherDeclaration, afficherLettrage,
       }
       const vid = document.getElementById('localVideo');
       if (vid) vid.srcObject = stream;
+      // Plein écran automatique côté partageur — l'appel se déclenche depuis un clic
+      // utilisateur, ce qui satisfait l'exigence des navigateurs pour l'API Fullscreen.
+      (modal.requestFullscreen?.() || modal.webkitRequestFullscreen?.())?.catch?.(() => {});
       track.onended = () => {
+        if (document.fullscreenElement === modal) document.exitFullscreen?.().catch(() => {});
         if (localStream) {
           const camTrack = localStream.getVideoTracks()[0];
           if (peerConnection && camTrack) {
