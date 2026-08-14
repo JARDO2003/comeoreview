@@ -2345,7 +2345,7 @@ function closeMobileSidebar() {
 // SYSTEM PROMPT — RAISONNEMENT STRUCTURÉ
 // ══════════════════════════════════════════
 function buildSystemPrompt(ctx) {
-  const { nbEcritures, companyName, exercice, totalDebit, totalCredit, comptesSoldes, allDates, ecrituresResume } = ctx;
+  const { nbEcritures, companyName, exercice, totalDebit, totalCredit, comptesSoldes, allDates, ecrituresResume, secteurLabel, activite } = ctx;
   const today = new Date().toLocaleDateString('fr-FR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 
   return `Tu es COMEO AI — Expert-Comptable Diplômé et Commissaire aux Comptes agréé en Côte d'Ivoire, membre de l'ONECCA-CI.
@@ -2565,6 +2565,8 @@ POUR UNE QUESTION AMBIGUË :
 📂 CONTEXTE ENTREPRISE EN TEMPS RÉEL
 ════════════════════════════════════════════
 Entreprise    : ${companyName}
+${secteurLabel ? `Secteur       : ${secteurLabel}` : ''}
+${activite ? `Activité      : ${activite}` : ''}
 Exercice      : ${exercice}
 Date du jour  : ${today}
 Nb écritures  : ${nbEcritures}
@@ -2573,6 +2575,14 @@ Total Crédit  : ${totalCredit} FCFA
 ${comptesSoldes ? `Soldes comptes principaux :\n${comptesSoldes}` : ''}
 ${ecrituresResume ? `Dernières opérations :\n${ecrituresResume}` : ''}
 ${allDates ? `Période couverte : ${allDates}` : ''}
+${secteurLabel ? `
+⚠️ ADAPTATION MÉTIER OBLIGATOIRE : tu connais le secteur d'activité (${secteurLabel}${activite ? `, activité : ${activite}` : ''}) de cette entreprise.
+Utilise systématiquement cette information pour :
+  → Proposer les comptes SYSCOHADA les plus pertinents pour CE métier précis (ex: un commerce de ${activite || 'marchandises'} utilisera prioritairement le compte 607 "Achats de marchandises" et 707 "Ventes de marchandises" plutôt que 601/701 génériques ; un prestataire de services utilisera 706 "Services vendus" plutôt que 707 ; une entreprise industrielle utilisera 60x "Achats de matières premières" et 71/72 "Production").
+  → Anticiper les charges et produits typiques de ce secteur dans tes suggestions d'écritures.
+  → Adapter le vocabulaire et les exemples à la réalité métier de l'entreprise (ex: "vos marchandises", "vos prestations", "votre production" selon le cas).
+  → Si le secteur est "Commerce" et l'activité précisée, tenir compte du type de marchandise pour la TVA applicable, les taux, et les usages sectoriels courants.
+  → Ne jamais donner un conseil générique quand un conseil adapté au secteur existe.` : ''}
 
 ════════════════════════════════════════════
 ✏️ ÉCRITURE EN COURS DE SAISIE (à analyser/corriger si demandé)
@@ -2637,9 +2647,20 @@ function switchTab(t) {
   document.getElementById('form-register').style.display = t === 'register' ? 'flex' : 'none';
 }
 
+function toggleSecteurActiviteField() {
+  const secteur = document.getElementById('r-secteur').value;
+  const wrapCommerce = document.getElementById('r-activite-wrap');
+  const wrapAutre = document.getElementById('r-activite-autre-wrap');
+  wrapCommerce.style.display = secteur === 'commerce' ? 'block' : 'none';
+  wrapAutre.style.display = secteur === 'autre' ? 'block' : 'none';
+}
+
 async function doRegister() {
   const company = document.getElementById('r-company').value.trim();
   const email = document.getElementById('r-email').value.trim();
+  const secteur = document.getElementById('r-secteur').value;
+  const activiteCommerce = document.getElementById('r-activite').value.trim();
+  const activiteAutre = document.getElementById('r-activite-autre').value.trim();
   const compte701 = document.getElementById('r-compte701').value.trim() || '701';
   const exercice = document.getElementById('r-exercice').value.trim() || '2024';
   const pass = document.getElementById('r-pass').value;
@@ -2655,11 +2676,34 @@ async function doRegister() {
     err.classList.add('show');
     return;
   }
+  if (!secteur) {
+    err.textContent = "Secteur d'activité requis — cela permet à l'IA d'adapter ses conseils comptables";
+    err.classList.add('show');
+    return;
+  }
+  if (secteur === 'commerce' && !activiteCommerce) {
+    err.textContent = 'Précisez ce que vend votre entreprise';
+    err.classList.add('show');
+    return;
+  }
+  if (secteur === 'autre' && !activiteAutre) {
+    err.textContent = 'Précisez votre activité';
+    err.classList.add('show');
+    return;
+  }
   if (pass.length < 6) {
     err.textContent = 'Mot de passe trop court (6 caractères min.)';
     err.classList.add('show');
     return;
   }
+  // Libellé lisible du secteur, pour affichage/contexte IA (correspond aux options du <select>)
+  const secteurLabels = {
+    commerce: 'Commerce (achat/revente de marchandises)', services: 'Services', industrie: 'Industrie / Production',
+    btp: 'BTP / Construction', agriculture: 'Agriculture / Agroalimentaire', transport: 'Transport / Logistique',
+    hotellerie: 'Hôtellerie / Restauration', sante: 'Santé', education: 'Éducation / Formation',
+    tech: 'Technologie / Numérique', finance: 'Finance / Assurance', autre: 'Autre',
+  };
+  const activite = secteur === 'commerce' ? activiteCommerce : (secteur === 'autre' ? activiteAutre : '');
   try {
     await waitForFirebase();
     const cred = await createUserWithEmailAndPassword(auth, email, pass);
@@ -2670,6 +2714,9 @@ async function doRegister() {
       compte701,
       exercice,
       email,
+      secteur,
+      secteurLabel: secteurLabels[secteur] || secteur,
+      activite,
       createdAt: new Date().toISOString(),
       trialEndsAt,
       premiumUntil: null,
@@ -6287,6 +6334,8 @@ function buildAIContext() {
     nbEcritures: ecritures.length,
     companyName: currentProfile?.company || 'Entreprise',
     exercice: document.getElementById('exerciceYear')?.value || '2024',
+    secteurLabel: currentProfile?.secteurLabel || currentProfile?.secteur || '',
+    activite: currentProfile?.activite || '',
     totalDebit: fn(tD),
     totalCredit: fn(tC),
     comptesSoldes,
@@ -10902,6 +10951,7 @@ window.handleAiKey = handleAiKey;
 window.quickAI = quickAI;
 window.doLogin = doLogin;
 window.doRegister = doRegister;
+window.toggleSecteurActiviteField = toggleSecteurActiviteField;
 window.doLogout = doLogout;
 window.switchTab = switchTab;
 window.navigate = navigate;
