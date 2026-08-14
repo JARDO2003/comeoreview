@@ -5627,6 +5627,260 @@ function imprimerSceauFiscal() {
 window.ouvrirSceauFiscal = ouvrirSceauFiscal;
 window.closeSceauFiscalModal = closeSceauFiscalModal;
 window.imprimerSceauFiscal = imprimerSceauFiscal;
+
+// ══════════════════════════════════════════════════════════════════
+// ██  CENTRE DE TESTS e-MECeF — Auto-déclaration SFE (DGI Bénin)
+// ██  Reproduit EXACTEMENT les 20 cas de test de l'Annexe 2 du document
+// ██  officiel "Procédure d'auto-déclaration de SFE" (envoyé par le DGI).
+// ██  Après exécution, capturez chaque cas réussi (avec son QR affiché)
+// ██  et collez-le dans l'Annexe 2, puis envoyez le dossier complet
+// ██  (Annexe 1 + Annexe 2) à emecefbenin@finances.bj.
+// ══════════════════════════════════════════════════════════════════
+let emecefTestResults = [];
+
+// Mapping officiel des groupes de taxe (table "NOTRE SFE GÈRE LES GROUPES D'IMPÔT SUIVANTS")
+const DGI_TAXGROUP_LABELS = {
+  A: 'Article exonéré (EXO)',
+  B: 'Article taxable (TAX)',
+  C: "Article d'exportation de produit taxable (EXP)",
+  D: "Article régime d'exception (MP)",
+  E: 'Article régime fiscal TPS (TPS)',
+  F: 'Article réservé (RES)',
+};
+
+// Les 20 cas de test proposés par la DGI (Annexe 2), dans l'ordre exact du document.
+const DGI_TEST_CASES = [
+  { n: 1, type: 'FV', label: 'Article exonéré, quantité 1', items: [{ taxGroup: 'A', qty: 1 }] },
+  { n: 2, type: 'FV', label: 'Article taxable, quantité 1', items: [{ taxGroup: 'B', qty: 1 }] },
+  { n: 3, type: 'FV', label: 'Article exonéré qté 2 + Article taxable qté 3', items: [{ taxGroup: 'A', qty: 2 }, { taxGroup: 'B', qty: 3 }] },
+  { n: 4, type: 'FV', label: 'Article exonéré qté 2,5 + Article taxable qté 3,250', items: [{ taxGroup: 'A', qty: 2.5 }, { taxGroup: 'B', qty: 3.25 }] },
+  { n: 5, type: 'FV', label: 'Exonéré qté 2 + Taxable qté 3 + IFU/nom du client', items: [{ taxGroup: 'A', qty: 2 }, { taxGroup: 'B', qty: 3 }], client: true },
+  { n: 6, type: 'FA', label: "Facture d'avoir — Exonéré qté 2 + Taxable qté 3 + IFU/nom du client", items: [{ taxGroup: 'A', qty: 2 }, { taxGroup: 'B', qty: 3 }], client: true },
+  { n: 7, type: 'FV', label: 'Taxable qté 3 avec taxe spécifique + IFU/nom du client', items: [{ taxGroup: 'B', qty: 3, taxeSpecifique: true }], client: true },
+  { n: 8, type: 'FV', label: 'Exonéré qté 2 + Taxable qté 3 + AIB 5%', items: [{ taxGroup: 'A', qty: 2 }, { taxGroup: 'B', qty: 3 }], aib: 'B' },
+  { n: 9, type: 'FV', label: 'Exonéré qté 2 + Taxable qté 3 + IFU/nom du client + AIB 1%', items: [{ taxGroup: 'A', qty: 2 }, { taxGroup: 'B', qty: 3 }], client: true, aib: 'A' },
+  { n: 10, type: 'FV', label: 'Exonéré qté 2 + Taxable qté 3 (taxe spécifique) + AIB 5%', items: [{ taxGroup: 'A', qty: 2 }, { taxGroup: 'B', qty: 3, taxeSpecifique: true }], aib: 'B' },
+  { n: 11, type: 'FV', label: 'Taxable qté 2 + IFU/nom du client + Taxe de séjour', items: [{ taxGroup: 'B', qty: 2 }], client: true, taxeSejour: true },
+  { n: 12, type: 'FV', label: "Article régime d'exception, quantité 2", items: [{ taxGroup: 'D', qty: 2 }] },
+  { n: 13, type: 'FV', label: "Régime d'exception qté 2 avec taxe spécifique", items: [{ taxGroup: 'D', qty: 2, taxeSpecifique: true }] },
+  { n: 14, type: 'FV', label: 'Article régime fiscal TPS, quantité 2', items: [{ taxGroup: 'E', qty: 2 }] },
+  { n: 15, type: 'FV', label: 'Régime fiscal TPS qté 2 avec taxe spécifique', items: [{ taxGroup: 'E', qty: 2, taxeSpecifique: true }] },
+  { n: 16, type: 'EV', label: "Vente export — Article d'exportation taxable, qté 2", items: [{ taxGroup: 'C', qty: 2 }] },
+  { n: 17, type: 'EV', label: "Vente export — Exonéré qté 2 + Article d'exportation taxable qté 3", items: [{ taxGroup: 'A', qty: 2 }, { taxGroup: 'C', qty: 3 }] },
+  { n: 18, type: 'EA', label: "Avoir export — Article d'exportation taxable, qté 2", items: [{ taxGroup: 'C', qty: 2 }] },
+  { n: 19, type: 'EV', label: 'Vente export — Article régime fiscal TPS, quantité 2', items: [{ taxGroup: 'E', qty: 2 }] },
+  { n: 20, type: 'EA', label: 'Avoir export — Article régime fiscal TPS, quantité 2', items: [{ taxGroup: 'E', qty: 2 }] },
+];
+
+// Libellé du type de facture, pour affichage
+function libelleTypeFacture(type) {
+  return { FV: 'Facture de vente', FA: "Facture d'avoir", EV: "Facture de vente à l'exportation", EA: "Facture d'avoir à l'exportation" }[type] || type;
+}
+
+// Exécute un cas de test officiel DGI : création + confirmation → retourne le sceau fiscal (QR)
+async function executerCasTestDGI(cas) {
+  const items = cas.items.map((it, idx) => ({
+    code: `T${cas.n}-${idx + 1}`,
+    name: DGI_TAXGROUP_LABELS[it.taxGroup] || it.taxGroup,
+    price: 1000,
+    quantity: it.qty,
+    taxGroup: it.taxGroup,
+    taxSpecific: it.taxeSpecifique ? 50 : undefined,
+  }));
+  const montantTotal = items.reduce((s, i) => s + i.price * i.quantity, 0);
+  const payload = {
+    ifu: EMECEF_IFU || undefined,
+    aib: cas.aib || undefined,
+    type: cas.type,
+    items,
+    client: cas.client ? { ifu: '0000000000000', name: 'Client Test DGI' } : undefined,
+    operator: { id: EMECEF_OPERATOR_ID || '1', name: EMECEF_OPERATOR_NAME || 'Opérateur Test' },
+    payment: [{ name: 'ESPECES', amount: Math.round(montantTotal) }],
+    reference: `TEST-DGI-${cas.n}-${Date.now()}`,
+  };
+  const created = await callEmecefApi('POST', '/api/invoice', payload);
+  if (created.errorCode) return { status: 'fail', detail: created.errorDesc || created.errorCode, raw: created };
+  if (!created.uid) return { status: 'fail', detail: "Pas d'uid retourné par la DGI", raw: created };
+
+  const confirmed = await callEmecefApi('PUT', `/api/invoice/${created.uid}/confirm`, undefined);
+  if (confirmed.errorCode) return { status: 'fail', detail: confirmed.errorDesc || confirmed.errorCode, raw: confirmed };
+
+  const avertissement = cas.taxeSejour
+    ? " ⚠️ La spécification de l'API que nous avons obtenue n'expose pas de champ dédié \"taxe de séjour\" — ce cas nécessite une vérification manuelle avec la doc SDK/DGI avant validation."
+    : '';
+  return {
+    status: 'pass',
+    detail: `uid=${created.uid} · Total DGI=${created.total} FCFA · NIM=${confirmed.nim || '—'}${avertissement}`,
+    raw: { created, confirmed },
+    sceau: confirmed.qrCode || null,
+    codeMECeFDGI: confirmed.codeMECeFDGI || null,
+    nim: confirmed.nim || null,
+  };
+}
+
+// ── Vérifications préalables (avant les 20 cas officiels) ──────────────────
+async function testEmecefStatus() {
+  const d = await callEmecefApi('GET', '/api/info/status');
+  if (!d.status) return { status: 'fail', detail: 'status=false — jeton ou connexion invalide', raw: d };
+  return { status: 'pass', detail: `IFU ${d.ifu || '—'} · NIM ${d.nim || '—'} · Jeton valide jusqu'au ${d.tokenValid || '—'}`, raw: d };
+}
+async function testEmecefTaxGroups() {
+  const d = await callEmecefApi('GET', '/api/info/taxGroups');
+  const groupes = ['a', 'b', 'c', 'd', 'e', 'f'].map((k) => `${k.toUpperCase()}=${d[k]}%`).join(', ');
+  const aib = `aibA=${d.aibA}% · aibB=${d.aibB}%`;
+  return { status: 'pass', detail: `${groupes} · ${aib}`, raw: d };
+}
+async function testEmecefInvoiceTypes() {
+  const d = await callEmecefApi('GET', '/api/info/invoiceTypes');
+  const types = (d || []).map((t) => t.type);
+  const manquants = ['FV', 'FA', 'EV', 'EA'].filter((t) => !types.includes(t));
+  if (manquants.length) return { status: 'fail', detail: `Types manquants côté DGI : ${manquants.join(', ')}`, raw: d };
+  return { status: 'pass', detail: `Types disponibles : ${types.join(', ')}`, raw: d };
+}
+async function testEmecefPaymentTypes() {
+  const d = await callEmecefApi('GET', '/api/info/paymentTypes');
+  return { status: 'pass', detail: `${(d || []).length} type(s) : ${(d || []).map((t) => t.type).join(', ')}`, raw: d };
+}
+
+const EMECEF_TEST_DEFS = [
+  { id: 'status', section: 'Vérifications préalables', name: 'Connectivité & authentification (GET /api/info/status)', run: testEmecefStatus },
+  { id: 'taxgroups', section: 'Vérifications préalables', name: 'Groupes de taxes (GET /api/info/taxGroups)', run: testEmecefTaxGroups },
+  { id: 'invoicetypes', section: 'Vérifications préalables', name: 'Types de facture disponibles (GET /api/info/invoiceTypes)', run: testEmecefInvoiceTypes },
+  { id: 'paymenttypes', section: 'Vérifications préalables', name: 'Types de paiement disponibles (GET /api/info/paymentTypes)', run: testEmecefPaymentTypes },
+  ...DGI_TEST_CASES.map((cas) => ({
+    id: 'dgi_test_' + cas.n,
+    section: 'Annexe 2 — Factures de test officielles DGI',
+    name: `Test #${cas.n} — ${libelleTypeFacture(cas.type)} — ${cas.label}`,
+    run: () => executerCasTestDGI(cas),
+  })),
+];
+
+function afficherConfigEmecefTest() {
+  const el = document.getElementById('emecefTestConfig');
+  if (!el) return;
+  const estTest = (EMECEF_BASE_URL || '').includes('developper');
+  el.innerHTML = `
+    <div class="emecef-config-row"><span>Environnement</span><b class="${estTest ? 'emecef-badge-test' : 'emecef-badge-prod'}">${estTest ? '🧪 TEST (portail développeur)' : '🟢 PRODUCTION'}</b></div>
+    <div class="emecef-config-row"><span>IFU</span><b>${EMECEF_IFU || '⚠️ non configuré'}</b></div>
+    <div class="emecef-config-row"><span>NIM</span><b>${EMECEF_NIM || '⚠️ non configuré'}</b></div>
+    <div class="emecef-config-row"><span>Jeton API</span><b>${EMECEF_TOKEN ? '✓ configuré' : '⚠️ manquant — configurez server_config/emecef/token'}</b></div>
+    <div class="emecef-config-note">📩 Une fois tous les cas validés, capturez chaque test réussi (avec son QR) pour l'Annexe 2, remplissez l'Annexe 1 (déclaration de conformité), et envoyez le dossier complet à <b>emecefbenin@finances.bj</b>. Vérifiez ensuite vos factures sur <b>developper.impots.bj/sygmef-test/verification</b>.</div>
+  `;
+}
+
+function renderEmecefTestList() {
+  const el = document.getElementById('emecefTestList');
+  if (!el) return;
+  const icons = { pending: '⚪', running: '🔄', pass: '✅', fail: '❌', skip: '⏭️' };
+  let sectionCourante = null;
+  let html = '';
+  emecefTestResults.forEach((t, i) => {
+    if (t.section !== sectionCourante) {
+      sectionCourante = t.section;
+      html += `<div class="emecef-test-section">${sectionCourante}</div>`;
+    }
+    html += `
+      <div class="emecef-test-row emecef-test-${t.status}">
+        <span class="emecef-test-icon">${icons[t.status] || '⚪'}</span>
+        <div class="emecef-test-body">
+          <div class="emecef-test-name">${t.name}</div>
+          ${t.detail ? `<div class="emecef-test-detail">${escapeHtml(t.detail)}</div>` : ''}
+          ${t.sceau ? `<canvas id="emecefQr${i}" class="emecef-test-qr"></canvas>` : ''}
+        </div>
+      </div>`;
+  });
+  el.innerHTML = html;
+  // Dessine les QR codes des cas réussis (après insertion DOM, sinon le canvas n'existe pas encore)
+  emecefTestResults.forEach((t, i) => {
+    if (t.sceau) {
+      const canvas = document.getElementById(`emecefQr${i}`);
+      if (canvas && window.QRCode) {
+        window.QRCode.toCanvas(canvas, t.sceau, { width: 90, margin: 0 }, () => {});
+      }
+    }
+  });
+}
+
+function ouvrirCentreTestsEmecef() {
+  document.getElementById('emecefTestModal').style.display = 'flex';
+  afficherConfigEmecefTest();
+  emecefTestResults = EMECEF_TEST_DEFS.map((t) => ({ ...t, status: 'pending', detail: '', raw: null, sceau: null }));
+  renderEmecefTestList();
+  document.getElementById('btnExporterRapportEmecef').style.display = 'none';
+}
+
+function fermerCentreTestsEmecef() {
+  document.getElementById('emecefTestModal').style.display = 'none';
+}
+
+async function lancerTousLesTestsEmecef() {
+  if (!EMECEF_TOKEN) { toast('Configurez le jeton e-MECeF (server_config/emecef/token) avant de lancer les tests', 'error'); return; }
+  const btn = document.getElementById('btnLancerTestsEmecef');
+  btn.disabled = true;
+  document.getElementById('btnExporterRapportEmecef').style.display = 'none';
+  emecefTestResults = EMECEF_TEST_DEFS.map((t) => ({ ...t, status: 'pending', detail: '', raw: null, sceau: null }));
+  renderEmecefTestList();
+  const ctx = {};
+  for (let i = 0; i < EMECEF_TEST_DEFS.length; i++) {
+    emecefTestResults[i].status = 'running';
+    renderEmecefTestList();
+    try {
+      const res = await EMECEF_TEST_DEFS[i].run(ctx);
+      Object.assign(emecefTestResults[i], res);
+    } catch (e) {
+      emecefTestResults[i].status = 'fail';
+      emecefTestResults[i].detail = e.message;
+    }
+    renderEmecefTestList();
+  }
+  btn.disabled = false;
+  document.getElementById('btnExporterRapportEmecef').style.display = 'inline-block';
+  const reussis = emecefTestResults.filter((t) => t.status === 'pass').length;
+  toast(`Tests terminés : ${reussis}/${emecefTestResults.length} réussis`, reussis === emecefTestResults.length ? 'success' : 'error');
+}
+
+function exporterRapportTestsEmecef() {
+  const l = [];
+  l.push('RAPPORT DE TESTS e-MECeF — COMEO AI (Auto-déclaration SFE)');
+  l.push('Généré le : ' + new Date().toLocaleString('fr-FR'));
+  l.push('Environnement : ' + EMECEF_BASE_URL);
+  l.push('IFU : ' + (EMECEF_IFU || '—') + '   NIM : ' + (EMECEF_NIM || '—'));
+  l.push('');
+  l.push('='.repeat(70));
+  let sectionCourante = null;
+  emecefTestResults.forEach((t, i) => {
+    if (t.section !== sectionCourante) {
+      sectionCourante = t.section;
+      l.push(`\n--- ${sectionCourante} ---`);
+    }
+    l.push(`\n${i + 1}. [${(t.status || 'pending').toUpperCase()}] ${t.name}`);
+    if (t.detail) l.push(`   → ${t.detail}`);
+    if (t.codeMECeFDGI) l.push(`   Code MECeF DGI : ${t.codeMECeFDGI}`);
+    if (t.sceau) l.push(`   Contenu QR (sceau) : ${t.sceau}`);
+    if (t.raw) l.push(`   Réponse brute : ${JSON.stringify(t.raw)}`);
+  });
+  const reussis = emecefTestResults.filter((t) => t.status === 'pass').length;
+  l.push('\n' + '='.repeat(70));
+  l.push(`RÉSULTAT GLOBAL : ${reussis}/${emecefTestResults.length} tests réussis`);
+  l.push('\n📩 PROCHAINES ÉTAPES (procédure officielle DGI) :');
+  l.push('1. Capturez une photo/capture d\'écran de chaque cas réussi ci-dessus (QR visible) pour l\'Annexe 2.');
+  l.push('2. Remplissez l\'Annexe 1 (formulaire de déclaration de conformité).');
+  l.push('3. Envoyez le dossier complet (Annexe 1 + Annexe 2) à : emecefbenin@finances.bj');
+  l.push('4. Vérifiez vos factures sur : https://developper.impots.bj/sygmef-test/verification');
+  l.push('5. Attendez le retour de la DGI (approbation ou corrections à effectuer).');
+  const blob = new Blob([l.join('\n')], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `rapport-tests-emecef-COMEO-${new Date().toISOString().slice(0, 10)}.txt`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+window.ouvrirCentreTestsEmecef = ouvrirCentreTestsEmecef;
+window.fermerCentreTestsEmecef = fermerCentreTestsEmecef;
+window.lancerTousLesTestsEmecef = lancerTousLesTestsEmecef;
+window.exporterRapportTestsEmecef = exporterRapportTestsEmecef;
 window.renderCeoDashboard = renderCeoDashboard;
 window.openScanFactureModal = openScanFactureModal;
 window.closeScanFactureModal = closeScanFactureModal;
