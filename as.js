@@ -5649,13 +5649,15 @@ const DGI_TAXGROUP_LABELS = {
 };
 
 // Les 20 cas de test proposés par la DGI (Annexe 2), dans l'ordre exact du document.
+// Les factures d'avoir (FA/EA) doivent référencer le codeMECeFDGI de la facture d'origine
+// correspondante (exigence DGI : "reference" = code sans tirets, 24 caractères en environnement test).
 const DGI_TEST_CASES = [
   { n: 1, type: 'FV', label: 'Article exonéré, quantité 1', items: [{ taxGroup: 'A', qty: 1 }] },
   { n: 2, type: 'FV', label: 'Article taxable, quantité 1', items: [{ taxGroup: 'B', qty: 1 }] },
   { n: 3, type: 'FV', label: 'Article exonéré qté 2 + Article taxable qté 3', items: [{ taxGroup: 'A', qty: 2 }, { taxGroup: 'B', qty: 3 }] },
   { n: 4, type: 'FV', label: 'Article exonéré qté 2,5 + Article taxable qté 3,250', items: [{ taxGroup: 'A', qty: 2.5 }, { taxGroup: 'B', qty: 3.25 }] },
-  { n: 5, type: 'FV', label: 'Exonéré qté 2 + Taxable qté 3 + IFU/nom du client', items: [{ taxGroup: 'A', qty: 2 }, { taxGroup: 'B', qty: 3 }], client: true },
-  { n: 6, type: 'FA', label: "Facture d'avoir — Exonéré qté 2 + Taxable qté 3 + IFU/nom du client", items: [{ taxGroup: 'A', qty: 2 }, { taxGroup: 'B', qty: 3 }], client: true },
+  { n: 5, type: 'FV', label: 'Exonéré qté 2 + Taxable qté 3 + IFU/nom du client', items: [{ taxGroup: 'A', qty: 2 }, { taxGroup: 'B', qty: 3 }], client: true, storeAs: 'orig_fv_client' },
+  { n: 6, type: 'FA', label: "Facture d'avoir — Exonéré qté 2 + Taxable qté 3 + IFU/nom du client", items: [{ taxGroup: 'A', qty: 2 }, { taxGroup: 'B', qty: 3 }], client: true, avoirDe: 'orig_fv_client' },
   { n: 7, type: 'FV', label: 'Taxable qté 3 avec taxe spécifique + IFU/nom du client', items: [{ taxGroup: 'B', qty: 3, taxeSpecifique: true }], client: true },
   { n: 8, type: 'FV', label: 'Exonéré qté 2 + Taxable qté 3 + AIB 5%', items: [{ taxGroup: 'A', qty: 2 }, { taxGroup: 'B', qty: 3 }], aib: 'B' },
   { n: 9, type: 'FV', label: 'Exonéré qté 2 + Taxable qté 3 + IFU/nom du client + AIB 1%', items: [{ taxGroup: 'A', qty: 2 }, { taxGroup: 'B', qty: 3 }], client: true, aib: 'A' },
@@ -5665,11 +5667,11 @@ const DGI_TEST_CASES = [
   { n: 13, type: 'FV', label: "Régime d'exception qté 2 avec taxe spécifique", items: [{ taxGroup: 'D', qty: 2, taxeSpecifique: true }] },
   { n: 14, type: 'FV', label: 'Article régime fiscal TPS, quantité 2', items: [{ taxGroup: 'E', qty: 2 }] },
   { n: 15, type: 'FV', label: 'Régime fiscal TPS qté 2 avec taxe spécifique', items: [{ taxGroup: 'E', qty: 2, taxeSpecifique: true }] },
-  { n: 16, type: 'EV', label: "Vente export — Article d'exportation taxable, qté 2", items: [{ taxGroup: 'C', qty: 2 }] },
+  { n: 16, type: 'EV', label: "Vente export — Article d'exportation taxable, qté 2", items: [{ taxGroup: 'C', qty: 2 }], storeAs: 'orig_ev_export' },
   { n: 17, type: 'EV', label: "Vente export — Exonéré qté 2 + Article d'exportation taxable qté 3", items: [{ taxGroup: 'A', qty: 2 }, { taxGroup: 'C', qty: 3 }] },
-  { n: 18, type: 'EA', label: "Avoir export — Article d'exportation taxable, qté 2", items: [{ taxGroup: 'C', qty: 2 }] },
-  { n: 19, type: 'EV', label: 'Vente export — Article régime fiscal TPS, quantité 2', items: [{ taxGroup: 'E', qty: 2 }] },
-  { n: 20, type: 'EA', label: 'Avoir export — Article régime fiscal TPS, quantité 2', items: [{ taxGroup: 'E', qty: 2 }] },
+  { n: 18, type: 'EA', label: "Avoir export — Article d'exportation taxable, qté 2", items: [{ taxGroup: 'C', qty: 2 }], avoirDe: 'orig_ev_export' },
+  { n: 19, type: 'EV', label: 'Vente export — Article régime fiscal TPS, quantité 2', items: [{ taxGroup: 'E', qty: 2 }], storeAs: 'orig_ev_tps' },
+  { n: 20, type: 'EA', label: 'Avoir export — Article régime fiscal TPS, quantité 2', items: [{ taxGroup: 'E', qty: 2 }], avoirDe: 'orig_ev_tps' },
 ];
 
 // Libellé du type de facture, pour affichage
@@ -5678,7 +5680,11 @@ function libelleTypeFacture(type) {
 }
 
 // Exécute un cas de test officiel DGI : création + confirmation → retourne le sceau fiscal (QR)
-async function executerCasTestDGI(cas) {
+// ctx : contexte partagé entre tous les cas de la session, sert à chaîner un avoir vers son originale.
+async function executerCasTestDGI(cas, ctx) {
+  if (cas.avoirDe && !ctx[cas.avoirDe]) {
+    return { status: 'fail', detail: `La facture d'origine (${cas.avoirDe}) n'a pas été créée avec succès — impossible de générer l'avoir.`, raw: null };
+  }
   const items = cas.items.map((it, idx) => ({
     code: `T${cas.n}-${idx + 1}`,
     name: DGI_TAXGROUP_LABELS[it.taxGroup] || it.taxGroup,
@@ -5688,6 +5694,9 @@ async function executerCasTestDGI(cas) {
     taxSpecific: it.taxeSpecifique ? 50 : undefined,
   }));
   const montantTotal = items.reduce((s, i) => s + i.price * i.quantity, 0);
+  const reference = cas.avoirDe
+    ? ctx[cas.avoirDe].replace(/-/g, '') // référence à la facture d'origine, sans tirets (exigence DGI : 24 caractères)
+    : `TEST-DGI-${cas.n}-${Date.now()}`;
   const payload = {
     ifu: EMECEF_IFU || undefined,
     aib: cas.aib || undefined,
@@ -5696,7 +5705,7 @@ async function executerCasTestDGI(cas) {
     client: cas.client ? { ifu: '0000000000000', name: 'Client Test DGI' } : undefined,
     operator: { id: EMECEF_OPERATOR_ID || '1', name: EMECEF_OPERATOR_NAME || 'Opérateur Test' },
     payment: [{ name: 'ESPECES', amount: Math.round(montantTotal) }],
-    reference: `TEST-DGI-${cas.n}-${Date.now()}`,
+    reference,
   };
   const created = await callEmecefApi('POST', '/api/invoice', payload);
   if (created.errorCode) return { status: 'fail', detail: created.errorDesc || created.errorCode, raw: created };
@@ -5704,6 +5713,9 @@ async function executerCasTestDGI(cas) {
 
   const confirmed = await callEmecefApi('PUT', `/api/invoice/${created.uid}/confirm`, undefined);
   if (confirmed.errorCode) return { status: 'fail', detail: confirmed.errorDesc || confirmed.errorCode, raw: confirmed };
+
+  // Mémorise le code fiscal pour un éventuel avoir chaîné plus loin dans la séquence
+  if (cas.storeAs && confirmed.codeMECeFDGI) ctx[cas.storeAs] = confirmed.codeMECeFDGI;
 
   const avertissement = cas.taxeSejour
     ? " ⚠️ La spécification de l'API que nous avons obtenue n'expose pas de champ dédié \"taxe de séjour\" — ce cas nécessite une vérification manuelle avec la doc SDK/DGI avant validation."
@@ -5751,7 +5763,7 @@ const EMECEF_TEST_DEFS = [
     id: 'dgi_test_' + cas.n,
     section: 'Annexe 2 — Factures de test officielles DGI',
     name: `Test #${cas.n} — ${libelleTypeFacture(cas.type)} — ${cas.label}`,
-    run: () => executerCasTestDGI(cas),
+    run: (ctx) => executerCasTestDGI(cas, ctx),
   })),
 ];
 
