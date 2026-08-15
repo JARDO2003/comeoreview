@@ -2392,3 +2392,5 @@ mark.hl { background:rgba(212,168,83,.3); color:var(--warm); border-radius:2px; 
 @media(max-width:480px) {
   .ecriture-succes-box, .secteur-autre-box { width:100%; padding-left:22px; padding-right:22px; }
 }
+
+.emecef-test-qr-fallback { margin-top:8px; padding:8px; background:#fff; border:1px solid var(--line); border-radius:6px; font-family:var(--font-mono); font-size:9px; word-break:break-all; color:var(--ink); max-width:220px; }
