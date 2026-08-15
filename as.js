@@ -4786,19 +4786,23 @@ function renderCeoDashboard() {
 }
 
 // ── Fenêtre glissante des 6 derniers mois (labels + clé YYYY-MM) ──
-// Ancrée sur l'exercice comptable sélectionné plutôt que sur la date réelle du jour :
-// si l'exercice actif (ex: 2024) n'est pas l'année civile en cours, les écritures de cet
-// exercice tombent hors des "6 derniers mois calendaires réels" et le graphique affiche
-// 0 partout alors que les KPI (qui, eux, agrègent tout l'historique sans filtre de date)
-// affichent un chiffre d'affaires non nul — c'est ce décalage qui donnait l'impression
-// d'un bug ("CA en orange à 0 alors que le total n'est pas 0").
+// Ancrée sur la date la plus récente réellement présente dans les écritures — jamais sur
+// "aujourd'hui" ni sur l'exercice affiché. Ces deux dernières valeurs se sont révélées peu
+// fiables : les nouvelles écritures sont datées par défaut avec la date réelle du jour
+// (voir `new Date()` dans openFactureModal, etc.) indépendamment de l'exercice sélectionné,
+// donc ancrer sur l'exercice ne suffit pas si les écritures ont en réalité été saisies avec
+// la date du jour. Ancrer sur la donnée réelle la plus récente garantit que la fenêtre
+// coïncide toujours avec l'activité effectivement enregistrée, quel que soit ce décalage —
+// sinon le graphique affiche "Aucune donnée" alors que les KPI (non filtrés par date)
+// montrent une activité bien réelle.
 function getLast6MonthsBuckets() {
   const buckets = [];
-  const now = new Date();
-  const exerciceYear = parseInt(currentProfile?.exercice, 10);
-  const ref = (exerciceYear && exerciceYear !== now.getFullYear())
-    ? new Date(exerciceYear, 11, 1)
-    : now;
+  const datesConnues = (ecritures || [])
+    .map((e) => e.date)
+    .filter((d) => /^\d{4}-\d{2}-\d{2}/.test(d || ''))
+    .sort();
+  const derniereDate = datesConnues.length ? datesConnues[datesConnues.length - 1] : null;
+  const ref = derniereDate ? new Date(derniereDate) : new Date();
   for (let i = 5; i >= 0; i--) {
     const d = new Date(ref.getFullYear(), ref.getMonth() - i, 1);
     buckets.push({
@@ -7359,7 +7363,7 @@ function renderFacLignes() {
         oninput="facLignes[${i}].pu=parseFloat(this.value)||0;updateFacTotaux()"></td>
       <td style="padding:4px 6px"><input type="number" value="${l.remise}" min="0" max="100"
         style="width:100%;background:var(--surface2);border:1px solid var(--line);border-radius:3px;color:var(--ink);font-size:12px;font-family:var(--font-mono);outline:none;text-align:right;padding:4px 6px"
-        oninput="facLignes[${i}].remise=parseFloat(this.value)||0;updateFacTotaux()"></td>
+        oninput="facLignes[${i}].remise=Math.min(100,Math.max(0,parseFloat(this.value)||0));updateFacTotaux()"></td>
       <td style="padding:4px 6px"><input type="number" value="${l.tva}" min="0" max="100"
         style="width:100%;background:var(--surface2);border:1px solid var(--line);border-radius:3px;color:var(--ink);font-size:12px;font-family:var(--font-mono);outline:none;text-align:right;padding:4px 6px"
         oninput="facLignes[${i}].tva=parseFloat(this.value)||18;updateFacTotaux()"></td>
@@ -7375,14 +7379,15 @@ function renderFacLignes() {
 
 function calcLigneHT(l) {
   const base = (l.qte || 0) * (l.pu || 0);
-  return Math.round(base * (1 - (l.remise || 0) / 100));
+  const remise = Math.min(100, Math.max(0, l.remise || 0)); // jamais négatif ni >100 : une remise hors de cette plage donnerait un HT négatif, absurde sur une facture
+  return Math.round(base * (1 - remise / 100));
 }
 function calcLigneTVA(l) {
   return Math.round((calcLigneHT(l) * (l.tva || 0)) / 100);
 }
 
 function updateFacTotaux() {
-  const remiseG = parseFloat(document.getElementById('fac-remise-globale')?.value || 0);
+  const remiseG = Math.min(100, Math.max(0, parseFloat(document.getElementById('fac-remise-globale')?.value || 0)));
   let ht = 0,
     tvaTotal = 0;
   facLignes.forEach((l) => {
@@ -7536,7 +7541,7 @@ async function saveFacture(statut = 'brouillon') {
     return;
   }
 
-  const remiseG = parseFloat(document.getElementById('fac-remise-globale').value || 0);
+  const remiseG = Math.min(100, Math.max(0, parseFloat(document.getElementById('fac-remise-globale').value || 0)));
   let ht = 0,
     tvaTotal = 0;
   facLignes.forEach((l) => {
@@ -7547,6 +7552,10 @@ async function saveFacture(statut = 'brouillon') {
   const htNet = ht - remiseGMontant;
   const tvaNet = Math.round(tvaTotal * (1 - remiseG / 100));
   const ttc = htNet + tvaNet;
+  if (ttc < 0) {
+    toast('Le total TTC ne peut pas être négatif — vérifiez les prix, quantités et remises saisis', 'error');
+    return;
+  }
 
   // Multi-devise : les montants saisis sont dans la devise sélectionnée ; on stocke
   // aussi leur équivalent FCFA (ht/tva/ttc) pour que toute la comptabilité (grand
