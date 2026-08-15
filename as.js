@@ -2650,10 +2650,53 @@ function switchTab(t) {
 function toggleSecteurActiviteField() {
   const secteur = document.getElementById('r-secteur').value;
   const wrapCommerce = document.getElementById('r-activite-wrap');
-  const wrapAutre = document.getElementById('r-activite-autre-wrap');
+  const wrapAutreConfirm = document.getElementById('r-activite-autre-confirm');
   wrapCommerce.style.display = secteur === 'commerce' ? 'block' : 'none';
-  wrapAutre.style.display = secteur === 'autre' ? 'block' : 'none';
+  if (secteur === 'autre') {
+    ouvrirSecteurAutreModal();
+  } else {
+    wrapAutreConfirm.style.display = 'none';
+    document.getElementById('r-activite-autre').value = '';
+  }
 }
+
+function ouvrirSecteurAutreModal() {
+  const modal = document.getElementById('secteurAutreModal');
+  const input = document.getElementById('secteurAutreInput');
+  const err = document.getElementById('secteurAutreErr');
+  err.classList.remove('show');
+  input.value = document.getElementById('r-activite-autre').value || '';
+  modal.style.display = 'flex';
+  setTimeout(() => input.focus(), 50);
+}
+
+function annulerSecteurAutreModal() {
+  document.getElementById('secteurAutreModal').style.display = 'none';
+  // Si aucune activité n'avait déjà été confirmée, on réinitialise la sélection du secteur
+  if (!document.getElementById('r-activite-autre').value.trim()) {
+    document.getElementById('r-secteur').value = '';
+    document.getElementById('r-activite-autre-confirm').style.display = 'none';
+  }
+}
+
+function confirmerSecteurAutre() {
+  const input = document.getElementById('secteurAutreInput');
+  const err = document.getElementById('secteurAutreErr');
+  const valeur = input.value.trim();
+  if (!valeur) {
+    err.textContent = 'Ce champ est obligatoire pour continuer';
+    err.classList.add('show');
+    return;
+  }
+  document.getElementById('r-activite-autre').value = valeur;
+  document.getElementById('r-activite-autre-texte').textContent = valeur;
+  document.getElementById('r-activite-autre-confirm').style.display = 'block';
+  document.getElementById('secteurAutreModal').style.display = 'none';
+}
+
+window.ouvrirSecteurAutreModal = ouvrirSecteurAutreModal;
+window.annulerSecteurAutreModal = annulerSecteurAutreModal;
+window.confirmerSecteurAutre = confirmerSecteurAutre;
 
 async function doRegister() {
   const company = document.getElementById('r-company').value.trim();
@@ -8978,9 +9021,10 @@ async function genererEcritureIndemnite() {
   const salaire = parseFloat(document.getElementById('indem-salaire').value) || 0;
   if (!nom || !anciennete || !salaire) { toast('Remplissez le nom, l\'ancienneté et le salaire moyen', 'error'); return; }
   const indemnite = calculerIndemniteAvecFormule(anciennete, salaire);
+  const piece = 'INDEM-' + Date.now();
   const ecr = {
     id: Date.now(), date: new Date().toISOString().split('T')[0], journal: 'OD',
-    piece: 'INDEM-' + Date.now(),
+    piece,
     libelle: `Indemnité de départ — ${nom} (${anciennete} ans d'ancienneté)`,
     createdAt: new Date().toISOString(),
     lignes: [
@@ -8994,8 +9038,37 @@ async function genererEcritureIndemnite() {
   auditLog('INDEMNITE_DEPART', 'PAIE', `Indemnité de départ générée pour ${nom} — ${fn(indemnite)} FCFA (${anciennete} ans)`);
   updateStats();
   toast(`✓ Écriture générée — Indemnité ${nom} : ${fn(indemnite)} FCFA`, 'success');
+  afficherConfirmationEcriture({
+    sousTitre: `Indemnité de départ — ${nom}`,
+    lignes: [
+      { label: 'Journal', value: ecr.journal },
+      { label: 'Pièce', value: piece },
+      { label: 'Date', value: new Date(ecr.date).toLocaleDateString('fr-FR') },
+      { label: 'Débit — 668 Indemnité', value: fn(indemnite) + ' FCFA' },
+      { label: 'Crédit — 422 À payer', value: fn(indemnite) + ' FCFA' },
+    ],
+  });
 }
 window.genererEcritureIndemnite = genererEcritureIndemnite;
+
+// Confirmation premium générique — affichée après toute génération d'écriture importante
+// (indemnité, etc.) pour prouver visuellement que l'action a bien été effectuée.
+function afficherConfirmationEcriture({ sousTitre, lignes }) {
+  document.getElementById('ecritureSuccesSub').textContent = sousTitre || '';
+  document.getElementById('ecritureSuccesDetail').innerHTML = (lignes || [])
+    .map((l) => `<div class="ecriture-succes-row"><span>${l.label}</span><b>${l.value}</b></div>`)
+    .join('');
+  const modal = document.getElementById('ecritureGenereeModal');
+  modal.style.display = 'flex';
+  modal.querySelector('.ecriture-succes-box')?.classList.remove('ecriture-succes-anim');
+  void modal.offsetWidth; // force reflow pour rejouer l'animation si le modal était déjà ouvert juste avant
+  modal.querySelector('.ecriture-succes-box')?.classList.add('ecriture-succes-anim');
+}
+function fermerEcritureGenereeModal() {
+  document.getElementById('ecritureGenereeModal').style.display = 'none';
+}
+window.afficherConfirmationEcriture = afficherConfirmationEcriture;
+window.fermerEcritureGenereeModal = fermerEcritureGenereeModal;
 
 // ══════════════════════════════════════════
 // DÉCLARATIONS SOCIALES — Bordereau CNPS mensuel (cotisations salariales + patronales)
