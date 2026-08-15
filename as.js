@@ -5775,11 +5775,6 @@ async function executerCasTestDGI(cas, ctx) {
   if (cas.avoirDe && !ctx[cas.avoirDe]) {
     return { status: 'fail', detail: `La facture d'origine (${cas.avoirDe}) n'a pas été créée avec succès — impossible de générer l'avoir.`, raw: null };
   }
-  // Hypothèse testée : la DGI a besoin d'un court délai pour indexer une facture confirmée
-  // avant qu'elle soit "trouvable" par un avoir qui la référence. On patiente donc un peu.
-  if (cas.avoirDe) {
-    await new Promise((r) => setTimeout(r, 3000));
-  }
   const items = cas.items.map((it, idx) => ({
     code: `T${cas.n}-${idx + 1}`,
     name: DGI_TAXGROUP_LABELS[it.taxGroup] || it.taxGroup,
@@ -5805,7 +5800,22 @@ async function executerCasTestDGI(cas, ctx) {
     payment: [{ name: 'ESPECES', amount: Math.round(montantTotal) }],
     reference,
   };
-  const created = await callEmecefApi('POST', '/api/invoice', payload);
+
+  // Pour un avoir (FA/EA), l'indexation de la facture d'origine côté DGI n'est pas instantanée
+  // et sa durée varie (observé : parfois insuffisant après 3s, parfois après 5-8s ça passe).
+  // On retente donc plusieurs fois avec un délai croissant plutôt qu'une seule attente fixe.
+  const maxTentatives = cas.avoirDe ? 4 : 1;
+  const delaisMs = [3000, 4000, 6000, 9000]; // délai avant chaque tentative (progressif)
+  let created, dernierEreur;
+  for (let tentative = 0; tentative < maxTentatives; tentative++) {
+    await new Promise((r) => setTimeout(r, delaisMs[tentative] || 9000));
+    created = await callEmecefApi('POST', '/api/invoice', payload);
+    if (!created.errorCode) break; // succès → on sort de la boucle de retry
+    dernierEreur = created;
+    // Seule l'erreur "facture introuvable" (11) justifie une nouvelle tentative — les autres
+    // erreurs (format invalide, etc.) ne se résoudront pas en réessayant.
+    if (created.errorCode !== '11' || !cas.avoirDe) break;
+  }
   if (created.errorCode) return { status: 'fail', detail: created.errorDesc || created.errorCode, raw: created };
   if (!created.uid) return { status: 'fail', detail: "Pas d'uid retourné par la DGI", raw: created };
 
