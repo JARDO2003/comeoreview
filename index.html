@@ -12,6 +12,7 @@
 <script src="chart.umd.min.js" onerror="var s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js';s.onerror=function(){var s2=document.createElement('script');s2.src='https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js';document.head.appendChild(s2);};document.head.appendChild(s);console.warn('[SYSCOHADA] chart.umd.min.js local introuvable, bascule sur CDN.');"></script>
 <link rel="stylesheet" href="as.css">
 <script src="qrcode.min.js" onerror="var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js';s.onerror=function(){var s2=document.createElement('script');s2.src='https://unpkg.com/qrcode@1.5.3/build/qrcode.min.js';document.head.appendChild(s2);};document.head.appendChild(s);console.warn('[COMEO] qrcode.min.js local introuvable, bascule sur CDN.');"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js" onerror="var s=document.createElement('script');s.src='https://unpkg.com/jsqr@1.4.0/dist/jsQR.js';document.head.appendChild(s);console.warn('[COMEO] jsQR CDN principal indisponible, bascule.');"></script>
 </head>
 <body>
 
@@ -778,7 +779,8 @@
   <div class="ph">
     <div><h1>Fournisseurs</h1><p>Répertoire et suivi des fournisseurs</p></div>
     <div class="ph-actions">
-      <button class="btn btn-ink" onclick="openFournisseurModal()">+ Nouveau fournisseur</button>
+      <button class="btn btn-ink" onclick="openScanFactureAchatModal()">📷 Scanner une facture d'achat</button>
+      <button class="btn btn-sm-wire" onclick="openFournisseurModal()">+ Nouveau fournisseur</button>
     </div>
   </div>
   <div class="toolbar">
@@ -792,6 +794,18 @@
       </tr></thead>
       <tbody id="fournisseursBody"><tr><td colspan="7"><div class="fb-loading">Aucun fournisseur</div></td></tr></tbody>
     </table>
+  </div>
+
+  <div class="card" style="margin-top:18px">
+    <div class="ceo-panel-title">📷 Factures d'achat scannées <span style="font-weight:400;color:var(--muted);font-size:11px">— extraites automatiquement, non modifiables 🔒</span></div>
+    <div class="dtw">
+      <table class="dt">
+        <thead><tr>
+          <th>Date scan</th><th>Fournisseur</th><th>N° facture</th><th style="text-align:right">HT</th><th style="text-align:right">TVA</th><th style="text-align:right">TTC</th><th>Compte</th><th></th>
+        </tr></thead>
+        <tbody id="facturesAchatBody"><tr><td colspan="8"><div class="fb-loading">Aucune facture d'achat scannée</div></td></tr></tbody>
+      </table>
+    </div>
   </div>
 </div>
 
@@ -2187,6 +2201,60 @@
     </div>
 
     <button class="premium-logout-btn" style="margin-top:10px" onclick="closeScanFactureModal()">Annuler</button>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════
+     MODAL SCAN FACTURE D'ACHAT (fournisseur) — comptabilisation automatique
+     ═══════════════════════════════════ -->
+<div id="scanFactureAchatModal" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeScanFactureAchatModal()">
+  <div class="modal-box scan-modal-box">
+    <div class="modal-title">📷 Scanner une facture d'achat</div>
+    <div class="modal-sub">Photographiez une facture reçue (achat en ville, fournisseur…) — elle sera lue, comptabilisée et verrouillée automatiquement</div>
+
+    <div id="scanAchatStepUpload">
+      <label class="scan-dropzone" for="scanFactureAchatInput">
+        <div class="scan-dropzone-icon">📷</div>
+        <div class="scan-dropzone-text">Cliquez pour prendre une photo<br>ou importer une image de facture</div>
+        <input type="file" id="scanFactureAchatInput" accept="image/*" capture="environment" style="display:none" onchange="handleFactureAchatFileSelect(event)">
+      </label>
+    </div>
+
+    <div id="scanAchatStepPreview" style="display:none">
+      <img id="scanAchatImagePreview" class="scan-image-preview" alt="Facture d'achat scannée">
+      <div id="scanAchatProgress" class="scan-progress">
+        <div class="scan-progress-spinner"></div>
+        <span id="scanAchatProgressText">Lecture de l'image en cours…</span>
+      </div>
+      <div class="auth-err" id="scanAchatErr"></div>
+    </div>
+
+    <div id="scanAchatStepResult" style="display:none">
+      <div class="scan-result-badge">✓ Facture d'achat lue et normalisée</div>
+      <div id="scanAchatQrBadge" style="display:none" class="scan-qr-detected-badge"></div>
+      <div class="scan-result-grid">
+        <div class="sr-field"><span class="sr-label">Fournisseur</span><input class="af-input" id="sa-fournisseur" type="text" placeholder="Nom du fournisseur"></div>
+        <div class="sr-field"><span class="sr-label">IFU fournisseur</span><input class="af-input" id="sa-ifu" type="text" placeholder="IFU (si visible)"></div>
+        <div class="sr-field"><span class="sr-label">N° Facture</span><input class="af-input" id="sa-numero" type="text" placeholder="N° facture"></div>
+        <div class="sr-field"><span class="sr-label">Date</span><input class="af-input" type="date" id="sa-date"></div>
+        <div class="sr-field"><span class="sr-label">Montant HT</span><input class="af-input" type="text" inputmode="decimal" id="sa-ht" placeholder="0" oninput="recalculerTTCAchatScan()"></div>
+        <div class="sr-field"><span class="sr-label">TVA</span><input class="af-input" type="text" inputmode="decimal" id="sa-tva" placeholder="0" oninput="recalculerTTCAchatScan()"></div>
+        <div class="sr-field"><span class="sr-label">Montant TTC</span><input class="af-input" type="text" inputmode="decimal" id="sa-ttc" placeholder="0"></div>
+        <div class="sr-field"><span class="sr-label">Mode de paiement</span>
+          <select class="af-input" id="sa-paiement">
+            <option value="especes">Espèces</option>
+            <option value="virement">Virement</option>
+            <option value="mobile_money">Mobile Money</option>
+            <option value="cheque">Chèque</option>
+            <option value="credit">À crédit (non payé)</option>
+          </select>
+        </div>
+      </div>
+      <p class="scan-result-note">Vérifiez les champs avant confirmation. Une fois confirmée, l'écriture comptable d'achat est générée automatiquement et <strong>les informations extraites seront verrouillées</strong> — non modifiables, pour garantir l'intégrité de vos comptes.</p>
+      <button class="btn btn-gold" style="width:100%" onclick="confirmerFactureAchat()">✓ Confirmer et comptabiliser</button>
+    </div>
+
+    <button class="premium-logout-btn" style="margin-top:10px" onclick="closeScanFactureAchatModal()">Annuler</button>
   </div>
 </div>
 
