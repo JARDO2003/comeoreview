@@ -4786,11 +4786,21 @@ function renderCeoDashboard() {
 }
 
 // ── Fenêtre glissante des 6 derniers mois (labels + clé YYYY-MM) ──
+// Ancrée sur l'exercice comptable sélectionné plutôt que sur la date réelle du jour :
+// si l'exercice actif (ex: 2024) n'est pas l'année civile en cours, les écritures de cet
+// exercice tombent hors des "6 derniers mois calendaires réels" et le graphique affiche
+// 0 partout alors que les KPI (qui, eux, agrègent tout l'historique sans filtre de date)
+// affichent un chiffre d'affaires non nul — c'est ce décalage qui donnait l'impression
+// d'un bug ("CA en orange à 0 alors que le total n'est pas 0").
 function getLast6MonthsBuckets() {
   const buckets = [];
   const now = new Date();
+  const exerciceYear = parseInt(currentProfile?.exercice, 10);
+  const ref = (exerciceYear && exerciceYear !== now.getFullYear())
+    ? new Date(exerciceYear, 11, 1)
+    : now;
   for (let i = 5; i >= 0; i--) {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const d = new Date(ref.getFullYear(), ref.getMonth() - i, 1);
     buckets.push({
       key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`,
       label: d.toLocaleDateString('fr-FR', { month: 'short' }),
@@ -5253,7 +5263,17 @@ function _chargerImageDansCanvas(imageDataUrl) {
  *  - binarisation adaptative (noir/blanc pur) — mode 'binarize', idéale pour les tickets/factures
  */
 function pretraiterImageOCR(img, mode) {
-  const scale = mode === 'binarize' ? 2.4 : 2.0;
+  const scaleMax = mode === 'binarize' ? 2.4 : 2.0;
+  // Les photos de smartphone actuels (12 à 48+ Mpx, ex: 4000×3000 ou plus) ne doivent
+  // JAMAIS être agrandies ×2/×2.4 telles quelles : ça produirait un canvas de dizaines
+  // de millions de pixels que les navigateurs mobiles n'arrivent pas à allouer/traiter
+  // (limite de surface canvas sur iOS Safari notamment) → l'OCR plante ou reste bloqué
+  // indéfiniment sur téléphone, sans jamais échouer proprement. On plafonne donc le plus
+  // grand côté à une taille cible raisonnable pour l'OCR, tout en conservant l'agrandissement
+  // (utile pour les petites images/scans flous) quand l'image de départ est déjà petite.
+  const targetLongSide = mode === 'binarize' ? 2600 : 2200;
+  const longSide = Math.max(img.width, img.height);
+  const scale = Math.min(scaleMax, targetLongSide / longSide);
   const w = Math.round(img.width * scale);
   const h = Math.round(img.height * scale);
   const canvas = document.createElement('canvas');
@@ -5390,9 +5410,10 @@ RÈGLES IMPORTANTES POUR LES MONTANTS :
 - Vérifie la cohérence arithmétique : TTC doit être proche de HT + TVA. Si un des trois est manquant ou visiblement corrompu par l'OCR (ex: chiffres illisibles, mélangés), recalcule-le à partir des deux autres.
 - Les erreurs OCR fréquentes sur les chiffres : 0↔O, 1↔l/I, 5↔S, 8↔B, virgule/point confondus, espaces insérés au milieu d'un nombre (ex: "12 500" = 12500). Corrige ces confusions en te basant sur le contexte (montant plausible en FCFA).
 - Le plus grand montant net proche des mots "Total"/"TTC"/"Net à payer" est presque toujours le TTC.
+- "designation" doit résumer en quelques mots la NATURE des articles/services vendus (ex: "Prestation de conseil", "Marchandises diverses") — jamais vide si un article est identifiable dans le texte, sinon une valeur générique plausible.
 
 Réponds UNIQUEMENT avec un objet JSON valide (aucun texte avant/après, aucun markdown), avec exactement ces clés :
-{"tiers": string (nom du client ou fournisseur), "numero": string, "date": string (format YYYY-MM-DD, déduis une date plausible si absente), "ht": number, "tva": number, "ttc": number, "confiance": "haute"|"moyenne"|"faible"}
+{"tiers": string (nom du client ou fournisseur), "designation": string (nom/nature du produit ou service facturé), "numero": string, "date": string (format YYYY-MM-DD, déduis une date plausible si absente), "ht": number, "tva": number, "ttc": number, "confiance": "haute"|"moyenne"|"faible"}
 Les montants sont en FCFA, en nombres purs (sans espaces ni symboles).`;
     let result;
     try {
@@ -5426,6 +5447,8 @@ Les montants sont en FCFA, en nombres purs (sans espaces ni symboles).`;
 
     scanFactureExtracted = parsed;
     document.getElementById('sr-tiers').value = parsed.tiers || '';
+    const srDesigEl = document.getElementById('sr-designation');
+    if (srDesigEl) srDesigEl.value = parsed.designation || '';
     document.getElementById('sr-numero').value = parsed.numero || ('FAC-' + Date.now());
     document.getElementById('sr-date').value = parsed.date || new Date().toISOString().split('T')[0];
     document.getElementById('sr-ht').value = parsed.ht || 0;
@@ -5455,8 +5478,13 @@ async function confirmerTransmissionFacture() {
   const ht = parseNum(document.getElementById('sr-ht').value);
   const tva = parseNum(document.getElementById('sr-tva').value);
   const ttc = parseNum(document.getElementById('sr-ttc').value) || (ht + tva);
+  const designation = (document.getElementById('sr-designation')?.value || '').trim();
   if (!tiers) { toast('Le nom du client/fournisseur est requis', 'error'); return; }
 
+  // Une seule ligne récapitulative (désignation lue par l'IA + montants globaux scannés) :
+  // sans ça, `fac.lignes` restait vide et le PDF/export affichait un tableau d'articles vide,
+  // sans jamais mentionner le nom du produit/service facturé.
+  const tauxTva = ht > 0 ? Math.round((tva / ht) * 100) : 18;
   const facture = {
     id: Date.now(),
     numero,
@@ -5466,6 +5494,7 @@ async function confirmerTransmissionFacture() {
     ht,
     tva,
     ttc,
+    lignes: [{ designation: designation || 'Vente de marchandises / prestation', qte: 1, pu: ht, remise: 0, tva: tauxTva }],
     statut: 'envoyee',
     montantPaye: 0,
     origine: 'scan_ia',
@@ -5505,6 +5534,223 @@ async function confirmerTransmissionFacture() {
     } else {
       toast(`✓ Facture ${numero} normalisée — en attente de validation e-MECeF (DGI Bénin)`, 'success');
     }
+  } catch (e) {
+    toast('Erreur : ' + e.message, 'error');
+  }
+}
+
+// ══════════════════════════════════════════
+// SCAN FACTURE D'ACHAT (fournisseur) — lecture OCR/IA + comptabilisation automatique
+// Réutilise le même pipeline que le scan de facture de vente (OCR 3 passes + IA de
+// normalisation), mais génère directement une écriture d'achat (601/4452/401 ou
+// contrepartie de paiement) au lieu de passer par le e-MECeF (réservé aux ventes).
+// ══════════════════════════════════════════
+let scanAchatImageDataUrl = null;
+let scanAchatExtracted = null;
+
+function openScanFactureAchatModal() {
+  const modal = document.getElementById('scanFactureAchatModal');
+  if (!modal) return;
+  modal.style.display = 'flex';
+  document.getElementById('scanAchatStepUpload').style.display = 'block';
+  document.getElementById('scanAchatStepPreview').style.display = 'none';
+  document.getElementById('scanAchatStepResult').style.display = 'none';
+  document.getElementById('scanFactureAchatInput').value = '';
+  scanAchatImageDataUrl = null;
+  scanAchatExtracted = null;
+}
+function closeScanFactureAchatModal() {
+  const modal = document.getElementById('scanFactureAchatModal');
+  if (modal) modal.style.display = 'none';
+}
+
+// Recalcule automatiquement le TTC quand l'utilisateur modifie HT ou TVA à la main
+function recalculerTTCAchatScan() {
+  const parseNum = (v) => parseFloat(String(v).replace(/\s/g, '').replace(',', '.')) || 0;
+  const ht = parseNum(document.getElementById('sa-ht').value);
+  const tva = parseNum(document.getElementById('sa-tva').value);
+  document.getElementById('sa-ttc').value = ht + tva;
+}
+
+async function handleFactureAchatFileSelect(e) {
+  const file = e.target.files?.[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = async (ev) => {
+    scanAchatImageDataUrl = ev.target.result;
+    document.getElementById('scanAchatStepUpload').style.display = 'none';
+    document.getElementById('scanAchatStepPreview').style.display = 'block';
+    document.getElementById('scanAchatImagePreview').src = scanAchatImageDataUrl;
+    document.getElementById('scanAchatProgress').style.display = 'flex';
+    document.getElementById('scanAchatErr').textContent = '';
+    await analyserFactureAchatScan(scanAchatImageDataUrl);
+  };
+  reader.readAsDataURL(file);
+}
+
+async function analyserFactureAchatScan(imageDataUrl, tentative = 1) {
+  const progressText = document.getElementById('scanAchatProgressText');
+  const errEl = document.getElementById('scanAchatErr');
+  errEl.textContent = '';
+  try {
+    const img = await _chargerImageDansCanvas(imageDataUrl);
+
+    if (progressText) progressText.textContent = `Analyse approfondie de l'image (passe 1/3)…`;
+    const imgContrast = pretraiterImageOCR(img, 'contrast');
+    const texteGeneral = await _ocrPass(imgContrast, { lang: 'fra' });
+
+    if (progressText) progressText.textContent = `Analyse approfondie de l'image (passe 2/3)…`;
+    const imgBinaire = pretraiterImageOCR(img, 'binarize');
+    const texteBinaire = await _ocrPass(imgBinaire, { lang: 'fra' });
+
+    if (progressText) progressText.textContent = `Analyse approfondie de l'image (passe 3/3 — montants)…`;
+    const texteChiffres = await _ocrPass(imgBinaire, { lang: 'fra', whitelist: '0123456789.,%FCFAfcfa ' });
+
+    const rawTextCombine = [
+      '--- LECTURE GÉNÉRALE ---',
+      texteGeneral,
+      '--- LECTURE VERSION CONTRASTÉE (noir/blanc) ---',
+      texteBinaire,
+      '--- LECTURE SPÉCIALISÉE CHIFFRES/MONTANTS (peut contenir du bruit, mais isole les nombres) ---',
+      texteChiffres,
+    ].join('\n');
+
+    if (!texteGeneral.trim() && !texteBinaire.trim() && !texteChiffres.trim()) {
+      if (tentative < 2) {
+        if (progressText) progressText.textContent = 'Aucun texte détecté — nouvelle tentative avec traitement renforcé…';
+        return analyserFactureAchatScan(imageDataUrl, tentative + 1);
+      }
+      throw new Error("Impossible de lire le moindre texte sur cette image. Reprenez la photo avec plus de lumière et en évitant le flou de mouvement.");
+    }
+
+    if (progressText) progressText.textContent = "L'IA reconstitue et normalise la facture…";
+    const systemPrompt = `Tu es un module de normalisation de factures d'achat pour un logiciel comptable SYSCOHADA (Bénin/OHADA), spécialisé dans la reconstruction de montants à partir d'OCR de mauvaise qualité (photo floue, mal éclairée, angle imparfait).
+
+On te donne TROIS lectures OCR de la MÊME facture d'achat (générale, contrastée, spécialisée chiffres). Recoupe-les pour reconstituer le texte réel le plus probable.
+
+RÈGLES IMPORTANTES POUR LES MONTANTS :
+- Ne rends JAMAIS 0 pour un montant si le texte contient des chiffres à proximité de mots comme "Total", "TTC", "Net à payer", "Montant", "HT", "TVA" — reconstitue ta meilleure estimation plausible plutôt que de mettre 0.
+- Vérifie la cohérence arithmétique : TTC doit être proche de HT + TVA. Recalcule le montant manquant/corrompu à partir des deux autres si besoin.
+- Corrige les confusions OCR fréquentes sur les chiffres (0↔O, 1↔l/I, 5↔S, 8↔B, virgule/point, espaces insérés dans un nombre comme "12 500" = 12500).
+- "designation" doit résumer en quelques mots la NATURE des articles ou services achetés (ex: "Fournitures de bureau", "Carburant", "Matériel informatique") — jamais vide si un article est identifiable dans le texte.
+
+Réponds UNIQUEMENT avec un objet JSON valide (aucun texte avant/après, aucun markdown), avec exactement ces clés :
+{"fournisseur": string, "ifu": string (numéro IFU du fournisseur si visible, sinon chaîne vide), "designation": string, "numero": string, "date": string (format YYYY-MM-DD, déduis une date plausible si absente), "ht": number, "tva": number, "ttc": number, "confiance": "haute"|"moyenne"|"faible"}
+Les montants sont en FCFA, en nombres purs (sans espaces ni symboles).`;
+    let result;
+    try {
+      result = await _avecDelaiMax(
+        callGemini(
+          [{ role: 'user', content: `Voici les 3 lectures OCR de la facture d'achat :\n\n${rawTextCombine}` }],
+          systemPrompt,
+          600,
+          0.0,
+        ),
+        45000,
+        'normalisation IA'
+      );
+    } catch (eTimeout) {
+      throw new Error("Le service IA n'a pas répondu à temps (connexion lente ou service indisponible). Réessayez.");
+    }
+    if (!result || result.error) {
+      throw new Error(result?.msg || "L'IA n'a pas pu normaliser la facture. Réessayez.");
+    }
+    const content = result.data.choices?.[0]?.message?.content?.trim() || '';
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error("Réponse IA illisible. Réessayez.");
+    const parsed = JSON.parse(jsonMatch[0]);
+
+    const toutAZero = !parsed.ht && !parsed.tva && !parsed.ttc;
+    if (toutAZero && tentative < 2) {
+      if (progressText) progressText.textContent = 'Montants non détectés — nouvelle tentative avec traitement renforcé…';
+      return analyserFactureAchatScan(imageDataUrl, tentative + 1);
+    }
+
+    scanAchatExtracted = parsed;
+    document.getElementById('sa-fournisseur').value = parsed.fournisseur || '';
+    document.getElementById('sa-ifu').value = parsed.ifu || '';
+    const desigEl = document.getElementById('sa-designation');
+    if (desigEl) desigEl.value = parsed.designation || '';
+    document.getElementById('sa-numero').value = parsed.numero || ('ACH-' + Date.now());
+    document.getElementById('sa-date').value = parsed.date || new Date().toISOString().split('T')[0];
+    document.getElementById('sa-ht').value = parsed.ht || 0;
+    document.getElementById('sa-tva').value = parsed.tva || 0;
+    document.getElementById('sa-ttc').value = parsed.ttc || (Number(parsed.ht || 0) + Number(parsed.tva || 0));
+
+    document.getElementById('scanAchatStepPreview').style.display = 'none';
+    document.getElementById('scanAchatStepResult').style.display = 'block';
+
+    if (parsed.confiance === 'faible' || toutAZero) {
+      const noteEl = document.querySelector('#scanAchatStepResult .scan-result-note');
+      if (noteEl) {
+        noteEl.innerHTML = `⚠️ <strong>Lecture incertaine</strong> (photo floue/peu lisible) — vérifiez attentivement les montants ci-dessus avant de confirmer. ` + noteEl.innerHTML;
+      }
+    }
+  } catch (e) {
+    errEl.textContent = '❌ ' + e.message;
+    document.getElementById('scanAchatProgress').style.display = 'none';
+  }
+}
+
+// Comptes de contrepartie par mode de paiement — cohérent avec corrigerComptesErreurs()
+// (571 Caisse, 521 Banques locales, 552 Mobile Money, 401 Fournisseur si paiement différé)
+const SA_COMPTE_PAIEMENT = { especes: '571', virement: '521', cheque: '521', mobile_money: '552' };
+const SA_LIBELLE_PAIEMENT = { especes: 'Caisse', virement: 'Banques locales', cheque: 'Banques locales', mobile_money: 'Mobile Money' };
+
+async function confirmerFactureAchat() {
+  const parseNum = (v) => parseFloat(String(v).replace(/\s/g, '').replace(',', '.')) || 0;
+  const fournisseur = document.getElementById('sa-fournisseur').value.trim();
+  const designation = (document.getElementById('sa-designation')?.value || '').trim();
+  const numero = document.getElementById('sa-numero').value.trim();
+  const date = document.getElementById('sa-date').value || new Date().toISOString().split('T')[0];
+  const ht = parseNum(document.getElementById('sa-ht').value);
+  const tva = parseNum(document.getElementById('sa-tva').value);
+  const ttc = parseNum(document.getElementById('sa-ttc').value) || (ht + tva);
+  const paiement = document.getElementById('sa-paiement').value;
+
+  if (!fournisseur) { toast('Le nom du fournisseur est requis', 'error'); return; }
+  if (!ht && !ttc) { toast('Le montant de la facture est requis', 'error'); return; }
+
+  const lignes = [
+    { compte: '601', libelle: designation || `Achat — ${fournisseur}`, debit: ht || (ttc - tva), credit: 0 },
+  ];
+  if (tva > 0) lignes.push({ compte: '4452', libelle: 'TVA récupérable sur achats', debit: tva, credit: 0 });
+  if (paiement === 'credit') {
+    lignes.push({ compte: '401', libelle: `Fournisseur ${fournisseur}`, debit: 0, credit: ttc });
+  } else {
+    lignes.push({
+      compte: SA_COMPTE_PAIEMENT[paiement] || '571',
+      libelle: SA_LIBELLE_PAIEMENT[paiement] || 'Caisse',
+      debit: 0,
+      credit: ttc,
+    });
+  }
+
+  const ecr = {
+    id: Date.now(),
+    date,
+    journal: 'AC',
+    piece: numero || ('ACH-' + Date.now()),
+    libelle: `Facture d'achat ${numero || ''} — ${fournisseur}`.trim(),
+    groupId: 'grp_achat_' + Date.now(),
+    groupLibelle: `Achat — ${fournisseur}`,
+    groupSize: 1,
+    groupIdx: 0,
+    origine: 'scan_ia',
+    createdAt: new Date().toISOString(),
+    lignes: sortLignesDebitAvantCredit(lignes),
+  };
+
+  try {
+    const docId = await saveEcritureToFirestore(ecr);
+    if (!docId) throw new Error("Échec de l'enregistrement de l'écriture");
+    ecritures.push(ecr);
+    pieceCounter++;
+    updateStats();
+    closeScanFactureAchatModal();
+    renderCeoDashboard();
+    toast(`✓ Facture d'achat ${numero || ''} comptabilisée — ${fournisseur}`, 'success');
   } catch (e) {
     toast('Erreur : ' + e.message, 'error');
   }
@@ -13706,6 +13952,8 @@ const __globalExports = [
   'changerStatutEffet','deleteEffet','changerRole','quitterModeCollab',
   'revoquerCollaborateurV2','ouvrirJoinCollabModal','ajouterExercice','switchSociete',
   'openImputationModal','deleteCentre','genererCodeCollab',
+  'openScanFactureAchatModal','closeScanFactureAchatModal','handleFactureAchatFileSelect',
+  'recalculerTTCAchatScan','confirmerFactureAchat',
 ];
 
 // Assign each to window so onclick="" attributes can find them
@@ -13774,6 +14022,8 @@ const __scope = { addFacLigne, addLigne, afficherDeclaration, afficherLettrage,
   revoquerCollaborateurV2, ouvrirJoinCollabModal, ajouterExercice, switchSociete,
   openImputationModal, deleteCentre, dismissFillBanner, copierCodeCollab,
   removeFacLigne,
+  openScanFactureAchatModal, closeScanFactureAchatModal, handleFactureAchatFileSelect,
+  recalculerTTCAchatScan, confirmerFactureAchat,
 };
 
 Object.assign(window, __scope);
