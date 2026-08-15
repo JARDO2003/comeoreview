@@ -5785,6 +5785,11 @@ async function executerCasTestDGI(cas, ctx) {
   if (cas.avoirDe && !ctx[cas.avoirDe]) {
     return { status: 'fail', detail: `La facture d'origine (${cas.avoirDe}) n'a pas été créée avec succès — impossible de générer l'avoir.`, raw: null };
   }
+  // Hypothèse testée : la DGI a besoin d'un court délai pour indexer une facture confirmée
+  // avant qu'elle soit "trouvable" par un avoir qui la référence. On patiente donc un peu.
+  if (cas.avoirDe) {
+    await new Promise((r) => setTimeout(r, 3000));
+  }
   const items = cas.items.map((it, idx) => ({
     code: `T${cas.n}-${idx + 1}`,
     name: DGI_TAXGROUP_LABELS[it.taxGroup] || it.taxGroup,
