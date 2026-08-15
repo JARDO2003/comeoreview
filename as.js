@@ -5789,11 +5789,11 @@ async function executerCasTestDGI(cas, ctx) {
     taxSpecific: it.taxeSpecifique ? 50 : undefined,
   }));
   const montantTotal = items.reduce((s, i) => s + i.price * i.quantity, 0);
-  // Pour un avoir, on renvoie le VRAI uid retourné par la DGI lors de la création de la facture
-  // d'origine (c'est l'identifiant que le endpoint /confirm connaît réellement côté serveur).
-  // Pour une facture normale, on ne fixe aucune référence artificielle : "reference" est
-  // vraisemblablement un champ libre (n° de commande client, etc.), pas une clé de recherche DGI —
-  // en fabriquer une ici n'apporte rien et risque même de perturber la validation.
+  // Pour un avoir, on renvoie le codeMECeFDGI (sans tirets, 24 caractères) de la facture
+  // d'origine — c'est le format exact exigé par la DGI (errorCode "5" sinon). Le uid (UUID
+  // à 36 caractères) est rejeté ; seul codeMECeFDGI sans tirets fait 24 caractères.
+  // Pour une facture normale, on ne fixe aucune référence artificielle : "reference" ne sert
+  // qu'à lier un avoir à son originale.
   const reference = cas.avoirDe ? ctx[cas.avoirDe] : undefined;
   const payload = {
     ifu: EMECEF_IFU || undefined,
@@ -5812,8 +5812,10 @@ async function executerCasTestDGI(cas, ctx) {
   const confirmed = await callEmecefApi('PUT', `/api/invoice/${created.uid}/confirm`, undefined);
   if (confirmed.errorCode) return { status: 'fail', detail: confirmed.errorDesc || confirmed.errorCode, raw: confirmed };
 
-  // Mémorise le uid RÉEL retourné par la DGI pour un éventuel avoir chaîné plus loin
-  if (cas.storeAs) ctx[cas.storeAs] = created.uid;
+  // Mémorise le codeMECeFDGI SANS LES TIRETS (24 caractères alphanumériques exacts —
+  // format confirmé par la DGI : errorCode "5" si ce n'est pas exactement 24 caractères).
+  // Le uid (UUID à 36 caractères) est rejeté ; c'est bien codeMECeFDGI qui sert de référence.
+  if (cas.storeAs) ctx[cas.storeAs] = (confirmed.codeMECeFDGI || '').replace(/-/g, '');
 
   const avertissement = cas.taxeSejour
     ? " ⚠️ La spécification de l'API que nous avons obtenue n'expose pas de champ dédié \"taxe de séjour\" — ce cas nécessite une vérification manuelle avec la doc SDK/DGI avant validation."
