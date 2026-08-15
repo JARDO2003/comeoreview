@@ -5769,6 +5769,16 @@ function libelleTypeFacture(type) {
   return { FV: 'Facture de vente', FA: "Facture d'avoir", EV: "Facture de vente à l'exportation", EA: "Facture d'avoir à l'exportation" }[type] || type;
 }
 
+// Génère un identifiant de corrélation de 24 caractères alphanumériques — c'est NOUS qui le choisissons
+// et le posons comme "reference" sur la facture d'origine ; l'avoir devra réutiliser EXACTEMENT la même
+// valeur pour que la DGI puisse retrouver la facture qu'il annule (la DGI n'exige pas un format précis,
+// seulement 24 caractères — ce n'est pas le codeMECeFDGI qu'elle génère de son côté).
+function genererReference24() {
+  const brut = (Date.now().toString(36) + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2))
+    .toUpperCase().replace(/[^A-Z0-9]/g, '');
+  return (brut + '000000000000000000000000').slice(0, 24);
+}
+
 // Exécute un cas de test officiel DGI : création + confirmation → retourne le sceau fiscal (QR)
 // ctx : contexte partagé entre tous les cas de la session, sert à chaîner un avoir vers son originale.
 async function executerCasTestDGI(cas, ctx) {
@@ -5784,9 +5794,9 @@ async function executerCasTestDGI(cas, ctx) {
     taxSpecific: it.taxeSpecifique ? 50 : undefined,
   }));
   const montantTotal = items.reduce((s, i) => s + i.price * i.quantity, 0);
-  const reference = cas.avoirDe
-    ? ctx[cas.avoirDe].replace(/-/g, '') // référence à la facture d'origine, sans tirets (exigence DGI : 24 caractères)
-    : `TEST-DGI-${cas.n}-${Date.now()}`;
+  // La référence est SOIT celle, nouvellement générée, qu'on posera sur une future facture d'avoir
+  // (cas.storeAs), SOIT la réutilisation exacte de la référence de la facture d'origine (cas.avoirDe).
+  const reference = cas.avoirDe ? ctx[cas.avoirDe] : (cas.storeAs ? genererReference24() : `TEST-DGI-${cas.n}-${Date.now()}`);
   const payload = {
     ifu: EMECEF_IFU || undefined,
     aib: cas.aib || undefined,
@@ -5804,8 +5814,8 @@ async function executerCasTestDGI(cas, ctx) {
   const confirmed = await callEmecefApi('PUT', `/api/invoice/${created.uid}/confirm`, undefined);
   if (confirmed.errorCode) return { status: 'fail', detail: confirmed.errorDesc || confirmed.errorCode, raw: confirmed };
 
-  // Mémorise le code fiscal pour un éventuel avoir chaîné plus loin dans la séquence
-  if (cas.storeAs && confirmed.codeMECeFDGI) ctx[cas.storeAs] = confirmed.codeMECeFDGI;
+  // Mémorise NOTRE référence (pas le codeMECeFDGI de la DGI) pour un éventuel avoir chaîné plus loin
+  if (cas.storeAs) ctx[cas.storeAs] = reference;
 
   const avertissement = cas.taxeSejour
     ? " ⚠️ La spécification de l'API que nous avons obtenue n'expose pas de champ dédié \"taxe de séjour\" — ce cas nécessite une vérification manuelle avec la doc SDK/DGI avant validation."
