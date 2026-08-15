@@ -70,10 +70,14 @@
     <label class="af-label">Que vend l'entreprise ?</label>
     <input class="af-input" type="text" id="r-activite" placeholder="ex: pièces détachées automobiles, textiles, produits électroniques...">
   </div>
-  <div class="af-field" id="r-activite-autre-wrap" style="display:none">
-    <label class="af-label">Précisez votre activité</label>
-    <input class="af-input" type="text" id="r-activite-autre" placeholder="ex: agence événementielle, atelier de couture...">
+  <div class="af-field" id="r-activite-autre-confirm" style="display:none">
+    <label class="af-label">Activité précisée</label>
+    <div class="secteur-autre-badge">
+      <span id="r-activite-autre-texte"></span>
+      <button type="button" class="secteur-autre-edit" onclick="ouvrirSecteurAutreModal()">✎ Modifier</button>
+    </div>
   </div>
+  <input type="hidden" id="r-activite-autre" value="">
   <div class="af-field"><label class="af-label">N° Compte ventes</label><input class="af-input" type="text" id="r-compte701" placeholder="701" value="701"></div>
   <div class="af-field"><label class="af-label">Exercice comptable</label><input class="af-input" type="text" id="r-exercice" placeholder="2024" value="2024" maxlength="4"></div>
   <div class="af-field"><label class="af-label">Mot de passe (min 6 car.)</label><input class="af-input" type="password" id="r-pass" placeholder="Minimum 6 caractères"></div>
@@ -81,6 +85,33 @@
   <button class="auth-btn" onclick="doRegister()">✓ Créer mon profil</button>
   <p class="auth-trial-note">🎁 12 heures d'essai gratuit · puis 15&nbsp;000 FCFA/mois — abonnement via WhatsApp</p>
 </div>
+  </div>
+</div>
+
+<!-- ═══ POPUP OBLIGATOIRE — précision du secteur "Autre" ═══ -->
+<div id="secteurAutreModal" class="modal-overlay" style="display:none">
+  <div class="modal-box secteur-autre-box">
+    <div class="modal-title">🏷️ Précisez votre secteur d'activité</div>
+    <div class="modal-sub">Cette information permet à l'IA d'adapter ses conseils comptables à votre métier précis.</div>
+    <input type="text" id="secteurAutreInput" class="af-input" style="width:100%;margin:16px 0 6px" placeholder="ex: agence événementielle, atelier de couture, cabinet de conseil..." autofocus>
+    <div class="auth-err" id="secteurAutreErr"></div>
+    <div class="modal-actions" style="margin-top:14px">
+      <button class="btn-modal-cancel" onclick="annulerSecteurAutreModal()">Annuler</button>
+      <button class="btn-modal-ok" onclick="confirmerSecteurAutre()">✓ Confirmer</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ CONFIRMATION PREMIUM — écriture générée avec succès ═══ -->
+<div id="ecritureGenereeModal" class="modal-overlay" style="display:none" onclick="if(event.target===this)fermerEcritureGenereeModal()">
+  <div class="modal-box ecriture-succes-box">
+    <div class="ecriture-succes-ring">
+      <div class="ecriture-succes-check">✓</div>
+    </div>
+    <div class="ecriture-succes-title">Écriture générée avec succès</div>
+    <div class="ecriture-succes-sub" id="ecritureSuccesSub"></div>
+    <div class="ecriture-succes-detail" id="ecritureSuccesDetail"></div>
+    <button class="btn-modal-ok" style="width:100%;margin-top:18px" onclick="fermerEcritureGenereeModal()">Parfait, merci</button>
   </div>
 </div>
 
