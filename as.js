@@ -5912,15 +5912,40 @@ function renderEmecefTestList() {
       </div>`;
   });
   el.innerHTML = html;
-  // Dessine les QR codes des cas réussis (après insertion DOM, sinon le canvas n'existe pas encore)
+  // Dessine les QR codes des cas réussis (après insertion DOM, sinon le canvas n'existe pas encore).
+  // Résilience : la lib QRCode peut ne pas être encore chargée (CDN/fichier local pas fini de charger) —
+  // on retente plusieurs fois avant d'afficher un repli textuel (même logique que ouvrirSceauFiscal).
   emecefTestResults.forEach((t, i) => {
-    if (t.sceau) {
+    if (!t.sceau) return;
+    let tentatives = 0;
+    const essayerDessinerQrTest = () => {
       const canvas = document.getElementById(`emecefQr${i}`);
-      if (canvas && window.QRCode) {
-        window.QRCode.toCanvas(canvas, t.sceau, { width: 90, margin: 0 }, () => {});
+      if (!canvas) return; // la ligne a été re-rendue entre-temps (nouveau statut) → ce canvas n'existe plus
+      if (window.QRCode && typeof window.QRCode.toCanvas === 'function') {
+        window.QRCode.toCanvas(canvas, t.sceau, { width: 90, margin: 0 }, (err) => {
+          if (err) afficherReplisQrTest(i, t.sceau);
+        });
+        return;
       }
-    }
+      tentatives++;
+      if (tentatives < 15) {
+        setTimeout(essayerDessinerQrTest, 200);
+      } else {
+        afficherReplisQrTest(i, t.sceau);
+      }
+    };
+    essayerDessinerQrTest();
   });
+}
+
+// Repli si la génération graphique du QR échoue dans le Centre de tests : affiche le code brut.
+function afficherReplisQrTest(i, code) {
+  const canvas = document.getElementById(`emecefQr${i}`);
+  if (!canvas) return;
+  const fallback = document.createElement('div');
+  fallback.className = 'emecef-test-qr-fallback';
+  fallback.textContent = code;
+  canvas.replaceWith(fallback);
 }
 
 function ouvrirCentreTestsEmecef() {
