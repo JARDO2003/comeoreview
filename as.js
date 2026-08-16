@@ -4786,25 +4786,11 @@ function renderCeoDashboard() {
 }
 
 // ── Fenêtre glissante des 6 derniers mois (labels + clé YYYY-MM) ──
-// Ancrée sur la date la plus récente réellement présente dans les écritures — jamais sur
-// "aujourd'hui" ni sur l'exercice affiché. Ces deux dernières valeurs se sont révélées peu
-// fiables : les nouvelles écritures sont datées par défaut avec la date réelle du jour
-// (voir `new Date()` dans openFactureModal, etc.) indépendamment de l'exercice sélectionné,
-// donc ancrer sur l'exercice ne suffit pas si les écritures ont en réalité été saisies avec
-// la date du jour. Ancrer sur la donnée réelle la plus récente garantit que la fenêtre
-// coïncide toujours avec l'activité effectivement enregistrée, quel que soit ce décalage —
-// sinon le graphique affiche "Aucune donnée" alors que les KPI (non filtrés par date)
-// montrent une activité bien réelle.
 function getLast6MonthsBuckets() {
   const buckets = [];
-  const datesConnues = (ecritures || [])
-    .map((e) => e.date)
-    .filter((d) => /^\d{4}-\d{2}-\d{2}/.test(d || ''))
-    .sort();
-  const derniereDate = datesConnues.length ? datesConnues[datesConnues.length - 1] : null;
-  const ref = derniereDate ? new Date(derniereDate) : new Date();
+  const now = new Date();
   for (let i = 5; i >= 0; i--) {
-    const d = new Date(ref.getFullYear(), ref.getMonth() - i, 1);
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
     buckets.push({
       key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`,
       label: d.toLocaleDateString('fr-FR', { month: 'short' }),
@@ -5267,17 +5253,7 @@ function _chargerImageDansCanvas(imageDataUrl) {
  *  - binarisation adaptative (noir/blanc pur) — mode 'binarize', idéale pour les tickets/factures
  */
 function pretraiterImageOCR(img, mode) {
-  const scaleMax = mode === 'binarize' ? 2.4 : 2.0;
-  // Les photos de smartphone actuels (12 à 48+ Mpx, ex: 4000×3000 ou plus) ne doivent
-  // JAMAIS être agrandies ×2/×2.4 telles quelles : ça produirait un canvas de dizaines
-  // de millions de pixels que les navigateurs mobiles n'arrivent pas à allouer/traiter
-  // (limite de surface canvas sur iOS Safari notamment) → l'OCR plante ou reste bloqué
-  // indéfiniment sur téléphone, sans jamais échouer proprement. On plafonne donc le plus
-  // grand côté à une taille cible raisonnable pour l'OCR, tout en conservant l'agrandissement
-  // (utile pour les petites images/scans flous) quand l'image de départ est déjà petite.
-  const targetLongSide = mode === 'binarize' ? 2600 : 2200;
-  const longSide = Math.max(img.width, img.height);
-  const scale = Math.min(scaleMax, targetLongSide / longSide);
+  const scale = mode === 'binarize' ? 2.4 : 2.0;
   const w = Math.round(img.width * scale);
   const h = Math.round(img.height * scale);
   const canvas = document.createElement('canvas');
@@ -5414,10 +5390,9 @@ RÈGLES IMPORTANTES POUR LES MONTANTS :
 - Vérifie la cohérence arithmétique : TTC doit être proche de HT + TVA. Si un des trois est manquant ou visiblement corrompu par l'OCR (ex: chiffres illisibles, mélangés), recalcule-le à partir des deux autres.
 - Les erreurs OCR fréquentes sur les chiffres : 0↔O, 1↔l/I, 5↔S, 8↔B, virgule/point confondus, espaces insérés au milieu d'un nombre (ex: "12 500" = 12500). Corrige ces confusions en te basant sur le contexte (montant plausible en FCFA).
 - Le plus grand montant net proche des mots "Total"/"TTC"/"Net à payer" est presque toujours le TTC.
-- "designation" doit résumer en quelques mots la NATURE des articles/services vendus (ex: "Prestation de conseil", "Marchandises diverses") — jamais vide si un article est identifiable dans le texte, sinon une valeur générique plausible.
 
 Réponds UNIQUEMENT avec un objet JSON valide (aucun texte avant/après, aucun markdown), avec exactement ces clés :
-{"tiers": string (nom du client ou fournisseur), "designation": string (nom/nature du produit ou service facturé), "numero": string, "date": string (format YYYY-MM-DD, déduis une date plausible si absente), "ht": number, "tva": number, "ttc": number, "confiance": "haute"|"moyenne"|"faible"}
+{"tiers": string (nom du client ou fournisseur), "numero": string, "date": string (format YYYY-MM-DD, déduis une date plausible si absente), "ht": number, "tva": number, "ttc": number, "confiance": "haute"|"moyenne"|"faible"}
 Les montants sont en FCFA, en nombres purs (sans espaces ni symboles).`;
     let result;
     try {
@@ -5451,8 +5426,6 @@ Les montants sont en FCFA, en nombres purs (sans espaces ni symboles).`;
 
     scanFactureExtracted = parsed;
     document.getElementById('sr-tiers').value = parsed.tiers || '';
-    const srDesigEl = document.getElementById('sr-designation');
-    if (srDesigEl) srDesigEl.value = parsed.designation || '';
     document.getElementById('sr-numero').value = parsed.numero || ('FAC-' + Date.now());
     document.getElementById('sr-date').value = parsed.date || new Date().toISOString().split('T')[0];
     document.getElementById('sr-ht').value = parsed.ht || 0;
@@ -5482,13 +5455,8 @@ async function confirmerTransmissionFacture() {
   const ht = parseNum(document.getElementById('sr-ht').value);
   const tva = parseNum(document.getElementById('sr-tva').value);
   const ttc = parseNum(document.getElementById('sr-ttc').value) || (ht + tva);
-  const designation = (document.getElementById('sr-designation')?.value || '').trim();
   if (!tiers) { toast('Le nom du client/fournisseur est requis', 'error'); return; }
 
-  // Une seule ligne récapitulative (désignation lue par l'IA + montants globaux scannés) :
-  // sans ça, `fac.lignes` restait vide et le PDF/export affichait un tableau d'articles vide,
-  // sans jamais mentionner le nom du produit/service facturé.
-  const tauxTva = ht > 0 ? Math.round((tva / ht) * 100) : 18;
   const facture = {
     id: Date.now(),
     numero,
@@ -5498,7 +5466,6 @@ async function confirmerTransmissionFacture() {
     ht,
     tva,
     ttc,
-    lignes: [{ designation: designation || 'Vente de marchandises / prestation', qte: 1, pu: ht, remise: 0, tva: tauxTva }],
     statut: 'envoyee',
     montantPaye: 0,
     origine: 'scan_ia',
@@ -5538,223 +5505,6 @@ async function confirmerTransmissionFacture() {
     } else {
       toast(`✓ Facture ${numero} normalisée — en attente de validation e-MECeF (DGI Bénin)`, 'success');
     }
-  } catch (e) {
-    toast('Erreur : ' + e.message, 'error');
-  }
-}
-
-// ══════════════════════════════════════════
-// SCAN FACTURE D'ACHAT (fournisseur) — lecture OCR/IA + comptabilisation automatique
-// Réutilise le même pipeline que le scan de facture de vente (OCR 3 passes + IA de
-// normalisation), mais génère directement une écriture d'achat (601/4452/401 ou
-// contrepartie de paiement) au lieu de passer par le e-MECeF (réservé aux ventes).
-// ══════════════════════════════════════════
-let scanAchatImageDataUrl = null;
-let scanAchatExtracted = null;
-
-function openScanFactureAchatModal() {
-  const modal = document.getElementById('scanFactureAchatModal');
-  if (!modal) return;
-  modal.style.display = 'flex';
-  document.getElementById('scanAchatStepUpload').style.display = 'block';
-  document.getElementById('scanAchatStepPreview').style.display = 'none';
-  document.getElementById('scanAchatStepResult').style.display = 'none';
-  document.getElementById('scanFactureAchatInput').value = '';
-  scanAchatImageDataUrl = null;
-  scanAchatExtracted = null;
-}
-function closeScanFactureAchatModal() {
-  const modal = document.getElementById('scanFactureAchatModal');
-  if (modal) modal.style.display = 'none';
-}
-
-// Recalcule automatiquement le TTC quand l'utilisateur modifie HT ou TVA à la main
-function recalculerTTCAchatScan() {
-  const parseNum = (v) => parseFloat(String(v).replace(/\s/g, '').replace(',', '.')) || 0;
-  const ht = parseNum(document.getElementById('sa-ht').value);
-  const tva = parseNum(document.getElementById('sa-tva').value);
-  document.getElementById('sa-ttc').value = ht + tva;
-}
-
-async function handleFactureAchatFileSelect(e) {
-  const file = e.target.files?.[0];
-  if (!file) return;
-
-  const reader = new FileReader();
-  reader.onload = async (ev) => {
-    scanAchatImageDataUrl = ev.target.result;
-    document.getElementById('scanAchatStepUpload').style.display = 'none';
-    document.getElementById('scanAchatStepPreview').style.display = 'block';
-    document.getElementById('scanAchatImagePreview').src = scanAchatImageDataUrl;
-    document.getElementById('scanAchatProgress').style.display = 'flex';
-    document.getElementById('scanAchatErr').textContent = '';
-    await analyserFactureAchatScan(scanAchatImageDataUrl);
-  };
-  reader.readAsDataURL(file);
-}
-
-async function analyserFactureAchatScan(imageDataUrl, tentative = 1) {
-  const progressText = document.getElementById('scanAchatProgressText');
-  const errEl = document.getElementById('scanAchatErr');
-  errEl.textContent = '';
-  try {
-    const img = await _chargerImageDansCanvas(imageDataUrl);
-
-    if (progressText) progressText.textContent = `Analyse approfondie de l'image (passe 1/3)…`;
-    const imgContrast = pretraiterImageOCR(img, 'contrast');
-    const texteGeneral = await _ocrPass(imgContrast, { lang: 'fra' });
-
-    if (progressText) progressText.textContent = `Analyse approfondie de l'image (passe 2/3)…`;
-    const imgBinaire = pretraiterImageOCR(img, 'binarize');
-    const texteBinaire = await _ocrPass(imgBinaire, { lang: 'fra' });
-
-    if (progressText) progressText.textContent = `Analyse approfondie de l'image (passe 3/3 — montants)…`;
-    const texteChiffres = await _ocrPass(imgBinaire, { lang: 'fra', whitelist: '0123456789.,%FCFAfcfa ' });
-
-    const rawTextCombine = [
-      '--- LECTURE GÉNÉRALE ---',
-      texteGeneral,
-      '--- LECTURE VERSION CONTRASTÉE (noir/blanc) ---',
-      texteBinaire,
-      '--- LECTURE SPÉCIALISÉE CHIFFRES/MONTANTS (peut contenir du bruit, mais isole les nombres) ---',
-      texteChiffres,
-    ].join('\n');
-
-    if (!texteGeneral.trim() && !texteBinaire.trim() && !texteChiffres.trim()) {
-      if (tentative < 2) {
-        if (progressText) progressText.textContent = 'Aucun texte détecté — nouvelle tentative avec traitement renforcé…';
-        return analyserFactureAchatScan(imageDataUrl, tentative + 1);
-      }
-      throw new Error("Impossible de lire le moindre texte sur cette image. Reprenez la photo avec plus de lumière et en évitant le flou de mouvement.");
-    }
-
-    if (progressText) progressText.textContent = "L'IA reconstitue et normalise la facture…";
-    const systemPrompt = `Tu es un module de normalisation de factures d'achat pour un logiciel comptable SYSCOHADA (Bénin/OHADA), spécialisé dans la reconstruction de montants à partir d'OCR de mauvaise qualité (photo floue, mal éclairée, angle imparfait).
-
-On te donne TROIS lectures OCR de la MÊME facture d'achat (générale, contrastée, spécialisée chiffres). Recoupe-les pour reconstituer le texte réel le plus probable.
-
-RÈGLES IMPORTANTES POUR LES MONTANTS :
-- Ne rends JAMAIS 0 pour un montant si le texte contient des chiffres à proximité de mots comme "Total", "TTC", "Net à payer", "Montant", "HT", "TVA" — reconstitue ta meilleure estimation plausible plutôt que de mettre 0.
-- Vérifie la cohérence arithmétique : TTC doit être proche de HT + TVA. Recalcule le montant manquant/corrompu à partir des deux autres si besoin.
-- Corrige les confusions OCR fréquentes sur les chiffres (0↔O, 1↔l/I, 5↔S, 8↔B, virgule/point, espaces insérés dans un nombre comme "12 500" = 12500).
-- "designation" doit résumer en quelques mots la NATURE des articles ou services achetés (ex: "Fournitures de bureau", "Carburant", "Matériel informatique") — jamais vide si un article est identifiable dans le texte.
-
-Réponds UNIQUEMENT avec un objet JSON valide (aucun texte avant/après, aucun markdown), avec exactement ces clés :
-{"fournisseur": string, "ifu": string (numéro IFU du fournisseur si visible, sinon chaîne vide), "designation": string, "numero": string, "date": string (format YYYY-MM-DD, déduis une date plausible si absente), "ht": number, "tva": number, "ttc": number, "confiance": "haute"|"moyenne"|"faible"}
-Les montants sont en FCFA, en nombres purs (sans espaces ni symboles).`;
-    let result;
-    try {
-      result = await _avecDelaiMax(
-        callGemini(
-          [{ role: 'user', content: `Voici les 3 lectures OCR de la facture d'achat :\n\n${rawTextCombine}` }],
-          systemPrompt,
-          600,
-          0.0,
-        ),
-        45000,
-        'normalisation IA'
-      );
-    } catch (eTimeout) {
-      throw new Error("Le service IA n'a pas répondu à temps (connexion lente ou service indisponible). Réessayez.");
-    }
-    if (!result || result.error) {
-      throw new Error(result?.msg || "L'IA n'a pas pu normaliser la facture. Réessayez.");
-    }
-    const content = result.data.choices?.[0]?.message?.content?.trim() || '';
-    const jsonMatch = content.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error("Réponse IA illisible. Réessayez.");
-    const parsed = JSON.parse(jsonMatch[0]);
-
-    const toutAZero = !parsed.ht && !parsed.tva && !parsed.ttc;
-    if (toutAZero && tentative < 2) {
-      if (progressText) progressText.textContent = 'Montants non détectés — nouvelle tentative avec traitement renforcé…';
-      return analyserFactureAchatScan(imageDataUrl, tentative + 1);
-    }
-
-    scanAchatExtracted = parsed;
-    document.getElementById('sa-fournisseur').value = parsed.fournisseur || '';
-    document.getElementById('sa-ifu').value = parsed.ifu || '';
-    const desigEl = document.getElementById('sa-designation');
-    if (desigEl) desigEl.value = parsed.designation || '';
-    document.getElementById('sa-numero').value = parsed.numero || ('ACH-' + Date.now());
-    document.getElementById('sa-date').value = parsed.date || new Date().toISOString().split('T')[0];
-    document.getElementById('sa-ht').value = parsed.ht || 0;
-    document.getElementById('sa-tva').value = parsed.tva || 0;
-    document.getElementById('sa-ttc').value = parsed.ttc || (Number(parsed.ht || 0) + Number(parsed.tva || 0));
-
-    document.getElementById('scanAchatStepPreview').style.display = 'none';
-    document.getElementById('scanAchatStepResult').style.display = 'block';
-
-    if (parsed.confiance === 'faible' || toutAZero) {
-      const noteEl = document.querySelector('#scanAchatStepResult .scan-result-note');
-      if (noteEl) {
-        noteEl.innerHTML = `⚠️ <strong>Lecture incertaine</strong> (photo floue/peu lisible) — vérifiez attentivement les montants ci-dessus avant de confirmer. ` + noteEl.innerHTML;
-      }
-    }
-  } catch (e) {
-    errEl.textContent = '❌ ' + e.message;
-    document.getElementById('scanAchatProgress').style.display = 'none';
-  }
-}
-
-// Comptes de contrepartie par mode de paiement — cohérent avec corrigerComptesErreurs()
-// (571 Caisse, 521 Banques locales, 552 Mobile Money, 401 Fournisseur si paiement différé)
-const SA_COMPTE_PAIEMENT = { especes: '571', virement: '521', cheque: '521', mobile_money: '552' };
-const SA_LIBELLE_PAIEMENT = { especes: 'Caisse', virement: 'Banques locales', cheque: 'Banques locales', mobile_money: 'Mobile Money' };
-
-async function confirmerFactureAchat() {
-  const parseNum = (v) => parseFloat(String(v).replace(/\s/g, '').replace(',', '.')) || 0;
-  const fournisseur = document.getElementById('sa-fournisseur').value.trim();
-  const designation = (document.getElementById('sa-designation')?.value || '').trim();
-  const numero = document.getElementById('sa-numero').value.trim();
-  const date = document.getElementById('sa-date').value || new Date().toISOString().split('T')[0];
-  const ht = parseNum(document.getElementById('sa-ht').value);
-  const tva = parseNum(document.getElementById('sa-tva').value);
-  const ttc = parseNum(document.getElementById('sa-ttc').value) || (ht + tva);
-  const paiement = document.getElementById('sa-paiement').value;
-
-  if (!fournisseur) { toast('Le nom du fournisseur est requis', 'error'); return; }
-  if (!ht && !ttc) { toast('Le montant de la facture est requis', 'error'); return; }
-
-  const lignes = [
-    { compte: '601', libelle: designation || `Achat — ${fournisseur}`, debit: ht || (ttc - tva), credit: 0 },
-  ];
-  if (tva > 0) lignes.push({ compte: '4452', libelle: 'TVA récupérable sur achats', debit: tva, credit: 0 });
-  if (paiement === 'credit') {
-    lignes.push({ compte: '401', libelle: `Fournisseur ${fournisseur}`, debit: 0, credit: ttc });
-  } else {
-    lignes.push({
-      compte: SA_COMPTE_PAIEMENT[paiement] || '571',
-      libelle: SA_LIBELLE_PAIEMENT[paiement] || 'Caisse',
-      debit: 0,
-      credit: ttc,
-    });
-  }
-
-  const ecr = {
-    id: Date.now(),
-    date,
-    journal: 'AC',
-    piece: numero || ('ACH-' + Date.now()),
-    libelle: `Facture d'achat ${numero || ''} — ${fournisseur}`.trim(),
-    groupId: 'grp_achat_' + Date.now(),
-    groupLibelle: `Achat — ${fournisseur}`,
-    groupSize: 1,
-    groupIdx: 0,
-    origine: 'scan_ia',
-    createdAt: new Date().toISOString(),
-    lignes: sortLignesDebitAvantCredit(lignes),
-  };
-
-  try {
-    const docId = await saveEcritureToFirestore(ecr);
-    if (!docId) throw new Error("Échec de l'enregistrement de l'écriture");
-    ecritures.push(ecr);
-    pieceCounter++;
-    updateStats();
-    closeScanFactureAchatModal();
-    renderCeoDashboard();
-    toast(`✓ Facture d'achat ${numero || ''} comptabilisée — ${fournisseur}`, 'success');
   } catch (e) {
     toast('Erreur : ' + e.message, 'error');
   }
@@ -6285,6 +6035,338 @@ window.handleFactureFileSelect = handleFactureFileSelect;
 window.confirmerTransmissionFacture = confirmerTransmissionFacture;
 window.applyAccountViewMode = applyAccountViewMode;
 window.toggleAccountViewMode = toggleAccountViewMode;
+
+// ══════════════════════════════════════════════════════════════════
+// ██  SCAN FACTURE D'ACHAT (fournisseur) — comptabilisation automatique
+// ██  + verrouillage anti-modification des données extraites par l'IA
+// ══════════════════════════════════════════════════════════════════
+let scanAchatImageDataUrl = null;
+let scanAchatExtracted = null;
+let facturesAchatList = [];
+
+// Compte d'achat le plus pertinent selon le secteur déclaré à l'inscription
+// (réutilise le secteur/activité renseigné par l'utilisateur — voir buildAIContext).
+function compteAchatParSecteur() {
+  const secteur = currentProfile?.secteur || '';
+  const mapping = {
+    commerce: '607',      // Achats de marchandises
+    industrie: '601',     // Achats de matières premières
+    agriculture: '601',
+    btp: '604',           // Achats stockés de matières et fournitures
+    hotellerie: '607',
+    services: '604',
+    transport: '604',
+    tech: '604',
+    sante: '604',
+    education: '604',
+    finance: '604',
+    autre: '601',
+  };
+  return mapping[secteur] || '601';
+}
+
+// ── Décodage QR code depuis une image (jsQR) — utile pour les factures déjà certifiées
+// e-MECeF : le QR contient IFU/NIM/code de vérification (mais pas les montants, qui restent
+// extraits par OCR+IA) ──
+function decoderQRDepuisImage(img) {
+  if (!window.jsQR) return null;
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = img.width;
+    canvas.height = img.height;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const code = window.jsQR(imageData.data, imageData.width, imageData.height);
+    return code ? code.data : null;
+  } catch (e) {
+    console.warn('[Scan achat] Décodage QR échoué :', e.message);
+    return null;
+  }
+}
+
+// Format e-MECeF observé : "F;NIM;codeMECeFDGI;IFU;horodatage(YYYYMMDDHHmmss)"
+function parserQREMECeF(data) {
+  if (!data || typeof data !== 'string') return null;
+  const parts = data.split(';');
+  if (parts.length < 5) return null;
+  const [type, nim, code, ifu, horodatage] = parts;
+  if (!/^\d{14}$/.test(horodatage || '')) return null;
+  return { type, nim, codeMECeFDGI: code, ifu, horodatage };
+}
+
+function openScanFactureAchatModal() {
+  document.getElementById('scanFactureAchatModal').style.display = 'flex';
+  document.getElementById('scanAchatStepUpload').style.display = 'block';
+  document.getElementById('scanAchatStepPreview').style.display = 'none';
+  document.getElementById('scanAchatStepResult').style.display = 'none';
+  document.getElementById('scanFactureAchatInput').value = '';
+  document.getElementById('scanAchatQrBadge').style.display = 'none';
+  scanAchatImageDataUrl = null;
+  scanAchatExtracted = null;
+}
+function closeScanFactureAchatModal() {
+  document.getElementById('scanFactureAchatModal').style.display = 'none';
+}
+window.openScanFactureAchatModal = openScanFactureAchatModal;
+window.closeScanFactureAchatModal = closeScanFactureAchatModal;
+
+function recalculerTTCAchatScan() {
+  const parseNum = (v) => parseFloat(String(v).replace(/\s/g, '').replace(',', '.')) || 0;
+  const ht = parseNum(document.getElementById('sa-ht').value);
+  const tva = parseNum(document.getElementById('sa-tva').value);
+  document.getElementById('sa-ttc').value = ht + tva;
+}
+window.recalculerTTCAchatScan = recalculerTTCAchatScan;
+
+async function handleFactureAchatFileSelect(e) {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = async (ev) => {
+    scanAchatImageDataUrl = ev.target.result;
+    document.getElementById('scanAchatStepUpload').style.display = 'none';
+    document.getElementById('scanAchatStepPreview').style.display = 'block';
+    document.getElementById('scanAchatImagePreview').src = scanAchatImageDataUrl;
+    document.getElementById('scanAchatProgress').style.display = 'flex';
+    document.getElementById('scanAchatErr').textContent = '';
+    await analyserFactureAchatScan(scanAchatImageDataUrl);
+  };
+  reader.readAsDataURL(file);
+}
+window.handleFactureAchatFileSelect = handleFactureAchatFileSelect;
+
+async function analyserFactureAchatScan(imageDataUrl, tentative = 1) {
+  const progressText = document.getElementById('scanAchatProgressText');
+  const errEl = document.getElementById('scanAchatErr');
+  errEl.textContent = '';
+  try {
+    const img = await _chargerImageDansCanvas(imageDataUrl);
+
+    // ── Décodage QR en parallèle (bonus : IFU/NIM certains si la facture est e-MECeF) ──
+    const qrData = decoderQRDepuisImage(img);
+    const qrEmecef = parserQREMECeF(qrData);
+
+    if (progressText) progressText.textContent = `Analyse approfondie de l'image (passe 1/3)…`;
+    const imgContrast = pretraiterImageOCR(img, 'contrast');
+    const texteGeneral = await _ocrPass(imgContrast, { lang: 'fra' });
+
+    if (progressText) progressText.textContent = `Analyse approfondie de l'image (passe 2/3)…`;
+    const imgBinaire = pretraiterImageOCR(img, 'binarize');
+    const texteBinaire = await _ocrPass(imgBinaire, { lang: 'fra' });
+
+    if (progressText) progressText.textContent = `Analyse approfondie de l'image (passe 3/3 — montants)…`;
+    const texteChiffres = await _ocrPass(imgBinaire, { lang: 'fra', whitelist: '0123456789.,%FCFAfcfa ' });
+
+    const rawTextCombine = [
+      '--- LECTURE GÉNÉRALE ---', texteGeneral,
+      '--- LECTURE VERSION CONTRASTÉE (noir/blanc) ---', texteBinaire,
+      '--- LECTURE SPÉCIALISÉE CHIFFRES/MONTANTS ---', texteChiffres,
+      qrEmecef ? `--- QR CODE DÉTECTÉ (certifié e-MECeF) ---\nIFU=${qrEmecef.ifu} NIM=${qrEmecef.nim}` : '',
+    ].join('\n');
+
+    if (!texteGeneral.trim() && !texteBinaire.trim() && !texteChiffres.trim()) {
+      if (tentative < 2) {
+        if (progressText) progressText.textContent = 'Aucun texte détecté — nouvelle tentative avec traitement renforcé…';
+        return analyserFactureAchatScan(imageDataUrl, tentative + 1);
+      }
+      throw new Error("Impossible de lire le moindre texte sur cette image. Reprenez la photo avec plus de lumière et en évitant le flou de mouvement.");
+    }
+
+    if (progressText) progressText.textContent = "L'IA reconstitue et normalise la facture d'achat…";
+    const systemPrompt = `Tu es un module de normalisation de factures D'ACHAT (fournisseur) pour un logiciel comptable SYSCOHADA (Bénin/OHADA), spécialisé dans la reconstruction de montants à partir d'OCR de mauvaise qualité (photo floue, mal éclairée, angle imparfait, prise au téléphone en boutique).
+
+On te donne plusieurs lectures OCR de la MÊME facture d'achat (une lecture générale, une version contrastée, une version spécialisée chiffres, et éventuellement un QR code déjà décodé). Recoupe-les pour reconstituer le texte réel le plus probable.
+
+RÈGLES IMPORTANTES POUR LES MONTANTS :
+- Ne rends JAMAIS 0 pour un montant si le texte contient des chiffres à proximité de mots comme "Total", "TTC", "Net à payer", "Montant", "HT", "TVA" — reconstitue ta meilleure estimation plausible plutôt que de mettre 0.
+- Vérifie la cohérence arithmétique : TTC doit être proche de HT + TVA.
+- Erreurs OCR fréquentes : 0↔O, 1↔l/I, 5↔S, 8↔B, virgule/point confondus, espaces insérés au milieu d'un nombre. Corrige selon le contexte.
+- Le "fournisseur" est l'émetteur de la facture (le commerçant/prestataire chez qui l'achat a été fait), PAS le client.
+- Si un IFU à 13 chiffres est visible dans le texte ou fourni via le QR code, extrais-le.
+- Déduis le mode de paiement si mentionné ("espèces", "virement", "mobile money", "chèque", "à crédit") — sinon laisse vide.
+
+Réponds UNIQUEMENT avec un objet JSON valide (aucun texte avant/après, aucun markdown), avec exactement ces clés :
+{"fournisseur": string, "ifu": string, "numero": string, "date": string (YYYY-MM-DD), "ht": number, "tva": number, "ttc": number, "modePaiement": "especes"|"virement"|"mobile_money"|"cheque"|"credit"|"", "confiance": "haute"|"moyenne"|"faible"}
+Les montants sont en FCFA, en nombres purs (sans espaces ni symboles).`;
+
+    let result;
+    try {
+      result = await _avecDelaiMax(
+        callGemini([{ role: 'user', content: `Voici les lectures de la facture d'achat :\n\n${rawTextCombine}` }], systemPrompt, 600, 0.0),
+        45000,
+        'normalisation IA',
+      );
+    } catch (eTimeout) {
+      throw new Error("Le service IA n'a pas répondu à temps (connexion lente ou service indisponible). Réessayez.");
+    }
+    if (!result || result.error) throw new Error(result?.msg || "L'IA n'a pas pu normaliser la facture. Réessayez.");
+    const content = result.data.choices?.[0]?.message?.content?.trim() || '';
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error('Réponse IA illisible. Réessayez.');
+    const parsed = JSON.parse(jsonMatch[0]);
+
+    const toutAZero = !parsed.ht && !parsed.tva && !parsed.ttc;
+    if (toutAZero && tentative < 2) {
+      if (progressText) progressText.textContent = 'Montants non détectés — nouvelle tentative avec traitement renforcé…';
+      return analyserFactureAchatScan(imageDataUrl, tentative + 1);
+    }
+
+    // Le QR (s'il existe) prime sur l'IFU lu par OCR — donnée certaine, pas une estimation
+    if (qrEmecef?.ifu) parsed.ifu = qrEmecef.ifu;
+    parsed._qrEmecef = qrEmecef || null;
+
+    scanAchatExtracted = parsed;
+    document.getElementById('sa-fournisseur').value = parsed.fournisseur || '';
+    document.getElementById('sa-ifu').value = parsed.ifu || '';
+    document.getElementById('sa-numero').value = parsed.numero || ('ACH-' + Date.now());
+    document.getElementById('sa-date').value = parsed.date || new Date().toISOString().split('T')[0];
+    document.getElementById('sa-ht').value = parsed.ht || 0;
+    document.getElementById('sa-tva').value = parsed.tva || 0;
+    document.getElementById('sa-ttc').value = parsed.ttc || (Number(parsed.ht || 0) + Number(parsed.tva || 0));
+    if (parsed.modePaiement) document.getElementById('sa-paiement').value = parsed.modePaiement;
+
+    const qrBadge = document.getElementById('scanAchatQrBadge');
+    if (qrEmecef) {
+      qrBadge.style.display = 'block';
+      qrBadge.textContent = `🔏 QR code e-MECeF détecté — NIM ${qrEmecef.nim} — IFU confirmé automatiquement`;
+    } else {
+      qrBadge.style.display = 'none';
+    }
+
+    document.getElementById('scanAchatStepPreview').style.display = 'none';
+    document.getElementById('scanAchatStepResult').style.display = 'block';
+
+    if (parsed.confiance === 'faible' || toutAZero) {
+      const noteEl = document.querySelector('#scanFactureAchatModal .scan-result-note');
+      if (noteEl) {
+        noteEl.innerHTML = `⚠️ <strong>Lecture incertaine</strong> (photo floue/peu lisible) — vérifiez attentivement les montants ci-dessus avant de confirmer. ` + noteEl.innerHTML;
+      }
+    }
+  } catch (e) {
+    errEl.textContent = '❌ ' + e.message;
+    document.getElementById('scanAchatProgress').style.display = 'none';
+  }
+}
+
+async function confirmerFactureAchat() {
+  const parseNum = (v) => parseFloat(String(v).replace(/\s/g, '').replace(',', '.')) || 0;
+  const fournisseur = document.getElementById('sa-fournisseur').value.trim();
+  const ifu = document.getElementById('sa-ifu').value.trim();
+  const numero = document.getElementById('sa-numero').value.trim();
+  const date = document.getElementById('sa-date').value;
+  const ht = parseNum(document.getElementById('sa-ht').value);
+  const tva = parseNum(document.getElementById('sa-tva').value);
+  const ttc = parseNum(document.getElementById('sa-ttc').value) || (ht + tva);
+  const modePaiement = document.getElementById('sa-paiement').value;
+  if (!fournisseur) { toast('Le nom du fournisseur est requis', 'error'); return; }
+  if (!ht && !ttc) { toast('Montant manquant — vérifiez la lecture', 'error'); return; }
+
+  const compteAchat = compteAchatParSecteur();
+  const paye = modePaiement !== 'credit';
+
+  try {
+    // Écriture comptable : Achat (débit) + TVA déductible (débit) + Fournisseur ou Trésorerie (crédit)
+    const compteContrepartie = paye ? (modePaiement === 'especes' ? '571' : '521') : '401';
+    const ecr = {
+      id: Date.now(),
+      date: date || new Date().toISOString().split('T')[0],
+      journal: paye ? 'AC' : 'AC',
+      piece: 'SCAN-ACH-' + Date.now(),
+      libelle: `Achat — ${fournisseur}${numero ? ' — ' + numero : ''}`,
+      createdAt: new Date().toISOString(),
+      origine: 'scan_ia',
+      verrouille: true,
+      lignes: [
+        { compte: compteAchat, libelle: `Achat — ${fournisseur}`, debit: ht, credit: 0 },
+        ...(tva > 0 ? [{ compte: '4452', libelle: 'TVA déductible', debit: tva, credit: 0 }] : []),
+        { compte: compteContrepartie, libelle: `${paye ? 'Règlement' : 'Fournisseur'} — ${fournisseur}`, debit: 0, credit: ht + tva },
+      ],
+    };
+    const docId = await saveEcritureToFirestore(ecr);
+    if (!docId) return;
+    ecritures.push(ecr);
+
+    // Trace de la facture scannée, verrouillée (non modifiable)
+    const factureAchat = {
+      id: Date.now() + 1,
+      fournisseur, ifu, numero,
+      date: date || new Date().toISOString().split('T')[0],
+      ht, tva, ttc, modePaiement,
+      compteAchat,
+      origine: 'scan_ia',
+      verrouille: true,
+      qrEmecefDetecte: scanAchatExtracted?._qrEmecef || null,
+      ecritureId: ecr.id,
+      createdAt: new Date().toISOString(),
+    };
+    const ref = await window._fbAddDoc(window._fbCollection(window._db, 'profiles', getOwnerProfileId(), 'factures_achat'), factureAchat);
+    facturesAchatList.push({ ...factureAchat, _docId: ref.id });
+
+    // Auto-création du fournisseur s'il n'existe pas déjà
+    const existant = fournisseursList.find((f) => f.nom?.toLowerCase().trim() === fournisseur.toLowerCase().trim());
+    if (!existant) {
+      const nouveauFournisseur = { id: Date.now() + 2, code: 'FRS-' + String(fournisseurCounter++).padStart(4, '0'), nom: fournisseur, ifu, tel: '', email: '', adresse: '', createdAt: new Date().toISOString() };
+      const refF = await window._fbAddDoc(window._fbCollection(window._db, 'profiles', getOwnerProfileId(), 'fournisseurs'), nouveauFournisseur);
+      fournisseursList.push({ ...nouveauFournisseur, _docId: refF.id });
+    }
+
+    auditLog('SCAN_FACTURE_ACHAT', 'ACHATS', `Facture d'achat scannée et verrouillée — ${fournisseur} — ${fn(ttc)} FCFA`);
+    updateStats();
+    renderFournisseurs();
+    renderFacturesAchat();
+    closeScanFactureAchatModal();
+    afficherConfirmationEcriture({
+      sousTitre: `Facture d'achat — ${fournisseur}`,
+      lignes: [
+        { label: 'Compte débité', value: `${compteAchat} — ${fn(ht)} FCFA` },
+        ...(tva > 0 ? [{ label: 'TVA déductible (4452)', value: fn(tva) + ' FCFA' }] : []),
+        { label: paye ? 'Réglé via' : 'Fournisseur (401)', value: fn(ht + tva) + ' FCFA' },
+        { label: '🔒 Statut', value: 'Verrouillée — non modifiable' },
+      ],
+    });
+  } catch (e) {
+    toast('Erreur : ' + e.message, 'error');
+  }
+}
+window.confirmerFactureAchat = confirmerFactureAchat;
+
+async function loadFacturesAchat() {
+  try {
+    const snap = await window._fbGetDocs(window._fbCollection(window._db, 'profiles', getOwnerProfileId(), 'factures_achat'));
+    facturesAchatList = [];
+    snap.forEach((d) => facturesAchatList.push({ ...d.data(), _docId: d.id }));
+  } catch (e) { console.error('[Factures achat] Erreur chargement :', e.message); }
+}
+
+function renderFacturesAchat() {
+  const tbody = document.getElementById('facturesAchatBody');
+  if (!tbody) return;
+  if (!facturesAchatList.length) {
+    tbody.innerHTML = '<tr><td colspan="8"><div class="fb-loading">Aucune facture d\'achat scannée</div></td></tr>';
+    return;
+  }
+  const tri = [...facturesAchatList].sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+  tbody.innerHTML = tri.map((f) => `
+    <tr>
+      <td style="font-size:11px;font-family:var(--font-mono)">${(f.date || '').slice(0, 10)}</td>
+      <td style="font-weight:500">${f.fournisseur || '—'}${f.ifu ? `<br><span style="font-size:9.5px;color:var(--muted)">IFU ${f.ifu}</span>` : ''}</td>
+      <td style="font-size:11px;font-family:var(--font-mono)">${f.numero || '—'}</td>
+      <td style="text-align:right;font-family:var(--font-mono)">${fn(f.ht)}</td>
+      <td style="text-align:right;font-family:var(--font-mono);color:#60a5fa">${fn(f.tva)}</td>
+      <td style="text-align:right;font-family:var(--font-mono);font-weight:700">${fn(f.ttc)}</td>
+      <td style="font-size:10.5px;font-family:var(--font-mono)">${f.compteAchat}</td>
+      <td><span class="lock-badge" title="Extraite automatiquement par l'IA — non modifiable">🔒</span></td>
+    </tr>`).join('');
+}
+window.renderFacturesAchat = renderFacturesAchat;
+
+// ── Verrouillage anti-modification : toute facture issue d'un scan IA (vente ou achat)
+// ne peut plus être éditée — seule la suppression (tracée) reste possible. ──
+function estFactureVerrouillee(f) {
+  return !!(f && (f.verrouille || f.origine === 'scan_ia'));
+}
+window.estFactureVerrouillee = estFactureVerrouillee;
 
 // ══════════════════════════════════════════
 // PLAN COMPTABLE
@@ -7305,7 +7387,14 @@ async function saveFournisseur() {
   }
 }
 
+let facturesAchatChargees = false;
 function renderFournisseurs() {
+  if (!facturesAchatChargees) {
+    facturesAchatChargees = true;
+    loadFacturesAchat().then(renderFacturesAchat);
+  } else {
+    renderFacturesAchat();
+  }
   const search = (document.getElementById('four-search')?.value || '').toLowerCase();
   const tbody = document.getElementById('fournisseursBody');
   if (!tbody) return;
@@ -7363,7 +7452,7 @@ function renderFacLignes() {
         oninput="facLignes[${i}].pu=parseFloat(this.value)||0;updateFacTotaux()"></td>
       <td style="padding:4px 6px"><input type="number" value="${l.remise}" min="0" max="100"
         style="width:100%;background:var(--surface2);border:1px solid var(--line);border-radius:3px;color:var(--ink);font-size:12px;font-family:var(--font-mono);outline:none;text-align:right;padding:4px 6px"
-        oninput="facLignes[${i}].remise=Math.min(100,Math.max(0,parseFloat(this.value)||0));updateFacTotaux()"></td>
+        oninput="facLignes[${i}].remise=parseFloat(this.value)||0;updateFacTotaux()"></td>
       <td style="padding:4px 6px"><input type="number" value="${l.tva}" min="0" max="100"
         style="width:100%;background:var(--surface2);border:1px solid var(--line);border-radius:3px;color:var(--ink);font-size:12px;font-family:var(--font-mono);outline:none;text-align:right;padding:4px 6px"
         oninput="facLignes[${i}].tva=parseFloat(this.value)||18;updateFacTotaux()"></td>
@@ -7379,15 +7468,14 @@ function renderFacLignes() {
 
 function calcLigneHT(l) {
   const base = (l.qte || 0) * (l.pu || 0);
-  const remise = Math.min(100, Math.max(0, l.remise || 0)); // jamais négatif ni >100 : une remise hors de cette plage donnerait un HT négatif, absurde sur une facture
-  return Math.round(base * (1 - remise / 100));
+  return Math.round(base * (1 - (l.remise || 0) / 100));
 }
 function calcLigneTVA(l) {
   return Math.round((calcLigneHT(l) * (l.tva || 0)) / 100);
 }
 
 function updateFacTotaux() {
-  const remiseG = Math.min(100, Math.max(0, parseFloat(document.getElementById('fac-remise-globale')?.value || 0)));
+  const remiseG = parseFloat(document.getElementById('fac-remise-globale')?.value || 0);
   let ht = 0,
     tvaTotal = 0;
   facLignes.forEach((l) => {
@@ -7412,6 +7500,13 @@ function updateFacTotaux() {
 // ══════════════════════════════════════════
 function openFactureModal(id = null) {
   editingFactureId = id;
+  if (id) {
+    const facExistante = facturesList.find((f) => f.id === id);
+    if (estFactureVerrouillee(facExistante)) {
+      toast('🔒 Facture extraite automatiquement par l\'IA — non modifiable. Vous pouvez la supprimer si besoin (action tracée).', 'error');
+      return;
+    }
+  }
   facLignes.length = 0; // vide le tableau sans casser la référence window
   const modal = document.getElementById('factureModal');
   const title = document.getElementById('factureModalTitle');
@@ -7541,7 +7636,7 @@ async function saveFacture(statut = 'brouillon') {
     return;
   }
 
-  const remiseG = Math.min(100, Math.max(0, parseFloat(document.getElementById('fac-remise-globale').value || 0)));
+  const remiseG = parseFloat(document.getElementById('fac-remise-globale').value || 0);
   let ht = 0,
     tvaTotal = 0;
   facLignes.forEach((l) => {
@@ -7552,10 +7647,6 @@ async function saveFacture(statut = 'brouillon') {
   const htNet = ht - remiseGMontant;
   const tvaNet = Math.round(tvaTotal * (1 - remiseG / 100));
   const ttc = htNet + tvaNet;
-  if (ttc < 0) {
-    toast('Le total TTC ne peut pas être négatif — vérifiez les prix, quantités et remises saisis', 'error');
-    return;
-  }
 
   // Multi-devise : les montants saisis sont dans la devise sélectionnée ; on stocke
   // aussi leur équivalent FCFA (ht/tva/ttc) pour que toute la comptabilité (grand
@@ -7634,6 +7725,7 @@ async function autoComptabiliserFacture(fac) {
   const date = fac.dateEmission;
   const groupId = 'grp_fac_' + fac.id;
   const piece = fac.numero;
+  const verrouilleeParScan = fac.origine === 'scan_ia';
   // Écriture VE — Constatation vente
   const ecr = {
     id: Date.now(),
@@ -7646,6 +7738,7 @@ async function autoComptabiliserFacture(fac) {
     groupSize: 1,
     groupIdx: 0,
     createdAt: new Date().toISOString(),
+    ...(verrouilleeParScan ? { origine: 'scan_ia', verrouille: true } : {}),
     lignes: sortLignesDebitAvantCredit([
       { compte: '411', libelle: `Client ${fac.clientNom}`, debit: fac.ttc, credit: 0 },
       { compte: '701', libelle: 'Ventes de marchandises', debit: 0, credit: fac.ht },
@@ -7699,10 +7792,17 @@ async function marquerPayee(id) {
 }
 
 async function supprimerFacture(id) {
-  if (!confirm('Supprimer cette facture ?')) return;
   const fac = facturesList.find((f) => f.id === id);
+  const verrouillee = estFactureVerrouillee(fac);
+  const message = verrouillee
+    ? '🔒 Cette facture a été extraite automatiquement par l\'IA. Sa suppression sera tracée dans le journal d\'audit. Continuer ?'
+    : 'Supprimer cette facture ?';
+  if (!confirm(message)) return;
   if (fac?._docId) {
     await window._fbDeleteDoc(window._fbDoc(window._db, 'profiles', currentProfile.id, 'factures', fac._docId));
+  }
+  if (verrouillee) {
+    auditLog('SUPPRESSION_FACTURE_VERROUILLEE', 'FACTURES', `Facture verrouillée supprimée — ${fac.numero || id} — ${fac.clientNom || ''} — ${fn(fac.ttc)} FCFA`);
   }
   facturesList = facturesList.filter((f) => f.id !== id);
   renderFactures();
@@ -8156,7 +8256,7 @@ function renderFactures() {
         <button class="btn-action" onclick="exportFactureWord(${f.id})">📝 Word</button>
         <button class="btn-action" onclick="exportFactureExcel(${f.id})">📊 CSV</button>
         ${f.statut !== 'payee' && f.statut !== 'annulee' ? `<button class="btn-action" onclick="marquerPayee(${f.id})">✓ Payée</button>` : ''}
-        <button class="btn-action" onclick="openFactureModal(${f.id})">✎</button>
+        ${estFactureVerrouillee(f) ? `<span class="lock-badge" title="Extraite automatiquement par l'IA — non modifiable">🔒</span>` : `<button class="btn-action" onclick="openFactureModal(${f.id})">✎</button>`}
         <button class="btn-action danger" onclick="supprimerFacture(${f.id})">✕</button>
       </td>
     </tr>`;
@@ -12050,6 +12150,10 @@ function ouvrirEditionEcriture(docId, id, module) {
     toast(`🔒 Période ${String(ecr.date).substring(0, 4)} verrouillée — modification impossible. Exercice clôturé.`, 'error');
     return;
   }
+  if (estFactureVerrouillee(ecr)) {
+    toast('🔒 Écriture générée automatiquement par le scan IA — non modifiable pour garantir l\'intégrité des données.', 'error');
+    return;
+  }
   editEcrContext = { ecrDocId: ecr._docId, ecrId: ecr.id, module };
   document.getElementById('edit-ecr-date').value = ecr.date || '';
   document.getElementById('edit-ecr-journal').value = ecr.journal || 'OD';
@@ -12099,6 +12203,11 @@ async function soumettreEditionEcriture() {
   if (!editEcrContext) return;
   const ecr = ecritures.find((e) => e.id === editEcrContext.ecrId || e._docId === editEcrContext.ecrDocId);
   if (!ecr) { toast('Écriture introuvable', 'error'); return; }
+  if (estFactureVerrouillee(ecr)) {
+    toast('🔒 Écriture verrouillée — modification refusée.', 'error');
+    closeEditEcritureModal();
+    return;
+  }
 
   const lignesValides = editEcrLignes.filter((l) => (l.compte || '').trim());
   const after = {
@@ -13961,8 +14070,6 @@ const __globalExports = [
   'changerStatutEffet','deleteEffet','changerRole','quitterModeCollab',
   'revoquerCollaborateurV2','ouvrirJoinCollabModal','ajouterExercice','switchSociete',
   'openImputationModal','deleteCentre','genererCodeCollab',
-  'openScanFactureAchatModal','closeScanFactureAchatModal','handleFactureAchatFileSelect',
-  'recalculerTTCAchatScan','confirmerFactureAchat',
 ];
 
 // Assign each to window so onclick="" attributes can find them
@@ -14031,8 +14138,6 @@ const __scope = { addFacLigne, addLigne, afficherDeclaration, afficherLettrage,
   revoquerCollaborateurV2, ouvrirJoinCollabModal, ajouterExercice, switchSociete,
   openImputationModal, deleteCentre, dismissFillBanner, copierCodeCollab,
   removeFacLigne,
-  openScanFactureAchatModal, closeScanFactureAchatModal, handleFactureAchatFileSelect,
-  recalculerTTCAchatScan, confirmerFactureAchat,
 };
 
 Object.assign(window, __scope);
