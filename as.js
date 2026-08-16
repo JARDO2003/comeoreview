@@ -5886,7 +5886,7 @@ function afficherConfigEmecefTest() {
     <div class="emecef-config-row"><span>IFU</span><b>${EMECEF_IFU || '⚠️ non configuré'}</b></div>
     <div class="emecef-config-row"><span>NIM</span><b>${EMECEF_NIM || '⚠️ non configuré'}</b></div>
     <div class="emecef-config-row"><span>Jeton API</span><b>${EMECEF_TOKEN ? '✓ configuré' : '⚠️ manquant — configurez server_config/emecef/token'}</b></div>
-    <div class="emecef-config-note">📩 Une fois tous les cas validés, capturez chaque test réussi (avec son QR) pour l'Annexe 2, remplissez l'Annexe 1 (déclaration de conformité), et envoyez le dossier complet à <b>emecefbenin@finances.bj</b>. Vérifiez ensuite vos factures sur <b>developper.impots.bj/sygmef-test/verification</b>.</div>
+    <div class="emecef-config-note">EMECEF</div>
   `;
 }
 
