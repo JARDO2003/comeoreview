@@ -2316,7 +2316,14 @@ mark.hl { background:rgba(212,168,83,.3); color:var(--warm); border-radius:2px; 
 /* ══════════════════════════════════════════════════════════════════
    CENTRE DE TESTS e-MECeF — scénarios SFE pour dossier d'agrément DGI
    ══════════════════════════════════════════════════════════════════ */
-.emecef-test-box { width:560px; max-height:85vh; display:flex; flex-direction:column; }
+#emecefTestModal { padding:0; }
+.emecef-test-box { width:100vw; max-width:100vw; height:100vh; max-height:100vh; border-radius:0; display:flex; flex-direction:column; padding:28px 32px; }
+.emecef-test-list { flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:10px; max-height:none; padding-right:6px; }
+.emecef-test-row { padding:14px 16px; }
+.emecef-test-name { font-size:14px; }
+.emecef-test-detail { font-size:11.5px; }
+.emecef-test-qr { width:130px !important; height:130px !important; }
+.emecef-test-section { font-size:11.5px; margin:18px 0 8px; }
 .emecef-test-config { display:flex; flex-direction:column; gap:6px; margin:14px 0 18px; padding:12px 14px; background:var(--surface2); border-radius:10px; border:1px solid var(--line); }
 .emecef-config-row { display:flex; justify-content:space-between; font-size:12px; }
 .emecef-config-row span { color:var(--muted); }
@@ -2335,8 +2342,8 @@ mark.hl { background:rgba(212,168,83,.3); color:var(--warm); border-radius:2px; 
 .emecef-test-detail { font-size:10.5px; color:var(--muted); margin-top:2px; line-height:1.5; word-break:break-word; }
 
 @media(max-width:640px) {
-  .emecef-test-box { width:100%; }
-  .emecef-test-list { max-height:50vh; }
+  .emecef-test-box { padding:18px 16px; }
+  .emecef-test-qr { width:110px !important; height:110px !important; }
 }
 
 /* Sections et QR inline dans le Centre de tests e-MECeF */
