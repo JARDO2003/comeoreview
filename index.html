@@ -11,8 +11,40 @@
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script src="chart.umd.min.js" onerror="var s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js';s.onerror=function(){var s2=document.createElement('script');s2.src='https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js';document.head.appendChild(s2);};document.head.appendChild(s);console.warn('[SYSCOHADA] chart.umd.min.js local introuvable, bascule sur CDN.');"></script>
 <link rel="stylesheet" href="as.css">
-<script src="qrcode.min.js" onerror="var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js';s.onerror=function(){var s2=document.createElement('script');s2.src='https://unpkg.com/qrcode@1.5.3/build/qrcode.min.js';document.head.appendChild(s2);};document.head.appendChild(s);console.warn('[COMEO] qrcode.min.js local introuvable, bascule sur CDN.');"></script>
-<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js" onerror="var s=document.createElement('script');s.src='https://unpkg.com/jsqr@1.4.0/dist/jsQR.js';document.head.appendChild(s);console.warn('[COMEO] jsQR CDN principal indisponible, bascule.');"></script>
+<script>
+// Chargeur résilient : contrairement à onerror (qui ne détecte QUE les échecs réseau),
+// ceci vérifie que la librairie a RÉELLEMENT défini son objet global après chargement —
+// et bascule sur la source suivante si ce n'est pas le cas (fichier corrompu/tronqué, etc.).
+function comeoChargerLibResiliente(sources, verifier, nomLog, i) {
+  i = i || 0;
+  if (i >= sources.length) { console.error('[COMEO] ' + nomLog + ' — aucune source n\'a fonctionné.'); return; }
+  var s = document.createElement('script');
+  s.src = sources[i];
+  s.onload = function () {
+    setTimeout(function () {
+      if (!verifier()) {
+        console.warn('[COMEO] ' + nomLog + ' chargé (' + sources[i] + ') mais non fonctionnel — source suivante.');
+        comeoChargerLibResiliente(sources, verifier, nomLog, i + 1);
+      }
+    }, 80);
+  };
+  s.onerror = function () {
+    console.warn('[COMEO] ' + nomLog + ' — échec réseau sur ' + sources[i] + ' — source suivante.');
+    comeoChargerLibResiliente(sources, verifier, nomLog, i + 1);
+  };
+  document.head.appendChild(s);
+}
+comeoChargerLibResiliente(
+  ['qrcode.min.js', 'https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js', 'https://unpkg.com/qrcode@1.5.3/build/qrcode.min.js'],
+  function () { return window.QRCode && typeof window.QRCode.toCanvas === 'function'; },
+  'qrcode.min.js',
+);
+comeoChargerLibResiliente(
+  ['https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js', 'https://unpkg.com/jsqr@1.4.0/dist/jsQR.js'],
+  function () { return typeof window.jsQR === 'function'; },
+  'jsQR',
+);
+</script>
 </head>
 <body>
 
@@ -2190,7 +2222,6 @@
       <div class="scan-result-badge">✓ Facture lue et normalisée</div>
       <div class="scan-result-grid">
         <div class="sr-field"><span class="sr-label">Fournisseur / Client</span><input class="af-input" id="sr-tiers" type="text" placeholder="Nom du client/fournisseur"></div>
-        <div class="sr-field"><span class="sr-label">Désignation (produit / service)</span><input class="af-input" id="sr-designation" type="text" placeholder="ex: Vente de marchandises"></div>
         <div class="sr-field"><span class="sr-label">N° Facture</span><input class="af-input" id="sr-numero" type="text" placeholder="N° facture"></div>
         <div class="sr-field"><span class="sr-label">Date</span><input class="af-input" type="date" id="sr-date"></div>
         <div class="sr-field"><span class="sr-label">Montant HT</span><input class="af-input" type="text" inputmode="decimal" id="sr-ht" placeholder="0" oninput="recalculerTTCScan()"></div>
@@ -2236,7 +2267,6 @@
       <div class="scan-result-grid">
         <div class="sr-field"><span class="sr-label">Fournisseur</span><input class="af-input" id="sa-fournisseur" type="text" placeholder="Nom du fournisseur"></div>
         <div class="sr-field"><span class="sr-label">IFU fournisseur</span><input class="af-input" id="sa-ifu" type="text" placeholder="IFU (si visible)"></div>
-        <div class="sr-field"><span class="sr-label">Désignation (articles / services)</span><input class="af-input" id="sa-designation" type="text" placeholder="ex: Fournitures de bureau"></div>
         <div class="sr-field"><span class="sr-label">N° Facture</span><input class="af-input" id="sa-numero" type="text" placeholder="N° facture"></div>
         <div class="sr-field"><span class="sr-label">Date</span><input class="af-input" type="date" id="sa-date"></div>
         <div class="sr-field"><span class="sr-label">Montant HT</span><input class="af-input" type="text" inputmode="decimal" id="sa-ht" placeholder="0" oninput="recalculerTTCAchatScan()"></div>
