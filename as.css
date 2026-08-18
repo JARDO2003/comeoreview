@@ -2027,6 +2027,14 @@ mark.hl { background:rgba(212,168,83,.3); color:var(--warm); border-radius:2px; 
 .scan-result-grid .af-input:focus,
 .scan-modal-box .af-input:focus { border-color:var(--warm); background:var(--surface); }
 .scan-result-note { font-size:10.5px; color:var(--muted); line-height:1.5; margin-bottom:14px; }
+/* Champs verrouillés après lecture IA — non modifiables, pour garantir l'intégrité
+   des factures scannées (personne, ni le propriétaire ni un collaborateur, ne doit
+   pouvoir altérer un montant ou une identité détectés avant transmission/comptabilisation). */
+.scan-result-grid .af-input[readonly] {
+  background:var(--surface3); color:var(--slate); cursor:not-allowed;
+  border-color:var(--line); user-select:text !important;
+}
+.sr-field .sr-lock-note { font-size:9px; color:var(--faint); font-weight:400; text-transform:none; letter-spacing:0; margin-left:4px; }
 .sb-comptable-banner { margin:0 10px 4px; padding:8px 10px; background:rgba(37,99,235,.12); color:var(--blue); border:1px solid rgba(37,99,235,.25); border-radius:8px; font-size:9.5px; font-weight:800; letter-spacing:.12em; text-align:center; }
 
 /* Modale sceau fiscal e-MECeF (QR code DGI) */
