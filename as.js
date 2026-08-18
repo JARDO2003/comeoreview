@@ -5203,6 +5203,10 @@ function openScanFactureModal() {
   document.getElementById('scanFactureInput').value = '';
   scanFactureImageDataUrl = null;
   scanFactureExtracted = null;
+  // Nom de l'entreprise émettrice = celle du compte connecté (pas une donnée OCR) —
+  // affiché pour contexte, notamment utile en mode collaborateur.
+  const entrepriseEl = document.getElementById('sr-entreprise');
+  if (entrepriseEl) entrepriseEl.value = currentProfile?.company || '';
 }
 function closeScanFactureModal() {
   document.getElementById('scanFactureModal').style.display = 'none';
@@ -5392,7 +5396,7 @@ RÈGLES IMPORTANTES POUR LES MONTANTS :
 - Le plus grand montant net proche des mots "Total"/"TTC"/"Net à payer" est presque toujours le TTC.
 
 Réponds UNIQUEMENT avec un objet JSON valide (aucun texte avant/après, aucun markdown), avec exactement ces clés :
-{"tiers": string (nom du client ou fournisseur), "numero": string, "date": string (format YYYY-MM-DD, déduis une date plausible si absente), "ht": number, "tva": number, "ttc": number, "confiance": "haute"|"moyenne"|"faible"}
+{"tiers": string (nom du client ou fournisseur), "produit": string (désignation du produit ou service vendu, tel que lu sur la facture — chaîne vide si illisible), "numero": string, "date": string (format YYYY-MM-DD, déduis une date plausible si absente), "ht": number, "tva": number, "ttc": number, "confiance": "haute"|"moyenne"|"faible"}
 Les montants sont en FCFA, en nombres purs (sans espaces ni symboles).`;
     let result;
     try {
@@ -5426,6 +5430,7 @@ Les montants sont en FCFA, en nombres purs (sans espaces ni symboles).`;
 
     scanFactureExtracted = parsed;
     document.getElementById('sr-tiers').value = parsed.tiers || '';
+    document.getElementById('sr-produit').value = parsed.produit || '';
     document.getElementById('sr-numero').value = parsed.numero || ('FAC-' + Date.now());
     document.getElementById('sr-date').value = parsed.date || new Date().toISOString().split('T')[0];
     document.getElementById('sr-ht').value = parsed.ht || 0;
@@ -5449,7 +5454,10 @@ Les montants sont en FCFA, en nombres purs (sans espaces ni symboles).`;
 
 async function confirmerTransmissionFacture() {
   const parseNum = (v) => parseFloat(String(v).replace(/\s/g, '').replace(',', '.')) || 0;
+  // ⚠️ Les champs sr-* sont désormais en lecture seule (readonly) — leur valeur est
+  // strictement celle détectée par l'IA (scanFactureExtracted), jamais modifiée à la main.
   const tiers = document.getElementById('sr-tiers').value.trim();
+  const produit = document.getElementById('sr-produit').value.trim();
   const numero = document.getElementById('sr-numero').value.trim();
   const date = document.getElementById('sr-date').value;
   const ht = parseNum(document.getElementById('sr-ht').value);
@@ -5463,6 +5471,8 @@ async function confirmerTransmissionFacture() {
     type: 'facture',
     dateEmission: date,
     clientNom: tiers,
+    produit: produit || null,
+    entreprise: currentProfile?.company || null,
     ht,
     tva,
     ttc,
@@ -6202,7 +6212,7 @@ RÈGLES IMPORTANTES POUR LES MONTANTS :
 - Déduis le mode de paiement si mentionné ("espèces", "virement", "mobile money", "chèque", "à crédit") — sinon laisse vide.
 
 Réponds UNIQUEMENT avec un objet JSON valide (aucun texte avant/après, aucun markdown), avec exactement ces clés :
-{"fournisseur": string, "ifu": string, "numero": string, "date": string (YYYY-MM-DD), "ht": number, "tva": number, "ttc": number, "modePaiement": "especes"|"virement"|"mobile_money"|"cheque"|"credit"|"", "confiance": "haute"|"moyenne"|"faible"}
+{"fournisseur": string, "ifu": string, "produit": string (désignation du produit ou service acheté, tel que lu sur la facture — chaîne vide si illisible), "numero": string, "date": string (YYYY-MM-DD), "ht": number, "tva": number, "ttc": number, "modePaiement": "especes"|"virement"|"mobile_money"|"cheque"|"credit"|"", "confiance": "haute"|"moyenne"|"faible"}
 Les montants sont en FCFA, en nombres purs (sans espaces ni symboles).`;
 
     let result;
@@ -6234,6 +6244,7 @@ Les montants sont en FCFA, en nombres purs (sans espaces ni symboles).`;
     scanAchatExtracted = parsed;
     document.getElementById('sa-fournisseur').value = parsed.fournisseur || '';
     document.getElementById('sa-ifu').value = parsed.ifu || '';
+    document.getElementById('sa-produit').value = parsed.produit || '';
     document.getElementById('sa-numero').value = parsed.numero || ('ACH-' + Date.now());
     document.getElementById('sa-date').value = parsed.date || new Date().toISOString().split('T')[0];
     document.getElementById('sa-ht').value = parsed.ht || 0;
@@ -6268,6 +6279,7 @@ async function confirmerFactureAchat() {
   const parseNum = (v) => parseFloat(String(v).replace(/\s/g, '').replace(',', '.')) || 0;
   const fournisseur = document.getElementById('sa-fournisseur').value.trim();
   const ifu = document.getElementById('sa-ifu').value.trim();
+  const produit = document.getElementById('sa-produit').value.trim();
   const numero = document.getElementById('sa-numero').value.trim();
   const date = document.getElementById('sa-date').value;
   const ht = parseNum(document.getElementById('sa-ht').value);
@@ -6288,12 +6300,12 @@ async function confirmerFactureAchat() {
       date: date || new Date().toISOString().split('T')[0],
       journal: paye ? 'AC' : 'AC',
       piece: 'SCAN-ACH-' + Date.now(),
-      libelle: `Achat — ${fournisseur}${numero ? ' — ' + numero : ''}`,
+      libelle: `Achat — ${fournisseur}${produit ? ' — ' + produit : ''}${numero ? ' — ' + numero : ''}`,
       createdAt: new Date().toISOString(),
       origine: 'scan_ia',
       verrouille: true,
       lignes: [
-        { compte: compteAchat, libelle: `Achat — ${fournisseur}`, debit: ht, credit: 0 },
+        { compte: compteAchat, libelle: produit || `Achat — ${fournisseur}`, debit: ht, credit: 0 },
         ...(tva > 0 ? [{ compte: '4452', libelle: 'TVA déductible', debit: tva, credit: 0 }] : []),
         { compte: compteContrepartie, libelle: `${paye ? 'Règlement' : 'Fournisseur'} — ${fournisseur}`, debit: 0, credit: ht + tva },
       ],
@@ -7747,7 +7759,7 @@ async function autoComptabiliserFacture(fac) {
     date,
     journal: 'VE',
     piece,
-    libelle: `Facture ${fac.numero} — ${fac.clientNom}`,
+    libelle: `Facture ${fac.numero} — ${fac.clientNom}${fac.produit ? ' — ' + fac.produit : ''}`,
     groupId,
     groupLibelle: `Vente — ${fac.clientNom}`,
     groupSize: 1,
@@ -7756,7 +7768,7 @@ async function autoComptabiliserFacture(fac) {
     ...(verrouilleeParScan ? { origine: 'scan_ia', verrouille: true } : {}),
     lignes: sortLignesDebitAvantCredit([
       { compte: '411', libelle: `Client ${fac.clientNom}`, debit: fac.ttc, credit: 0 },
-      { compte: '701', libelle: 'Ventes de marchandises', debit: 0, credit: fac.ht },
+      { compte: '701', libelle: fac.produit || 'Ventes de marchandises', debit: 0, credit: fac.ht },
       { compte: '4431', libelle: 'TVA facturée sur ventes', debit: 0, credit: fac.tva },
     ]),
   };
