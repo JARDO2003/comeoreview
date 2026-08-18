@@ -2223,14 +2223,16 @@ comeoChargerLibResiliente(
     <div id="scanStepResult" style="display:none">
       <div class="scan-result-badge">✓ Facture lue et normalisée</div>
       <div class="scan-result-grid">
-        <div class="sr-field"><span class="sr-label">Fournisseur / Client</span><input class="af-input" id="sr-tiers" type="text" placeholder="Nom du client/fournisseur"></div>
-        <div class="sr-field"><span class="sr-label">N° Facture</span><input class="af-input" id="sr-numero" type="text" placeholder="N° facture"></div>
-        <div class="sr-field"><span class="sr-label">Date</span><input class="af-input" type="date" id="sr-date"></div>
-        <div class="sr-field"><span class="sr-label">Montant HT</span><input class="af-input" type="text" inputmode="decimal" id="sr-ht" placeholder="0" oninput="recalculerTTCScan()"></div>
-        <div class="sr-field"><span class="sr-label">TVA</span><input class="af-input" type="text" inputmode="decimal" id="sr-tva" placeholder="0" oninput="recalculerTTCScan()"></div>
-        <div class="sr-field"><span class="sr-label">Montant TTC</span><input class="af-input" type="text" inputmode="decimal" id="sr-ttc" placeholder="0"></div>
+        <div class="sr-field"><span class="sr-label">Entreprise émettrice</span><input class="af-input" id="sr-entreprise" type="text" readonly></div>
+        <div class="sr-field"><span class="sr-label">Fournisseur / Client</span><input class="af-input" id="sr-tiers" type="text" placeholder="Nom du client/fournisseur" readonly></div>
+        <div class="sr-field"><span class="sr-label">Produit / Service<span class="sr-lock-note">détecté par l'IA</span></span><input class="af-input" id="sr-produit" type="text" placeholder="Désignation du produit/service" readonly></div>
+        <div class="sr-field"><span class="sr-label">N° Facture</span><input class="af-input" id="sr-numero" type="text" placeholder="N° facture" readonly></div>
+        <div class="sr-field"><span class="sr-label">Date</span><input class="af-input" type="date" id="sr-date" readonly></div>
+        <div class="sr-field"><span class="sr-label">Montant HT</span><input class="af-input" type="text" inputmode="decimal" id="sr-ht" placeholder="0" readonly></div>
+        <div class="sr-field"><span class="sr-label">TVA</span><input class="af-input" type="text" inputmode="decimal" id="sr-tva" placeholder="0" readonly></div>
+        <div class="sr-field"><span class="sr-label">Montant TTC</span><input class="af-input" type="text" inputmode="decimal" id="sr-ttc" placeholder="0" readonly></div>
       </div>
-      <p class="scan-result-note">Vérifiez les champs détectés par l'IA avant confirmation. Une fois confirmée, la facture normalisée est transmise en temps réel à la DGI Bénin (système e-MECeF) pour validation et attribution du sceau fiscal (NIM + QR code).</p>
+      <p class="scan-result-note">🔒 Champs verrouillés — lus automatiquement par l'IA à partir de la photo, non modifiables (aucune main, ni propriétaire ni collaborateur, ne peut altérer une facture scannée). Si une valeur est erronée, reprenez la photo. Une fois confirmée, la facture normalisée est transmise en temps réel à la DGI Bénin (système e-MECeF) pour validation et attribution du sceau fiscal (NIM + QR code).</p>
       <button class="btn btn-gold" style="width:100%" onclick="confirmerTransmissionFacture()">✓ Confirmer et transmettre</button>
     </div>
 
@@ -2267,13 +2269,14 @@ comeoChargerLibResiliente(
       <div class="scan-result-badge">✓ Facture d'achat lue et normalisée</div>
       <div id="scanAchatQrBadge" style="display:none" class="scan-qr-detected-badge"></div>
       <div class="scan-result-grid">
-        <div class="sr-field"><span class="sr-label">Fournisseur</span><input class="af-input" id="sa-fournisseur" type="text" placeholder="Nom du fournisseur"></div>
-        <div class="sr-field"><span class="sr-label">IFU fournisseur</span><input class="af-input" id="sa-ifu" type="text" placeholder="IFU (si visible)"></div>
-        <div class="sr-field"><span class="sr-label">N° Facture</span><input class="af-input" id="sa-numero" type="text" placeholder="N° facture"></div>
-        <div class="sr-field"><span class="sr-label">Date</span><input class="af-input" type="date" id="sa-date"></div>
-        <div class="sr-field"><span class="sr-label">Montant HT</span><input class="af-input" type="text" inputmode="decimal" id="sa-ht" placeholder="0" oninput="recalculerTTCAchatScan()"></div>
-        <div class="sr-field"><span class="sr-label">TVA</span><input class="af-input" type="text" inputmode="decimal" id="sa-tva" placeholder="0" oninput="recalculerTTCAchatScan()"></div>
-        <div class="sr-field"><span class="sr-label">Montant TTC</span><input class="af-input" type="text" inputmode="decimal" id="sa-ttc" placeholder="0"></div>
+        <div class="sr-field"><span class="sr-label">Fournisseur</span><input class="af-input" id="sa-fournisseur" type="text" placeholder="Nom du fournisseur" readonly></div>
+        <div class="sr-field"><span class="sr-label">IFU fournisseur</span><input class="af-input" id="sa-ifu" type="text" placeholder="IFU (si visible)" readonly></div>
+        <div class="sr-field"><span class="sr-label">Produit / Service<span class="sr-lock-note">détecté par l'IA</span></span><input class="af-input" id="sa-produit" type="text" placeholder="Désignation du produit/service" readonly></div>
+        <div class="sr-field"><span class="sr-label">N° Facture</span><input class="af-input" id="sa-numero" type="text" placeholder="N° facture" readonly></div>
+        <div class="sr-field"><span class="sr-label">Date</span><input class="af-input" type="date" id="sa-date" readonly></div>
+        <div class="sr-field"><span class="sr-label">Montant HT</span><input class="af-input" type="text" inputmode="decimal" id="sa-ht" placeholder="0" readonly></div>
+        <div class="sr-field"><span class="sr-label">TVA</span><input class="af-input" type="text" inputmode="decimal" id="sa-tva" placeholder="0" readonly></div>
+        <div class="sr-field"><span class="sr-label">Montant TTC</span><input class="af-input" type="text" inputmode="decimal" id="sa-ttc" placeholder="0" readonly></div>
         <div class="sr-field"><span class="sr-label">Mode de paiement</span>
           <select class="af-input" id="sa-paiement">
             <option value="especes">Espèces</option>
@@ -2284,7 +2287,7 @@ comeoChargerLibResiliente(
           </select>
         </div>
       </div>
-      <p class="scan-result-note">Vérifiez les champs avant confirmation. Une fois confirmée, l'écriture comptable d'achat est générée automatiquement et <strong>les informations extraites seront verrouillées</strong> — non modifiables, pour garantir l'intégrité de vos comptes.</p>
+      <p class="scan-result-note">🔒 Champs verrouillés — lus automatiquement par l'IA (seul le mode de paiement reste au choix). Aucune main, ni propriétaire ni collaborateur, ne peut altérer une facture scannée ; si une valeur est erronée, reprenez la photo. Une fois confirmée, l'écriture comptable d'achat est générée automatiquement et <strong>les informations extraites seront verrouillées</strong> — non modifiables, pour garantir l'intégrité de vos comptes.</p>
       <button class="btn btn-gold" style="width:100%" onclick="confirmerFactureAchat()">✓ Confirmer et comptabiliser</button>
     </div>
 
