@@ -193,15 +193,17 @@ comeoChargerLibResiliente(
      ═══════════════════════════════════ -->
 <div id="emecefTestModal" class="modal-overlay" style="display:none" onclick="if(event.target===this)fermerCentreTestsEmecef()">
   <div class="modal-box emecef-test-box">
-    <div class="modal-title">🧪 Centre de tests e-MECeF</div>
-    <div class="modal-sub">Exécute les scénarios techniques requis pour le dossier d'agrément SFE auprès de la DGI Bénin. Conserve ce rapport comme preuve documentée.</div>
-
-    <div class="emecef-test-config" id="emecefTestConfig"></div>
+    <div id="emecefTestHeader">
+      <div class="modal-title">🧪 Centre de tests e-MECeF</div>
+      <div class="modal-sub">Exécute les scénarios techniques requis pour le dossier d'agrément SFE auprès de la DGI Bénin. Conserve ce rapport comme preuve documentée.</div>
+      <div class="emecef-test-config" id="emecefTestConfig"></div>
+    </div>
 
     <div class="emecef-test-list" id="emecefTestList"></div>
 
     <div class="modal-actions" style="margin-top:16px">
       <button class="btn-modal-cancel" onclick="fermerCentreTestsEmecef()">Fermer</button>
+      <button class="btn-modal-cancel" id="btnToggleEnteteEmecef" style="display:none" onclick="toggleEnteteCentreTests()">👁 Afficher l'en-tête</button>
       <button class="btn-modal-ok" id="btnLancerTestsEmecef" onclick="lancerTousLesTestsEmecef()">▶ Lancer tous les tests</button>
       <button class="btn-modal-ok" id="btnExporterRapportEmecef" style="display:none" onclick="exporterRapportTestsEmecef()">↓ Exporter le rapport</button>
     </div>
