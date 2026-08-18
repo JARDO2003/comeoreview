@@ -5886,7 +5886,7 @@ function afficherConfigEmecefTest() {
     <div class="emecef-config-row"><span>IFU</span><b>${EMECEF_IFU || '⚠️ non configuré'}</b></div>
     <div class="emecef-config-row"><span>NIM</span><b>${EMECEF_NIM || '⚠️ non configuré'}</b></div>
     <div class="emecef-config-row"><span>Jeton API</span><b>${EMECEF_TOKEN ? '✓ configuré' : '⚠️ manquant — configurez server_config/emecef/token'}</b></div>
-    <div class="emecef-config-note">EMECEF</div>
+    <div class="emecef-config-note">📩 Une fois tous les cas validés, capturez chaque test réussi (avec son QR) pour l'Annexe 2, remplissez l'Annexe 1 (déclaration de conformité), et envoyez le dossier complet à <b>emecefbenin@finances.bj</b>. Vérifiez ensuite vos factures sur <b>developper.impots.bj/sygmef-test/verification</b>.</div>
   `;
 }
 
@@ -5948,12 +5948,23 @@ function afficherReplisQrTest(i, code) {
   canvas.replaceWith(fallback);
 }
 
+function toggleEnteteCentreTests() {
+  const header = document.getElementById('emecefTestHeader');
+  const btn = document.getElementById('btnToggleEnteteEmecef');
+  const visible = header.style.display !== 'none';
+  header.style.display = visible ? 'none' : 'block';
+  btn.textContent = visible ? '👁 Afficher l\'en-tête' : '🙈 Masquer l\'en-tête';
+}
+window.toggleEnteteCentreTests = toggleEnteteCentreTests;
+
 function ouvrirCentreTestsEmecef() {
   document.getElementById('emecefTestModal').style.display = 'flex';
   afficherConfigEmecefTest();
   emecefTestResults = EMECEF_TEST_DEFS.map((t) => ({ ...t, status: 'pending', detail: '', raw: null, sceau: null }));
   renderEmecefTestList();
   document.getElementById('btnExporterRapportEmecef').style.display = 'none';
+  document.getElementById('btnToggleEnteteEmecef').style.display = 'none';
+  document.getElementById('emecefTestHeader').style.display = 'block';
 }
 
 function fermerCentreTestsEmecef() {
@@ -5982,6 +5993,10 @@ async function lancerTousLesTestsEmecef() {
   }
   btn.disabled = false;
   document.getElementById('btnExporterRapportEmecef').style.display = 'inline-block';
+  document.getElementById('emecefTestHeader').style.display = 'none';
+  const toggleBtn = document.getElementById('btnToggleEnteteEmecef');
+  toggleBtn.style.display = 'inline-block';
+  toggleBtn.textContent = "👁 Afficher l'en-tête";
   const reussis = emecefTestResults.filter((t) => t.status === 'pass').length;
   toast(`Tests terminés : ${reussis}/${emecefTestResults.length} réussis`, reussis === emecefTestResults.length ? 'success' : 'error');
 }
@@ -11997,6 +12012,19 @@ let micEnabled = true;
 let camEnabled = true;
 let _callListenersUnsub = []; // écouteurs Firestore actifs pour l'appel en cours (nettoyés à la fin, évite les états SDP invalides sur un appel suivant)
 
+// Identifiant unique PAR ONGLET/APPAREIL (sessionStorage = distinct pour chaque onglet, même compte).
+// Sert à savoir si UN APPEL donné a été initié PAR CET APPAREIL précis — indépendamment du compte —
+// pour que ça sonne correctement sur tout autre appareil, même ceux du même utilisateur
+// (comportement multi-appareils façon WhatsApp Web, plutôt que de bloquer "s'appeler soi-même").
+function getMonSessionId() {
+  let id = sessionStorage.getItem('comeo_session_id');
+  if (!id) {
+    id = 'sess_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+    sessionStorage.setItem('comeo_session_id', id);
+  }
+  return id;
+}
+
 const ROLES = {
   admin:       { label: 'Administrateur', couleur: 'var(--warm)',  perms: ['*'] },
   comptable:   { label: 'Comptable',      couleur: 'var(--blue)',  perms: ['saisie','journal','grandlivre','balance','bilan','resultat','tresorerie','factures','devis','clients','fournisseurs','paie','immobilisations','stocks','rapprochement','budgets','lettrage','declarations','analytique','effets'] },
@@ -12828,13 +12856,17 @@ const ICE_SERVERS = {
   ]
 };
 
-async function ouvrirAppelVideo() {
+let typeAppelActuel = 'video'; // 'video' | 'audio' — pilote l'affichage (caméra visible ou non)
+
+async function ouvrirAppelVideo(audioSeulement = false) {
+  typeAppelActuel = audioSeulement ? 'audio' : 'video';
   document.getElementById('videoCallModal').style.display = 'flex';
-  document.getElementById('videoCallStatus').textContent = '⏳ Accès caméra/micro...';
+  document.getElementById('videoCallModal').classList.toggle('audio-only-call', audioSeulement);
+  document.getElementById('videoCallStatus').textContent = audioSeulement ? '⏳ Accès micro...' : '⏳ Accès caméra/micro...';
   document.getElementById('remoteVideoPlaceholder').style.display = 'flex';
 
   try {
-    localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    localStream = await navigator.mediaDevices.getUserMedia({ video: !audioSeulement, audio: true });
     document.getElementById('localVideo').srcObject = localStream;
     document.getElementById('videoCallStatus').textContent = '⏳ Connexion au pair...';
     videoCallActive = true;
@@ -12844,13 +12876,19 @@ async function ouvrirAppelVideo() {
     // → dans ce cas je réponds ; sinon j'initie un nouvel appel (système bidirectionnel).
     const snap = await window._fbGetDoc(window._fbDoc(window._db, 'video_calls', ownerUid));
     const d = snap.exists() ? snap.data() : null;
-    const appelEnAttente = d?.offer && !d?.ended && d?.callerId && d.callerId !== getMonSenderId();
+    const appelEnAttente = d?.offer && !d?.ended && d?.callerSessionId && d.callerSessionId !== getMonSessionId();
+    if (appelEnAttente && d?.callType) {
+      // Je réponds à un appel déjà initié → j'adopte le même type (audio/vidéo) que l'appelant
+      typeAppelActuel = d.callType;
+      document.getElementById('videoCallModal').classList.toggle('audio-only-call', d.callType === 'audio');
+    }
 
     await initialiserWebRTC(ownerUid, !appelEnAttente);
   } catch(e) {
-    document.getElementById('videoCallStatus').textContent = '❌ ' + (e.name === 'NotAllowedError' ? 'Accès caméra refusé.' : e.message);
+    document.getElementById('videoCallStatus').textContent = '❌ ' + (e.name === 'NotAllowedError' ? (audioSeulement ? 'Accès micro refusé.' : 'Accès caméra refusé.') : e.message);
   }
 }
+window.ouvrirAppelAudio = () => ouvrirAppelVideo(true);
 
 async function initialiserWebRTC(ownerUid, jeSuisAppelant) {
   // Filet de sécurité : nettoie tout écouteur resté actif d'une tentative précédente non fermée proprement.
@@ -12890,7 +12928,9 @@ async function initialiserWebRTC(ownerUid, jeSuisAppelant) {
       ended: false,
       declinedBy: null,
       callerId: getMonSenderId(),
+      callerSessionId: getMonSessionId(),
       callerName: getMonSenderName(),
+      callType: typeAppelActuel,
       createdAt: new Date().toISOString(),
     });
 
@@ -13032,24 +13072,28 @@ function ecouterAppelEntrant(ownerUid) {
   if (!onSnapshot || !doc) return;
   appelEntrantUnsubscribe = onSnapshot(doc(window._db, 'video_calls', ownerUid), (snap) => {
     const d = snap.data();
-    const moi = getMonSenderId();
+    const monAppareil = getMonSessionId();
     const callModalOuvert = document.getElementById('videoCallModal')?.style.display === 'flex';
-    const appelActifPourMoi = d?.offer && !d?.ended && d?.callerId && d.callerId !== moi;
+    const appelActifPourMoi = d?.offer && !d?.ended && d?.callerSessionId && d.callerSessionId !== monAppareil;
     if (appelActifPourMoi && !callModalOuvert) {
-      afficherAppelEntrant(ownerUid, d.callerName || 'Un collaborateur');
+      afficherAppelEntrant(ownerUid, d.callerName || 'Un collaborateur', d.callType || 'video');
     } else if (!appelActifPourMoi) {
       masquerAppelEntrant();
     }
   }, (err) => console.error('[Appel entrant] Erreur écoute :', err.message));
 }
 
-function afficherAppelEntrant(ownerUid, nomAppelant) {
+function afficherAppelEntrant(ownerUid, nomAppelant, callType = 'video') {
   if (appelEntrantActif) return; // déjà affiché
   appelEntrantActif = true;
   appelEntrantOwnerUid = ownerUid;
   const nameEl = document.getElementById('incomingCallName');
+  const titleEl = document.getElementById('incomingCallTitle');
+  const avatarEl = document.getElementById('incomingCallAvatar');
   const overlay = document.getElementById('incomingCallOverlay');
   if (nameEl) nameEl.textContent = nomAppelant;
+  if (titleEl) titleEl.textContent = callType === 'audio' ? 'Appel audio entrant' : 'Appel vidéo entrant';
+  if (avatarEl) avatarEl.textContent = callType === 'audio' ? '📞' : '📹';
   if (overlay) overlay.style.display = 'flex';
   demarrerSonnerie();
   navigator.vibrate?.([500, 250, 500, 250, 500]);
@@ -13996,21 +14040,6 @@ function exportDeclFiscalePDF() { exportDeclarationPDF(); }
 
 function openDeclTaxeModal() { navigate('declarations'); toast('Sélectionnez le type de déclaration ci-dessous', 'info'); }
 
-function exportHistoriqueAppels() {
-  try {
-    const { jsPDF } = window.jspdf;
-    const doc = new jsPDF({ unit:'mm', format:'a4' });
-    const company = currentProfile?.company || 'Entreprise';
-    doc.setFontSize(14); doc.setFont('helvetica','bold');
-    doc.text('HISTORIQUE APPELS VIDÉO — ' + company, 14, 18);
-    doc.setFontSize(9); doc.text('Édité le ' + new Date().toLocaleDateString('fr-FR'), 14, 25);
-    doc.autoTable({ head:[['Date','Durée','Participants']], body:[['Aucun appel enregistré','','']],
-      startY:30, styles:{fontSize:9}, headStyles:{fillColor:[30,30,40],textColor:[212,168,83]} });
-    doc.save('historique_appels.pdf');
-    toast('Historique exporté', 'success');
-  } catch(e) { toast('Erreur: ' + e.message, 'error'); }
-}
-
 function confirmerDemandeReabonnement() {
   const err = document.getElementById('paymentFormErr');
   if (err) err.classList.remove('show');
@@ -14040,7 +14069,7 @@ const __globalExports = [
   'dismissFillBanner','doExport','doForgotPassword','doLogin','doLogout','doRegister',
   'exportAnalytiquePDF','exportAuditPDF','exportBalanceAgeePDF','exportBudgetPDF',
   'exportBulletinPDF','exportDeclFiscalePDF','exportDeclarationPDF','exportEffetsPDF',
-  'exportFactureList','exportHistoriqueAppels','exportInventairePDF',
+  'exportFactureList','exportInventairePDF',
   'exportRapprochementPDF','exportTAFIREpdf','exportTableauAmortissement',
   'fermerCollabModal','genererCodeCollab','genererEcrituresCloture','goToSaisie',
   'handleAiKey','hideMultiEcrBanner','hideSaisieNotif','importReleveBancaire',
@@ -14144,7 +14173,7 @@ Object.assign(window, __scope);
 
 // Functions that may not exist yet — safe optional exports
 const __optional = ['confirmWavePaymentManual','confirmerDemandeReabonnement','openWhatsAppReabonnement','exportDeclFiscalePDF','openDeclTaxeModal',
-  'exportHistoriqueAppels','previewFacturePDF',
+  'previewFacturePDF',
   'autoSaveAllFromNotif','hideSaisieNotif',
   'updateBudgetAccountSuggest','exportAuditPDF','exportBalanceAgeePDF',
   'exportBudgetPDF','exportEffetsPDF','exportInventairePDF','exportRapprochementPDF',
