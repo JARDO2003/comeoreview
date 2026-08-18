@@ -12318,10 +12318,19 @@ async function approuverModification(docId) {
 
   if (!confirm(`Approuver la modification proposée par ${mod.requestedBy} et l'appliquer à l'écriture ?`)) return;
   const ecr = ecritures.find((e) => e.id === mod.ecrId || e._docId === mod.ecrDocId);
-  if (ecr) {
-    Object.assign(ecr, mod.after);
-    await updateEcritureInFirestore(ecr._docId, mod.after);
+  // ⚠️ CORRECTIF : l'écriture visée peut être absente du cache local `ecritures`
+  // (pas encore chargé, ou onglet ouvert avant la création de l'écriture) — dans ce
+  // cas on écrivait le statut "approuvée" SANS jamais toucher à l'écriture réelle,
+  // d'où le bug "j'approuve mais rien ne se passe". On cible désormais toujours
+  // Firestore directement via mod.ecrDocId, cache local ou pas.
+  const ecrDocIdCible = (ecr && ecr._docId) || mod.ecrDocId;
+  if (!ecrDocIdCible) {
+    toast('✗ Écriture introuvable — impossible d\'appliquer la modification', 'error');
+    return;
   }
+  if (ecr) Object.assign(ecr, mod.after);
+  await updateEcritureInFirestore(ecrDocIdCible, mod.after);
+  if (!ecr) await loadEcrituresFromFirestore(); // recharge le cache pour que le Journal reflète le changement
   mod.status = 'approuvee';
   mod.decidedBy = currentProfile?.email || currentProfile?.company || 'Propriétaire';
   mod.decidedTs = new Date().toISOString();
@@ -12330,6 +12339,8 @@ async function approuverModification(docId) {
   updateModifPendingBadge();
   renderModifications();
   renderJournal();
+  if (typeof renderGrandLivre === 'function') renderGrandLivre();
+  if (typeof renderBalance === 'function') renderBalance();
   updateStats();
   toast('✓ Modification approuvée et appliquée', 'success');
 }
@@ -12375,10 +12386,14 @@ async function annulerModificationApprouvee(docId) {
 
   if (!confirm('Annuler cette modification déjà approuvée ? L\'écriture reviendra à son état précédent.')) return;
   const ecr = ecritures.find((e) => e.id === mod.ecrId || e._docId === mod.ecrDocId);
-  if (ecr) {
-    Object.assign(ecr, mod.before);
-    await updateEcritureInFirestore(ecr._docId, mod.before);
+  const ecrDocIdCible = (ecr && ecr._docId) || mod.ecrDocId; // ⚠️ même correctif que approuverModification
+  if (!ecrDocIdCible) {
+    toast('✗ Écriture introuvable — impossible d\'annuler la modification', 'error');
+    return;
   }
+  if (ecr) Object.assign(ecr, mod.before);
+  await updateEcritureInFirestore(ecrDocIdCible, mod.before);
+  if (!ecr) await loadEcrituresFromFirestore();
   mod.status = 'annulee';
   mod.decidedBy = currentProfile?.email || currentProfile?.company || 'Propriétaire';
   mod.decidedTs = new Date().toISOString();
@@ -12386,6 +12401,8 @@ async function annulerModificationApprouvee(docId) {
   auditLog('ANNULER_MODIF', 'MODIFICATION', `Modification approuvée annulée — écriture ${mod.ecrId} restaurée à son état antérieur`);
   renderModifications();
   renderJournal();
+  if (typeof renderGrandLivre === 'function') renderGrandLivre();
+  if (typeof renderBalance === 'function') renderBalance();
   updateStats();
   toast('↩ Modification annulée — écriture restaurée', 'info');
 }
@@ -13057,19 +13074,31 @@ function toggleFullscreenAppel() {
 // ██  APPEL ENTRANT — sonnerie + Accepter/Refuser, visible sur TOUTE l'app
 // ══════════════════════════════════════════════════════════════════
 let appelEntrantUnsubscribe = null;
+let appelEntrantEcouteUid = null; // uid du document 'video_calls' actuellement écouté
 let appelEntrantActif = false;
 let appelEntrantOwnerUid = null;
 let sonnerieCtx = null;
 let sonnerieInterval = null;
 let sonnerieTimeoutId = null;
 
-// Écoute globale (attachée une fois par session, propriétaire ET collaborateur) : détecte
-// qu'un appel a été initié par L'AUTRE partie et déclenche la sonnerie + l'overlay Accepter/Refuser,
-// même si l'utilisateur n'est pas sur la page Messagerie.
+// Écoute globale (propriétaire ET collaborateur) : détecte qu'un appel a été initié
+// par L'AUTRE partie et déclenche la sonnerie + l'overlay Accepter/Refuser, même si
+// l'utilisateur n'est pas sur la page Messagerie.
+// ⚠️ CORRECTIF : au premier chargement de l'app, cette fonction est appelée avec
+// l'UID de l'utilisateur lui-même (avant qu'il n'ait rejoint un espace collaborateur).
+// Si on rejoint ensuite un espace via un code, elle est rappelée avec le VRAI UID du
+// propriétaire — mais l'ancienne garde bloquait ce second appel, laissant l'écoute
+// bloquée sur le mauvais document Firestore (donc aucune sonnerie ne pouvait jamais
+// arriver). On détache maintenant l'ancien écouteur dès que l'UID cible change.
 function ecouterAppelEntrant(ownerUid) {
-  if (appelEntrantUnsubscribe) return;
+  if (appelEntrantUnsubscribe) {
+    if (appelEntrantEcouteUid === ownerUid) return; // déjà à l'écoute du bon document
+    try { appelEntrantUnsubscribe(); } catch (e) {}
+    appelEntrantUnsubscribe = null;
+  }
   const { onSnapshot, doc } = window._firebaseFirestore || {};
   if (!onSnapshot || !doc) return;
+  appelEntrantEcouteUid = ownerUid;
   appelEntrantUnsubscribe = onSnapshot(doc(window._db, 'video_calls', ownerUid), (snap) => {
     const d = snap.data();
     const monAppareil = getMonSessionId();
@@ -13234,10 +13263,17 @@ function renderMessagesList() {
     return;
   }
 
-  wrap.innerHTML = chatMessages.map((m) => {
+  // Regroupement façon WhatsApp : un message est "groupé" avec le précédent quand
+  // il vient du même expéditeur et arrive moins de 3 minutes après — dans ce cas
+  // on masque l'avatar/nom répétés et on resserre l'espacement, comme sur WhatsApp.
+  const GROUPE_MAX_ECART_MS = 3 * 60 * 1000;
+  wrap.innerHTML = chatMessages.map((m, i) => {
     const mine = m.senderId === monId;
     const heure = m.ts ? new Date(m.ts).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : '';
     const initiale = (m.senderName || '?').trim().charAt(0).toUpperCase();
+    const prev = chatMessages[i - 1];
+    const ecart = prev?.ts && m.ts ? (new Date(m.ts) - new Date(prev.ts)) : Infinity;
+    const groupe = !!prev && prev.senderId === m.senderId && ecart < GROUPE_MAX_ECART_MS;
     let contenuHTML = '';
     if (m.type === 'image') {
       contenuHTML = `<img src="${m.content}" class="msg-media-img" onclick="window.open('${m.content}','_blank')" alt="image">`;
@@ -13249,10 +13285,10 @@ function renderMessagesList() {
       contenuHTML = `<div class="msg-text">${escapeHtml(m.content || '')}</div>`;
     }
     return `
-      <div class="msg ${mine ? 'me' : 'other'}">
-        <div class="msg-av" title="${m.senderName || ''}">${initiale}</div>
+      <div class="msg ${mine ? 'me' : 'other'}${groupe ? ' grouped' : ''}">
+        <div class="msg-av" title="${m.senderName || ''}">${groupe ? '' : initiale}</div>
         <div class="msg-body">
-          ${!mine ? `<div class="msg-sender-name">${m.senderName || ''}</div>` : ''}
+          ${!mine && !groupe ? `<div class="msg-sender-name">${m.senderName || ''}</div>` : ''}
           ${contenuHTML}
           <div class="msg-time">${heure}</div>
         </div>
