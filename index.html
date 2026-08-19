@@ -148,6 +148,19 @@ comeoChargerLibResiliente(
   </div>
 </div>
 
+<!-- ═══ CONFIRMATION PREMIUM — validation document (facture/devis/proforma/BL/commande) ═══ -->
+<div id="documentValideModal" class="modal-overlay" style="display:none" onclick="if(event.target===this)fermerDocumentValideModal()">
+  <div class="modal-box ecriture-succes-box">
+    <div class="ecriture-succes-ring">
+      <div class="ecriture-succes-check">✓</div>
+    </div>
+    <div class="ecriture-succes-title" id="documentValideTitre">Document validé avec succès</div>
+    <div class="ecriture-succes-sub" id="documentValideSub"></div>
+    <div class="ecriture-succes-detail" id="documentValideDetail"></div>
+    <button class="btn-modal-ok" style="width:100%;margin-top:18px" onclick="fermerDocumentValideModal()">Parfait, merci</button>
+  </div>
+</div>
+
 <!-- PAYWALL PREMIUM — ABONNEMENT VIA WHATSAPP -->
 <div id="premiumPaywall" class="premium-paywall" style="display:none">
   <div class="premium-paywall-inner">
