@@ -2860,6 +2860,7 @@ async function doLogout() {
   if (!confirm('Se déconnecter ?')) return;
   if (subscriptionCheckInterval) clearInterval(subscriptionCheckInterval);
   if (messagesUnsubscribe) { messagesUnsubscribe(); messagesUnsubscribe = null; }
+  if (ventesRestoUnsubscribe) { ventesRestoUnsubscribe(); ventesRestoUnsubscribe = null; }
   if (modifUnsubscribe) { modifUnsubscribe(); modifUnsubscribe = null; }
   if (appelEntrantUnsubscribe) { appelEntrantUnsubscribe(); appelEntrantUnsubscribe = null; }
   masquerAppelEntrant();
@@ -2910,6 +2911,7 @@ async function loadApp() {
   updateSubscriptionBadge(sub);
   startSubscriptionMonitor();
   ecouterAppelEntrant(getOwnerProfileId()); // 🔔 sonnerie appel entrant, active sur toute l'app
+  ecouterVentesRestoTempsReel(); // 🍽️ écoute temps réel des ventes comptabilisées depuis resto.html
   
   // ✅ Charger TOUTES les données avec le propriétaire si collaborateur
   await Promise.all([
@@ -2985,6 +2987,29 @@ async function loadEcrituresFromFirestore() {
   } catch (e) {
     console.error('Erreur chargement écritures:', e);
   }
+}
+
+// Écoute en temps réel les écritures générées par un module externe connecté
+// (ex : resto.html) — dès qu'une vente restaurant est comptabilisée, elle
+// apparaît immédiatement ici sans attendre un rechargement de COMEO AI.
+function ecouterVentesRestoTempsReel() {
+  if (ventesRestoUnsubscribe) return; // déjà en écoute pour cette session
+  const ownerID = getOwnerProfileId();
+  const col = window._fbCollection(window._db, 'profiles', ownerID, 'ecritures');
+  ventesRestoUnsubscribe = window._firebaseFirestore.onSnapshot(col, (snap) => {
+    snap.docChanges().forEach((change) => {
+      if (change.type !== 'added') return;
+      const d = { ...change.doc.data(), _docId: change.doc.id };
+      if (d.origine !== 'resto') return;
+      if (ecritures.some((e) => e._docId === d._docId)) return; // déjà chargée (chargement initial)
+      ecritures.push(d);
+      pieceCounter++;
+      updateStats();
+      toast(`🍽️ Nouvelle vente restaurant comptabilisée — ${d.libelle || ''} — ${fn((d.lignes || []).reduce((s, l) => s + (l.debit || 0), 0))} FCFA`, 'success');
+    });
+  }, (err) => {
+    console.error('[COMEO] Erreur écoute ventes resto:', err.message);
+  });
 }
 
 // ══════════════════════════════════════════
@@ -7741,7 +7766,21 @@ async function saveFacture(statut = 'brouillon') {
 
     closeFactureModal();
     renderFactures();
-    toast(`✓ Facture ${facture.numero} enregistrée (${statut})${devise !== 'FCFA' ? ` — ${fn(ttc)} ${devise} = ${fn(facture.ttc)} FCFA` : ''}`, 'success');
+    const TYPE_LABELS = { facture: 'Facture', proforma: 'Proforma', avoir: 'Avoir', acompte: 'Acompte' };
+    const typeLabel = TYPE_LABELS[facture.type] || 'Document';
+    toast(`✓ ${typeLabel} ${facture.numero} enregistrée (${statut})${devise !== 'FCFA' ? ` — ${fn(ttc)} ${devise} = ${fn(facture.ttc)} FCFA` : ''}`, 'success');
+    if (statut === 'envoyee') {
+      afficherConfirmationDocument({
+        titre: `${typeLabel} validée avec succès`,
+        sousTitre: `${facture.numero} — ${clientNom}`,
+        lignes: [
+          { label: 'Client', value: clientNom },
+          { label: 'Date émission', value: facture.dateEmission ? new Date(facture.dateEmission).toLocaleDateString('fr-FR') : '—' },
+          { label: 'Montant TTC', value: fn(facture.ttc) + ' FCFA' },
+          { label: 'Statut', value: facture.statut === 'retard' ? 'En retard' : 'Envoyée' },
+        ],
+      });
+    }
   } catch (e) {
     toast('Erreur : ' + e.message, 'error');
   }
@@ -7944,10 +7983,17 @@ let commandeCounter = 1;
 let blCounter = 1;
 let cmdLignes = [];
 let blLignes = [];
+window.cmdLignes = cmdLignes;
+window.blLignes = blLignes;
+// NOTE: cmdLignes/blLignes sont référencés directement dans des attributs onchange/onclick
+// (exécutés dans le scope global). Comme as.js est chargé en type="module", les déclarations
+// let/const de haut niveau ne sont PAS globales : il faut donc resynchroniser window.cmdLignes
+// et window.blLignes à chaque réaffectation complète du tableau (voir plus bas).
 
 // ── Bons de commande fournisseurs ──
 function openCommandeModal() {
   cmdLignes = [{ designation: '', qte: 1, pu: 0 }];
+  window.cmdLignes = cmdLignes;
   document.getElementById('cmd-date').value = new Date().toISOString().split('T')[0];
   document.getElementById('cmd-fournisseur').value = '';
   document.getElementById('cmd-date-livraison').value = '';
@@ -7996,6 +8042,16 @@ async function saveCommande() {
   closeCommandeModal();
   toast(`✓ Commande ${commande.numero} enregistrée — ${fn(montantHT)} FCFA`, 'success');
   renderCommandes();
+  afficherConfirmationDocument({
+    titre: 'Commande fournisseur validée avec succès',
+    sousTitre: `${commande.numero} — ${fournisseurNom}`,
+    lignes: [
+      { label: 'Fournisseur', value: fournisseurNom },
+      { label: 'Date commande', value: dateCommande ? new Date(dateCommande).toLocaleDateString('fr-FR') : '—' },
+      { label: 'Livraison prévue', value: dateLivraisonPrevue ? new Date(dateLivraisonPrevue).toLocaleDateString('fr-FR') : '—' },
+      { label: 'Montant HT', value: fn(montantHT) + ' FCFA' },
+    ],
+  });
 }
 
 async function loadCommandesFournisseurs() {
@@ -8107,6 +8163,7 @@ window.supprimerCommande = supprimerCommande;
 // ── Bons de livraison clients ──
 function openBlModal() {
   blLignes = [{ designation: '', qte: 1 }];
+  window.blLignes = blLignes;
   document.getElementById('bl-date').value = new Date().toISOString().split('T')[0];
   document.getElementById('bl-client').value = '';
   document.getElementById('bl-facture').value = '';
@@ -8145,6 +8202,16 @@ async function saveBl() {
   closeBlModal();
   toast(`✓ Bon de livraison ${bl.numero} créé`, 'success');
   renderBonsLivraison();
+  afficherConfirmationDocument({
+    titre: 'Bon de livraison validé avec succès',
+    sousTitre: `${bl.numero} — ${clientNom}`,
+    lignes: [
+      { label: 'Client', value: clientNom },
+      { label: 'Date de livraison', value: dateLivraison ? new Date(dateLivraison).toLocaleDateString('fr-FR') : '—' },
+      { label: 'Référence facture', value: factureRef || '—' },
+      { label: 'Lignes livrées', value: String(lignesValides.length) },
+    ],
+  });
 }
 
 async function loadBonsLivraison() {
@@ -9496,6 +9563,28 @@ function fermerEcritureGenereeModal() {
 }
 window.afficherConfirmationEcriture = afficherConfirmationEcriture;
 window.fermerEcritureGenereeModal = fermerEcritureGenereeModal;
+
+// Confirmation premium générique — affichée après la validation d'un document
+// commercial (facture, devis, proforma, bon de livraison, commande fournisseur…)
+// pour donner une confirmation visuelle claire et soignée de l'action effectuée.
+function afficherConfirmationDocument({ titre, sousTitre, lignes }) {
+  const titreEl = document.getElementById('documentValideTitre');
+  if (titreEl) titreEl.textContent = titre || 'Document validé avec succès';
+  document.getElementById('documentValideSub').textContent = sousTitre || '';
+  document.getElementById('documentValideDetail').innerHTML = (lignes || [])
+    .map((l) => `<div class="ecriture-succes-row"><span>${l.label}</span><b>${l.value}</b></div>`)
+    .join('');
+  const modal = document.getElementById('documentValideModal');
+  modal.style.display = 'flex';
+  modal.querySelector('.ecriture-succes-box')?.classList.remove('ecriture-succes-anim');
+  void modal.offsetWidth; // force reflow pour rejouer l'animation si le modal était déjà ouvert juste avant
+  modal.querySelector('.ecriture-succes-box')?.classList.add('ecriture-succes-anim');
+}
+function fermerDocumentValideModal() {
+  document.getElementById('documentValideModal').style.display = 'none';
+}
+window.afficherConfirmationDocument = afficherConfirmationDocument;
+window.fermerDocumentValideModal = fermerDocumentValideModal;
 
 // ══════════════════════════════════════════
 // DÉCLARATIONS SOCIALES — Bordereau CNPS mensuel (cotisations salariales + patronales)
@@ -12007,6 +12096,7 @@ let modifications = [];        // toutes les demandes de modification (pending/a
 let modifUnsubscribe = null;   // listener Firestore temps réel (côté propriétaire)
 let editEcrContext = null;     // { ecrDocId, ecrId, module } de l'écriture en cours d'édition
 let editEcrLignes = [];        // lignes éditées dans le modal
+window.editEcrLignes = editEcrLignes; // resynchronisé à chaque réaffectation (référencé dans des onchange inline, scope global)
 const MODULE_LABELS = { journal: 'Journal', grandlivre: 'Grand Livre', bilan: 'Bilan', resultat: 'Compte de résultat' };
 const MODIF_STATUS_LABELS = {
   pending:   { label: '⏳ En attente',  cls: 'warn' },
@@ -12200,6 +12290,7 @@ function ouvrirEditionEcriture(docId, id, module) {
   document.getElementById('edit-ecr-piece').value = ecr.piece || '';
   document.getElementById('edit-ecr-libelle').value = ecr.libelle || '';
   editEcrLignes = (ecr.lignes || []).map((l) => ({ ...l }));
+  window.editEcrLignes = editEcrLignes;
   renderEditEcrLignes();
 
   const sub = document.getElementById('editEcrModalSub');
@@ -12218,6 +12309,7 @@ function closeEditEcritureModal() {
   document.getElementById('editEcritureModal').style.display = 'none';
   editEcrContext = null;
   editEcrLignes = [];
+  window.editEcrLignes = editEcrLignes;
 }
 
 function renderEditEcrLignes() {
@@ -13214,6 +13306,7 @@ const CLOUDINARY_CONFIG = { cloudName: 'djxcqczh1', uploadPreset: 'database' };
 
 let chatMessages = [];
 let messagesUnsubscribe = null;
+let ventesRestoUnsubscribe = null; // listener temps réel — ventes reçues depuis resto.html (module restaurant connecté)
 let msgMediaCount = 0;
 
 // Identité unique de l'expéditeur — currentProfile.id vaut l'UID du PROPRIÉTAIRE
@@ -13253,7 +13346,16 @@ async function ecouterMessagesTempsReel() {
   messagesUnsubscribe = onSnapshot(collection(window._db, 'profiles', ownerID, 'messages'), (snap) => {
     chatMessages = [];
     snap.forEach((d) => chatMessages.push({ ...d.data(), _docId: d.id }));
-    chatMessages.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
+    // Tri chronologique par horodatage ; en cas d'égalité stricte (deux messages
+    // envoyés à la même milliseconde), on départage par _docId pour garantir un
+    // ordre TOUJOURS identique et stable — sans ce départage, deux messages envoyés
+    // au même instant pouvaient réapparaître dans un ordre différent à chaque
+    // rafraîchissement Firestore, donnant l'impression que le fil n'était pas ordonné.
+    chatMessages.sort((a, b) => {
+      const t = (a.ts || '').localeCompare(b.ts || '');
+      if (t !== 0) return t;
+      return (a._docId || '').localeCompare(b._docId || '');
+    });
     renderMessagesList();
   }, (err) => {
     console.error('[Messagerie] Erreur écoute temps réel :', err.message);
