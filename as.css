@@ -765,6 +765,23 @@ select.af-input option { color:#1a1408; background:#fff; padding:8px; }
 .rrow .pos { color:var(--green); } .rrow .neg { color:var(--red); }
 
 /* GRAND LIVRE */
+.gl-summary-bar { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:14px; }
+.gl-summary-item {
+  background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:10px 16px;
+  display:flex; flex-direction:column; gap:3px; min-width:120px;
+  box-shadow:0 1px 2px rgba(0,0,0,.04);
+}
+.gl-summary-label { font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:.12em; color:var(--muted); font-family:var(--font-mono); }
+.gl-summary-value { font-family:var(--font-mono); font-size:16px; font-weight:700; color:var(--ink); }
+.gl-summary-value.debit { color:#3b82f6; }
+.gl-summary-value.credit { color:#16a34a; }
+.btn-gl-toggle-all {
+  background:var(--ink); color:var(--warm); border:1px solid var(--ink); border-radius:var(--rs);
+  padding:6px 12px; font-size:11px; font-weight:600; cursor:pointer; font-family:var(--font-body);
+  transition:background .15s, transform .1s; margin-left:auto;
+}
+.btn-gl-toggle-all:hover { background:#1a1c28; }
+.btn-gl-toggle-all:active { transform:scale(.97); }
 .gl-account {
   background:var(--surface); border:1px solid var(--line); border-radius:12px; margin-bottom:10px; overflow:hidden;
   box-shadow:0 1px 2px rgba(0,0,0,.04), 0 10px 22px rgba(0,0,0,.07), 0 18px 38px -16px rgba(212,168,83,.2);
@@ -776,11 +793,14 @@ select.af-input option { color:#1a1408; background:#fff; padding:8px; }
 }
 .gl-account-header { display:flex; align-items:center; gap:9px; padding:10px 13px; background:var(--ink); border-bottom:1px solid rgba(255,255,255,.06); cursor:pointer; transition:background .12s; flex-wrap:wrap; }
 .gl-account-header:hover { background:#1a1c28; }
-.gl-code { font-family:var(--font-mono); color:var(--warm); font-weight:600; font-size:12px; min-width:50px; }
-.gl-name { color:rgba(255,255,255,.7); font-weight:400; flex:1; font-size:12px; }
-.gl-balance { font-family:var(--font-mono); font-size:10.5px; padding:2px 8px; border-radius:3px; font-weight:600; }
-.gl-balance.debit { background:rgba(96,165,250,.1); color:#60a5fa; }
-.gl-balance.credit { background:rgba(74,222,128,.1); color:#4ade80; }
+.gl-chevron { display:inline-block; color:var(--warm); font-size:10px; transition:transform .18s ease; width:10px; text-align:center; }
+.gl-account-header.open .gl-chevron { transform:rotate(90deg); }
+.gl-code { font-family:var(--font-mono); color:var(--warm); font-weight:700; font-size:12px; min-width:44px; background:rgba(212,168,83,.12); border-radius:5px; padding:2px 7px; text-align:center; }
+.gl-name { color:rgba(255,255,255,.75); font-weight:400; flex:1; font-size:12px; }
+.gl-mvt-count { color:rgba(255,255,255,.35); font-size:9.5px; font-family:var(--font-mono); background:rgba(255,255,255,.06); border-radius:999px; padding:2px 8px; margin-right:4px; }
+.gl-balance { font-family:var(--font-mono); font-size:11px; padding:3px 10px; border-radius:999px; font-weight:700; }
+.gl-balance.debit { background:rgba(96,165,250,.14); color:#60a5fa; }
+.gl-balance.credit { background:rgba(74,222,128,.14); color:#4ade80; }
 
 /* TOOLBAR */
 .toolbar { display:flex; align-items:center; gap:8px; margin-bottom:14px; flex-wrap:wrap; }
