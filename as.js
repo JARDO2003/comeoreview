@@ -4424,6 +4424,7 @@ async function deleteEcriture(docId, id) {
 // ══════════════════════════════════════════
 // GRAND LIVRE
 // ══════════════════════════════════════════
+let glExpanded = new Set(); // comptes actuellement dépliés — persiste entre les re-rendus (recherche/filtre)
 function getMap(opts = {}) {
   const ecFiltrees = opts.filtrer ? getEcrituresFiltrees(opts) : ecritures;
   const map = {};
@@ -4462,27 +4463,45 @@ function renderGrandLivre() {
   const opts = dateDebut || dateFin ? { filtrer: true, dateDebut, dateFin } : {};
   const map = getMap(opts);
   const content = document.getElementById('grandLivreContent');
+  const summaryBar = document.getElementById('grandLivreSummaryBar');
   if (!content) return;
   const comptes = Object.keys(map).sort();
   if (!comptes.length) {
     content.innerHTML = '<div class="empty-state"><div class="icon">⊞</div><p>Aucun mouvement</p></div>';
+    if (summaryBar) summaryBar.innerHTML = '';
     return;
   }
   const filtered = comptes.filter((c) => !search || c.includes(search) || (PC[c] || '').toLowerCase().includes(search));
+
+  // Bandeau de synthèse — vue d'ensemble immédiate, sans avoir à ouvrir un seul compte
+  if (summaryBar) {
+    const totalDebit = filtered.reduce((s, c) => s + map[c].debit, 0);
+    const totalCredit = filtered.reduce((s, c) => s + map[c].credit, 0);
+    const totalMvts = filtered.reduce((s, c) => s + map[c].mvts.length, 0);
+    summaryBar.innerHTML = `
+      <div class="gl-summary-item"><span class="gl-summary-label">Comptes</span><span class="gl-summary-value">${filtered.length}</span></div>
+      <div class="gl-summary-item"><span class="gl-summary-label">Mouvements</span><span class="gl-summary-value">${totalMvts}</span></div>
+      <div class="gl-summary-item"><span class="gl-summary-label">Total débit</span><span class="gl-summary-value debit">${fn(totalDebit)} FCFA</span></div>
+      <div class="gl-summary-item"><span class="gl-summary-label">Total crédit</span><span class="gl-summary-value credit">${fn(totalCredit)} FCFA</span></div>
+    `;
+  }
+
   content.innerHTML = filtered
     .map((code) => {
       const acc = map[code],
         s = acc.debit - acc.credit,
         lib = libelleCompte(code) || 'Compte ' + code,
-        isD = s >= 0;
-      return `<div class="gl-account">
-      <div class="gl-account-header" onclick="toggleGL('gl-${code}')">
+        isD = s >= 0,
+        isOpen = glExpanded.has(code);
+      return `<div class="gl-account" data-code="${code}">
+      <div class="gl-account-header ${isOpen ? 'open' : ''}" id="gl-h-${code}" onclick="toggleGL('${code}')">
+        <span class="gl-chevron">▸</span>
         <span class="gl-code">${code}</span>
         <span class="gl-name">${lib.substring(0, 46)}</span>
-        <span style="color:rgba(255,255,255,.3);font-size:10px;font-family:var(--font-mono);margin-right:6px">${acc.mvts.length} mvt${acc.mvts.length > 1 ? 's' : ''}</span>
+        <span class="gl-mvt-count">${acc.mvts.length} mvt${acc.mvts.length > 1 ? 's' : ''}</span>
         <span class="gl-balance ${isD ? 'debit' : 'credit'}">${isD ? 'Sd' : 'Sc'} ${fn(Math.abs(s))} FCFA</span>
       </div>
-      <div id="gl-${code}" style="display:none">
+      <div id="gl-${code}" style="display:${isOpen ? 'block' : 'none'}">
         <div style="overflow-x:auto">
         <table class="dt">
           <thead><tr><th>Date</th><th>Jnl</th><th>Pièce</th><th>Libellé</th>
@@ -4502,7 +4521,7 @@ function renderGrandLivre() {
               <td class="credit">${m.credit ? fn(m.credit) : ''}</td>
               <td style="text-align:right;font-family:var(--font-mono);font-size:11px;color:${rs >= 0 ? '#60a5fa' : '#4ade80'}">
                 ${rs >= 0 ? 'Sd ' : 'Sc '}${fn(Math.abs(rs))}</td>
-              <td><button class="jnl-step-edit" onclick="ouvrirEditionEcriture('${m.ecrDocId}',${m.ecrId},'grandlivre')" title="Modifier cette écriture">✎</button></td>
+              <td><button class="jnl-step-edit" onclick="event.stopPropagation();ouvrirEditionEcriture('${m.ecrDocId}',${m.ecrId},'grandlivre')" title="Modifier cette écriture">✎</button></td>
             </tr>`;
             })
             .join('')}
@@ -4519,10 +4538,48 @@ function renderGrandLivre() {
     </div>`;
     })
     .join('');
+
+  // Réaligne le libellé et l'état (ouvert/fermé) du bouton "Tout développer / réduire"
+  // sur ce qui est réellement affiché après ce rendu (recherche/filtre peuvent avoir changé la liste).
+  const toggleAllBtn = document.getElementById('glToggleAllBtn');
+  if (toggleAllBtn) {
+    const tousOuverts = filtered.length > 0 && filtered.every((c) => glExpanded.has(c));
+    toggleAllBtn.textContent = tousOuverts ? '⊟ Tout réduire' : '⊞ Tout développer';
+    toggleAllBtn.dataset.state = tousOuverts ? 'open' : 'closed';
+  }
 }
-function toggleGL(id) {
-  const el = document.getElementById(id);
-  if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+function toggleGL(code) {
+  const el = document.getElementById('gl-' + code);
+  const header = document.getElementById('gl-h-' + code);
+  if (!el) return;
+  const willOpen = el.style.display === 'none';
+  el.style.display = willOpen ? 'block' : 'none';
+  if (header) header.classList.toggle('open', willOpen);
+  if (willOpen) glExpanded.add(code);
+  else glExpanded.delete(code);
+  const toggleAllBtn = document.getElementById('glToggleAllBtn');
+  if (toggleAllBtn) {
+    const codes = [...document.querySelectorAll('.gl-account')].map((d) => d.dataset.code);
+    const tousOuverts = codes.length > 0 && codes.every((c) => glExpanded.has(c));
+    toggleAllBtn.textContent = tousOuverts ? '⊟ Tout réduire' : '⊞ Tout développer';
+  }
+}
+// Déplie ou replie TOUS les comptes du Grand Livre en un clic — évite d'avoir à
+// cliquer sur chaque compte un par un pour consulter le détail des mouvements.
+function toggleGLAll() {
+  const codes = [...document.querySelectorAll('.gl-account')].map((d) => d.dataset.code);
+  const tousOuverts = codes.length > 0 && codes.every((c) => glExpanded.has(c));
+  const ouvrir = !tousOuverts;
+  codes.forEach((code) => {
+    const el = document.getElementById('gl-' + code);
+    const header = document.getElementById('gl-h-' + code);
+    if (el) el.style.display = ouvrir ? 'block' : 'none';
+    if (header) header.classList.toggle('open', ouvrir);
+    if (ouvrir) glExpanded.add(code);
+    else glExpanded.delete(code);
+  });
+  const toggleAllBtn = document.getElementById('glToggleAllBtn');
+  if (toggleAllBtn) toggleAllBtn.textContent = ouvrir ? '⊟ Tout réduire' : '⊞ Tout développer';
 }
 
 // ══════════════════════════════════════════
@@ -7766,6 +7823,7 @@ async function saveFacture(statut = 'brouillon') {
 
     closeFactureModal();
     renderFactures();
+    renderDevis(); // corrige l'affichage : le tableau "Devis / Proformas" a son propre rendu, distinct de renderFactures()
     const TYPE_LABELS = { facture: 'Facture', proforma: 'Proforma', avoir: 'Avoir', acompte: 'Acompte' };
     const typeLabel = TYPE_LABELS[facture.type] || 'Document';
     toast(`✓ ${typeLabel} ${facture.numero} enregistrée (${statut})${devise !== 'FCFA' ? ` — ${fn(ttc)} ${devise} = ${fn(facture.ttc)} FCFA` : ''}`, 'success');
@@ -7872,6 +7930,7 @@ async function supprimerFacture(id) {
   }
   facturesList = facturesList.filter((f) => f.id !== id);
   renderFactures();
+  renderDevis(); // même correction : garde le tableau "Devis / Proformas" synchronisé après suppression
   toast('Facture supprimée', 'info');
 }
 
@@ -11569,6 +11628,7 @@ window.hideMultiEcrBanner = hideMultiEcrBanner;
 window.hideSaisieNotif = hideSaisieNotif;
 window.goToSaisie = goToSaisie;
 window.toggleGL = toggleGL;
+window.toggleGLAll = toggleGLAll;
 window.deleteEcriture = deleteEcriture;
 window.deleteGroupe = deleteGroupe;
 window.openExportModal = openExportModal;
