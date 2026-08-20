@@ -1121,7 +1121,9 @@ comeoChargerLibResiliente(
         <label>Au</label><input type="date" id="gl-date-fin" onchange="renderGrandLivre()">
         <input type="text" class="search-input" placeholder="Compte ou libellé…" id="glSearch" oninput="renderGrandLivre()" style="min-width:160px">
         <button class="btn-filtre-reset" onclick="resetGLFiltre()">✕</button>
+        <button class="btn-gl-toggle-all" id="glToggleAllBtn" onclick="toggleGLAll()">⊞ Tout développer</button>
       </div>
+      <div id="grandLivreSummaryBar" class="gl-summary-bar"></div>
       <div id="grandLivreContent"><div class="empty-state"><div class="icon">⊞</div><p>Aucun mouvement</p></div></div>
     </div>
 
