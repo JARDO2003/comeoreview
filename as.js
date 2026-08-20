@@ -2868,6 +2868,8 @@ async function doLogout() {
   await signOut(auth);
   currentProfile = null;
   ecritures = [];
+  glExpanded = new Set();
+  glAutoExpandDone = false;
   conversationHistory = [];
   document.getElementById('appShell').style.display = 'none';
   document.getElementById('authOverlay').style.display = 'flex';
@@ -4425,6 +4427,7 @@ async function deleteEcriture(docId, id) {
 // GRAND LIVRE
 // ══════════════════════════════════════════
 let glExpanded = new Set(); // comptes actuellement dépliés — persiste entre les re-rendus (recherche/filtre)
+let glAutoExpandDone = false; // n'ouvre tous les comptes automatiquement qu'une seule fois (au 1er affichage) — respecte ensuite les replis manuels de l'utilisateur
 function getMap(opts = {}) {
   const ecFiltrees = opts.filtrer ? getEcrituresFiltrees(opts) : ecritures;
   const map = {};
@@ -4472,6 +4475,14 @@ function renderGrandLivre() {
     return;
   }
   const filtered = comptes.filter((c) => !search || c.includes(search) || (PC[c] || '').toLowerCase().includes(search));
+
+  // Tous les comptes s'affichent DÉJÀ ouverts au premier chargement — plus besoin de
+  // cliquer sur chaque case pour voir le détail des mouvements. L'utilisateur garde
+  // la possibilité de replier un compte (ou tous), ce qui est respecté ensuite.
+  if (!glAutoExpandDone) {
+    comptes.forEach((c) => glExpanded.add(c));
+    glAutoExpandDone = true;
+  }
 
   // Bandeau de synthèse — vue d'ensemble immédiate, sans avoir à ouvrir un seul compte
   if (summaryBar) {
