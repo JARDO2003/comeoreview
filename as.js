@@ -2698,58 +2698,6 @@ window.ouvrirSecteurAutreModal = ouvrirSecteurAutreModal;
 window.annulerSecteurAutreModal = annulerSecteurAutreModal;
 window.confirmerSecteurAutre = confirmerSecteurAutre;
 
-// ── Politique de confidentialité — accessible depuis la connexion/l'inscription ──
-function ouvrirPolitiqueConfidentialite() {
-  document.getElementById('politiqueConfidentialiteModal').style.display = 'flex';
-}
-function fermerPolitiqueConfidentialite() {
-  document.getElementById('politiqueConfidentialiteModal').style.display = 'none';
-}
-window.ouvrirPolitiqueConfidentialite = ouvrirPolitiqueConfidentialite;
-window.fermerPolitiqueConfidentialite = fermerPolitiqueConfidentialite;
-
-// ── Consentement obligatoire à la politique de confidentialité ────────────────
-// Demandé UNE SEULE FOIS par utilisateur (dirigeant OU collaborateur — chacun a
-// son propre uid Firebase Auth), pas à chaque connexion. On stocke la preuve
-// d'acceptation dans une collection dédiée `consents/{uid}`, indépendante du
-// profil (qui peut être partagé en mode collaborateur), afin que chaque
-// personne connectée donne individuellement son consentement.
-let _resolveConsentGate = null;
-async function verifierConsentementConfidentialite() {
-  const uid = auth.currentUser?.uid;
-  if (!uid) return;
-  try {
-    const ref = window._fbDoc(window._db, 'consents', uid);
-    const snap = await window._fbGetDoc(ref);
-    if (snap.exists() && snap.data()?.politiqueConfidentialiteAcceptee) return; // déjà accepté — on ne redemande plus jamais
-  } catch (e) {
-    console.warn('[COMEO] Vérification consentement impossible :', e.message);
-    return; // on ne bloque pas l'accès si la vérification échoue (ex. hors-ligne)
-  }
-  document.getElementById('politiqueConfidentialiteGateModal').style.display = 'flex';
-  await new Promise((resolve) => { _resolveConsentGate = resolve; });
-}
-async function accepterPolitiqueConfidentialite() {
-  const uid = auth.currentUser?.uid;
-  const btn = document.getElementById('consentGateAcceptBtn');
-  if (btn) { btn.disabled = true; btn.textContent = 'Enregistrement…'; }
-  try {
-    if (uid) {
-      await window._fbSetDoc(window._fbDoc(window._db, 'consents', uid), {
-        politiqueConfidentialiteAcceptee: true,
-        acceptedAt: new Date().toISOString(),
-        email: auth.currentUser?.email || '',
-      });
-    }
-  } catch (e) {
-    console.error('[COMEO] Échec enregistrement du consentement :', e.message);
-  }
-  document.getElementById('politiqueConfidentialiteGateModal').style.display = 'none';
-  if (btn) { btn.disabled = false; btn.textContent = "✓ J'accepte et je continue"; }
-  if (_resolveConsentGate) { _resolveConsentGate(); _resolveConsentGate = null; }
-}
-window.accepterPolitiqueConfidentialite = accepterPolitiqueConfidentialite;
-
 async function doRegister() {
   const company = document.getElementById('r-company').value.trim();
   const email = document.getElementById('r-email').value.trim();
@@ -2791,11 +2739,6 @@ async function doRegister() {
     err.classList.add('show');
     return;
   }
-  if (!document.getElementById('r-consent')?.checked) {
-    err.textContent = "Merci d'accepter la politique de confidentialité pour créer votre compte";
-    err.classList.add('show');
-    return;
-  }
   // Libellé lisible du secteur, pour affichage/contexte IA (correspond aux options du <select>)
   const secteurLabels = {
     commerce: 'Commerce (achat/revente de marchandises)', services: 'Services', industrie: 'Industrie / Production',
@@ -2821,14 +2764,6 @@ async function doRegister() {
       trialEndsAt,
       premiumUntil: null,
       subscriptionStatus: 'trial',
-      politiqueConfidentialiteAccepteeLe: new Date().toISOString(), // conservé aussi sur le profil à titre d'historique
-    });
-    // Enregistre le consentement dans la collection dédiée `consents/{uid}` — évite de
-    // redemander l'acceptation à ce même utilisateur dès sa première connexion.
-    await window._fbSetDoc(window._fbDoc(window._db, 'consents', uid), {
-      politiqueConfidentialiteAcceptee: true,
-      acceptedAt: new Date().toISOString(),
-      email,
     });
     toast("Profil créé ! 12 heures d'essai gratuit inclus.", 'success');
     switchTab('login');
@@ -2973,7 +2908,6 @@ async function loadApp() {
   document.getElementById('appShell').style.display = 'grid';
   document.getElementById('topCompanyName').textContent = currentProfile.company;
   document.getElementById('exerciceYear').value = currentProfile.exercice || '2024';
-  await verifierConsentementConfidentialite(); // bloque tant que la politique de confidentialité n'a pas été acceptée (une seule fois par utilisateur)
   if (!serverConfigLoaded) await loadServerConfig();
   updateServiceAvailabilityUI();
   updateSubscriptionBadge(sub);
