@@ -2698,6 +2698,16 @@ window.ouvrirSecteurAutreModal = ouvrirSecteurAutreModal;
 window.annulerSecteurAutreModal = annulerSecteurAutreModal;
 window.confirmerSecteurAutre = confirmerSecteurAutre;
 
+// ── Politique de confidentialité — accessible depuis la connexion/l'inscription ──
+function ouvrirPolitiqueConfidentialite() {
+  document.getElementById('politiqueConfidentialiteModal').style.display = 'flex';
+}
+function fermerPolitiqueConfidentialite() {
+  document.getElementById('politiqueConfidentialiteModal').style.display = 'none';
+}
+window.ouvrirPolitiqueConfidentialite = ouvrirPolitiqueConfidentialite;
+window.fermerPolitiqueConfidentialite = fermerPolitiqueConfidentialite;
+
 async function doRegister() {
   const company = document.getElementById('r-company').value.trim();
   const email = document.getElementById('r-email').value.trim();
@@ -2739,6 +2749,11 @@ async function doRegister() {
     err.classList.add('show');
     return;
   }
+  if (!document.getElementById('r-consent')?.checked) {
+    err.textContent = "Merci d'accepter la politique de confidentialité pour créer votre compte";
+    err.classList.add('show');
+    return;
+  }
   // Libellé lisible du secteur, pour affichage/contexte IA (correspond aux options du <select>)
   const secteurLabels = {
     commerce: 'Commerce (achat/revente de marchandises)', services: 'Services', industrie: 'Industrie / Production',
@@ -2764,6 +2779,7 @@ async function doRegister() {
       trialEndsAt,
       premiumUntil: null,
       subscriptionStatus: 'trial',
+      politiqueConfidentialiteAccepteeLe: new Date().toISOString(), // preuve d'acceptation — horodatage du consentement à l'inscription
     });
     toast("Profil créé ! 12 heures d'essai gratuit inclus.", 'success');
     switchTab('login');
