@@ -2698,48 +2698,6 @@ window.ouvrirSecteurAutreModal = ouvrirSecteurAutreModal;
 window.annulerSecteurAutreModal = annulerSecteurAutreModal;
 window.confirmerSecteurAutre = confirmerSecteurAutre;
 
-// ══════════════════════════════════════════
-// POLITIQUE DE CONFIDENTIALITÉ — obligatoire après inscription, avant accès à l'app
-// ══════════════════════════════════════════
-let _politiqueConfidentialitePendingUid = null;
-let _politiqueConfidentialitePendingCallback = null;
-function ouvrirPolitiqueConfidentialiteModal(uid, callback) {
-  _politiqueConfidentialitePendingUid = uid;
-  _politiqueConfidentialitePendingCallback = callback;
-  const cb = document.getElementById('politiqueConfidentialiteCheckbox');
-  if (cb) cb.checked = false;
-  const btn = document.getElementById('politiqueConfidentialiteBtn');
-  if (btn) btn.disabled = true;
-  const err = document.getElementById('politiqueConfidentialiteErr');
-  if (err) err.classList.remove('show');
-  document.getElementById('politiqueConfidentialiteModal').style.display = 'flex';
-}
-async function accepterPolitiqueConfidentialite() {
-  const cb = document.getElementById('politiqueConfidentialiteCheckbox');
-  if (!cb || !cb.checked) return;
-  document.getElementById('politiqueConfidentialiteModal').style.display = 'none';
-  const uid = _politiqueConfidentialitePendingUid;
-  const callback = _politiqueConfidentialitePendingCallback;
-  _politiqueConfidentialitePendingUid = null;
-  _politiqueConfidentialitePendingCallback = null;
-  try {
-    if (uid) {
-      await window._fbSetDoc(
-        window._fbDoc(window._db, 'profiles', uid),
-        { politiqueConfidentialiteAccepteeAt: new Date().toISOString() },
-        { merge: true }
-      );
-      if (currentProfile && currentProfile.id === uid) {
-        currentProfile.politiqueConfidentialiteAccepteeAt = new Date().toISOString();
-      }
-    }
-  } catch (e) {
-    console.warn('[COMEO] Impossible d\'enregistrer l\'acceptation de la politique de confidentialité', e);
-  }
-  if (typeof callback === 'function') callback();
-}
-window.accepterPolitiqueConfidentialite = accepterPolitiqueConfidentialite;
-
 async function doRegister() {
   const company = document.getElementById('r-company').value.trim();
   const email = document.getElementById('r-email').value.trim();
@@ -2807,11 +2765,9 @@ async function doRegister() {
       premiumUntil: null,
       subscriptionStatus: 'trial',
     });
-    ouvrirPolitiqueConfidentialiteModal(uid, () => {
-      toast("Profil créé ! 12 heures d'essai gratuit inclus.", 'success');
-      switchTab('login');
-      document.getElementById('l-email').value = email;
-    });
+    toast("Profil créé ! 12 heures d'essai gratuit inclus.", 'success');
+    switchTab('login');
+    document.getElementById('l-email').value = email;
   } catch (e) {
     const msgs = {
       'auth/email-already-in-use': 'Cet email est déjà utilisé.',
@@ -2883,13 +2839,7 @@ async function doGoogleSignIn() {
       };
       await window._fbSetDoc(window._fbDoc(window._db, 'profiles', uid), profileData);
       currentProfile = { ...profileData, id: uid };
-      ouvrirPolitiqueConfidentialiteModal(uid, async () => {
-        toast("Profil créé avec Google ! 12 heures d'essai gratuit inclus.", 'success');
-        conversationHistory = [];
-        await loadApp();
-        playWelcomeSound();
-      });
-      return;
+      toast("Profil créé avec Google ! 12 heures d'essai gratuit inclus.", 'success');
     } else {
       currentProfile = { ...snap.data(), id: uid };
     }
