@@ -135,6 +135,27 @@ comeoChargerLibResiliente(
   </div>
 </div>
 
+<!-- ═══ POPUP OBLIGATOIRE — Politique de confidentialité (après inscription, avant accès) ═══ -->
+<div id="politiqueConfidentialiteModal" class="modal-overlay" style="display:none">
+  <div class="modal-box secteur-autre-box">
+    <div class="modal-title">🔒 Politique de confidentialité</div>
+    <div class="modal-sub">Merci de lire et d'accepter notre politique de confidentialité avant d'accéder à votre espace COMEO AI.</div>
+    <div id="politiqueConfidentialiteTexte" style="max-height:280px;overflow-y:auto;font-size:12.5px;line-height:1.6;color:var(--warm);opacity:.85;text-align:left;margin:16px 0;padding:12px;background:rgba(255,255,255,.04);border-radius:8px">
+      <p><strong>1. Données collectées</strong><br>Nous collectons les informations que vous fournissez à l'inscription (nom d'entreprise, email, secteur d'activité) ainsi que les données comptables que vous saisissez ou importez dans l'application (écritures, factures, clients, fournisseurs).</p>
+      <p><strong>2. Utilisation des données</strong><br>Ces données servent exclusivement à faire fonctionner votre espace comptable (génération d'écritures, rapports, assistance IA) et à améliorer le service. Elles ne sont ni vendues ni partagées à des fins publicitaires.</p>
+      <p><strong>3. Stockage et sécurité</strong><br>Vos données sont hébergées sur des serveurs sécurisés (Firebase/Google Cloud) et protégées par authentification. L'accès à votre profil est strictement personnel.</p>
+      <p><strong>4. Vos droits</strong><br>Vous pouvez à tout moment demander la consultation, la correction ou la suppression de vos données en nous contactant.</p>
+      <p><strong>5. Conservation</strong><br>Les données sont conservées tant que votre compte est actif, conformément aux obligations légales de conservation des documents comptables.</p>
+    </div>
+    <label style="display:flex;align-items:flex-start;gap:8px;font-size:13px;margin-bottom:14px;cursor:pointer;line-height:1.4">
+      <input type="checkbox" id="politiqueConfidentialiteCheckbox" style="margin-top:2px" onchange="document.getElementById('politiqueConfidentialiteBtn').disabled=!this.checked">
+      <span>J'ai lu et j'accepte la politique de confidentialité</span>
+    </label>
+    <div class="auth-err" id="politiqueConfidentialiteErr"></div>
+    <button class="auth-btn" id="politiqueConfidentialiteBtn" disabled onclick="accepterPolitiqueConfidentialite()">✓ Accepter et continuer</button>
+  </div>
+</div>
+
 <!-- ═══ CONFIRMATION PREMIUM — écriture générée avec succès ═══ -->
 <div id="ecritureGenereeModal" class="modal-overlay" style="display:none" onclick="if(event.target===this)fermerEcritureGenereeModal()">
   <div class="modal-box ecriture-succes-box">
