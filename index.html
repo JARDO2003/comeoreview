@@ -3,805 +3,304 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>COMEO AI — L'expert-comptable qui pense en IA</title>
+<title>COMEO AI — Expert-comptable SYSCOHADA</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400;1,9..144,500&family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 /* ============ TOKENS ============ */
 :root{
-  --ink:#0b0d12; --ink2:#12141c; --ink3:#181b26;
-  --paper:#f2ecdd; --paper2:#e8e0cc;
-  --brass:#d4a853; --brass2:#e8c278;
-  --forest:#1b4332; --forest2:#2a5c46;
-  --copper:#b5542a; --copper2:#d06a3c;
-  --line-d:rgba(242,236,221,.13); --line-d2:rgba(242,236,221,.06);
-  --line-l:rgba(11,13,18,.14);
+  --ink:#14171e; --ink-soft:#454b57;
+  --paper:#faf8f4; --paper2:#f1ede3;
+  --brass:#b6863a; --brass-dark:#8f6929;
+  --forest:#1b4332;
+  --line:#e2ddd0;
   --f-display:'Fraunces',serif; --f-body:'Space Grotesk',sans-serif; --f-mono:'JetBrains Mono',monospace;
-  --ease:cubic-bezier(.16,.84,.24,1);
+  --radius:10px;
 }
 *{margin:0;padding:0;box-sizing:border-box;}
-html{scroll-behavior:auto;}
 body{
-  background:var(--ink); color:var(--paper); font-family:var(--f-body);
-  overflow-x:hidden; cursor:none;
+  font-family:var(--f-body); color:var(--ink); background:var(--paper);
+  line-height:1.5; -webkit-font-smoothing:antialiased;
 }
-::selection{background:var(--brass);color:var(--ink);}
 a{color:inherit;text-decoration:none;}
-button{font-family:inherit;background:none;border:none;color:inherit;cursor:none;}
-.mono{font-family:var(--f-mono);}
 img{display:block;max-width:100%;}
-@media (hover:none){ body{cursor:auto;} button{cursor:pointer;} }
-
-/* ============ CUSTOM CURSOR ============ */
-.cursor-dot,.cursor-ring{position:fixed;top:0;left:0;pointer-events:none;z-index:9999;border-radius:50%;transform:translate(-50%,-50%);}
-.cursor-dot{width:6px;height:6px;background:var(--brass);}
-.cursor-ring{width:34px;height:34px;border:1px solid rgba(212,168,83,.5);transition:width .25s var(--ease),height .25s var(--ease),border-color .25s;}
-.cursor-ring.big{width:70px;height:70px;border-color:var(--copper);background:rgba(181,84,42,.08);}
-@media (hover:none){.cursor-dot,.cursor-ring{display:none;}}
-
-/* ============ PRELOADER ============ */
-#preloader{position:fixed;inset:0;background:var(--ink);z-index:10000;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:22px;}
-.pl-mark{font-family:var(--f-display);font-size:15px;letter-spacing:.3em;color:var(--brass);text-transform:uppercase;opacity:.8;}
-.pl-count{font-family:var(--f-mono);font-size:clamp(48px,10vw,110px);font-weight:300;color:var(--paper);letter-spacing:-.02em;font-variant-numeric:tabular-nums;}
-.pl-bar{width:220px;height:1px;background:var(--line-d);position:relative;overflow:hidden;}
-.pl-bar-fill{position:absolute;left:0;top:0;height:100%;width:0%;background:linear-gradient(90deg,var(--brass),var(--copper));}
-#preloader.done{transition:opacity .8s var(--ease),visibility .8s;opacity:0;visibility:hidden;}
+button,input,select{font-family:inherit;font-size:inherit;}
+.mono{font-family:var(--f-mono);}
+:focus-visible{outline:2px solid var(--brass);outline-offset:2px;}
 
 /* ============ NAV ============ */
-#mainNav{position:fixed;top:0;left:0;right:0;z-index:500;display:flex;align-items:center;justify-content:space-between;padding:26px 40px;mix-blend-mode:difference;}
-.nav-logo{font-family:var(--f-display);font-size:19px;letter-spacing:.02em;font-weight:600;}
-.nav-logo span{color:var(--brass);font-style:italic;font-weight:400;}
-.nav-balance{font-family:var(--f-mono);font-size:11px;letter-spacing:.1em;opacity:.7;display:flex;align-items:center;gap:8px;}
-.nav-balance-track{width:60px;height:1px;background:rgba(255,255,255,.25);position:relative;}
-.nav-balance-fill{position:absolute;left:0;top:0;height:100%;width:0%;background:var(--paper);}
-.nav-toggle{width:44px;height:44px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;}
-.nav-toggle span{width:22px;height:1px;background:var(--paper);transition:transform .35s var(--ease),opacity .35s;}
-.nav-toggle.open span:nth-child(1){transform:translateY(7px) rotate(45deg);}
-.nav-toggle.open span:nth-child(2){opacity:0;}
-.nav-toggle.open span:nth-child(3){transform:translateY(-7px) rotate(-45deg);}
+header{position:sticky;top:0;z-index:50;background:rgba(250,248,244,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--line);}
+.nav-inner{max-width:1180px;margin:0 auto;padding:18px 28px;display:flex;align-items:center;justify-content:space-between;}
+.logo{font-family:var(--f-display);font-weight:700;font-size:20px;letter-spacing:-.01em;}
+.logo span{color:var(--brass);}
+.nav-links{display:flex;gap:32px;align-items:center;}
+.nav-links a{font-size:14px;color:var(--ink-soft);transition:color .15s;}
+.nav-links a:hover{color:var(--ink);}
+.nav-cta{display:flex;gap:10px;}
+.btn{display:inline-flex;align-items:center;justify-content:center;padding:10px 20px;border-radius:100px;font-size:13.5px;font-weight:600;transition:all .15s;cursor:pointer;border:1px solid transparent;}
+.btn-primary{background:var(--ink);color:var(--paper);}
+.btn-primary:hover{background:var(--brass-dark);}
+.btn-outline{border-color:var(--line);color:var(--ink);}
+.btn-outline:hover{border-color:var(--ink);}
+@media (max-width:820px){ .nav-links{display:none;} }
 
-/* ============ MENU OVERLAY ============ */
-#menuOverlay{position:fixed;inset:0;background:var(--forest);z-index:400;display:flex;flex-direction:column;justify-content:center;padding:0 60px;clip-path:circle(0% at calc(100% - 60px) 46px);transition:clip-path .8s var(--ease);}
-#menuOverlay.open{clip-path:circle(150% at calc(100% - 60px) 46px);}
-.menu-links{display:flex;flex-direction:column;gap:2px;margin-top:20px;}
-.menu-link{display:flex;align-items:baseline;gap:18px;font-family:var(--f-display);font-size:clamp(32px,6vw,64px);font-weight:500;color:var(--paper);padding:10px 0;border-bottom:1px solid rgba(242,236,221,.08);overflow:hidden;position:relative;}
-.menu-link .mnum{font-family:var(--f-mono);font-size:14px;color:var(--brass);width:44px;flex-shrink:0;}
-.menu-link .mtext{display:inline-block;transition:transform .45s var(--ease),color .3s;}
-.menu-link:hover .mtext{transform:translateX(16px);color:var(--brass2);}
-.menu-footer{display:flex;justify-content:space-between;align-items:center;margin-top:50px;padding-top:24px;border-top:1px solid rgba(242,236,221,.15);}
-.menu-footer button{font-family:var(--f-mono);font-size:12px;letter-spacing:.08em;padding:12px 22px;border:1px solid rgba(242,236,221,.3);border-radius:100px;transition:all .25s;}
-.menu-footer button:hover{background:var(--brass);color:var(--ink);border-color:var(--brass);}
+/* ============ HERO — SPLIT: PITCH + AUTH FORM ============ */
+#hero{max-width:1180px;margin:0 auto;padding:64px 28px 80px;display:grid;grid-template-columns:1.05fr .95fr;gap:64px;align-items:start;}
+.hero-eyebrow{font-family:var(--f-mono);font-size:12px;letter-spacing:.1em;color:var(--brass-dark);text-transform:uppercase;margin-bottom:18px;display:inline-block;padding:6px 12px;background:rgba(182,134,58,.12);border-radius:100px;}
+.hero-title{font-family:var(--f-display);font-weight:700;font-size:clamp(34px,4.4vw,54px);line-height:1.08;letter-spacing:-.015em;margin-bottom:20px;}
+.hero-title em{font-style:italic;font-weight:500;color:var(--brass-dark);}
+.hero-sub{font-size:17px;line-height:1.65;color:var(--ink-soft);max-width:48ch;margin-bottom:32px;}
+.hero-points{display:flex;flex-direction:column;gap:14px;margin-bottom:36px;}
+.hero-point{display:flex;gap:12px;align-items:flex-start;font-size:14.5px;}
+.hero-point .num{font-family:var(--f-mono);font-size:12px;color:var(--brass-dark);background:var(--paper2);border:1px solid var(--line);border-radius:6px;padding:3px 7px;flex-shrink:0;margin-top:1px;}
+.hero-trust{display:flex;gap:22px;align-items:center;flex-wrap:wrap;font-family:var(--f-mono);font-size:11.5px;color:var(--ink-soft);letter-spacing:.03em;}
+.hero-trust span{opacity:.8;}
 
-/* ============ HERO ============ */
-#hero{position:relative;height:100vh;display:flex;flex-direction:column;justify-content:flex-end;overflow:hidden;}
-#heroCanvas{position:absolute;inset:0;z-index:0;}
-.hero-grain{position:absolute;inset:0;z-index:1;opacity:.06;pointer-events:none;
-  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");}
-.hero-content{position:relative;z-index:2;padding:0 40px 64px;}
-.hero-eyebrow{font-family:var(--f-mono);font-size:12px;letter-spacing:.18em;color:var(--brass);margin-bottom:22px;opacity:0;}
-.hero-title{font-family:var(--f-display);font-weight:600;font-size:clamp(48px,9vw,128px);line-height:.98;letter-spacing:-.02em;}
-.hero-title .line{overflow:hidden;display:block;}
-.hero-title .line span{display:inline-block;transform:translateY(110%);}
-.hero-title em{font-style:italic;font-weight:400;color:var(--brass2);}
-.hero-sub{font-size:17px;line-height:1.6;max-width:420px;margin:26px 0 34px;opacity:0;color:rgba(242,236,221,.75);}
-.hero-cta{display:flex;gap:16px;align-items:center;opacity:0;}
-.btn-magnetic{position:relative;padding:17px 34px;border-radius:100px;background:var(--brass);color:var(--ink);font-weight:600;font-size:14px;letter-spacing:.02em;overflow:hidden;}
-.btn-ghost{padding:17px 30px;border:1px solid rgba(242,236,221,.35);border-radius:100px;font-size:14px;letter-spacing:.02em;transition:border-color .25s,background .25s;}
-.btn-ghost:hover{border-color:var(--brass);background:rgba(212,168,83,.08);}
-.hero-ledger{position:absolute;top:130px;right:40px;z-index:2;font-family:var(--f-mono);font-size:12px;letter-spacing:.1em;text-align:right;color:rgba(242,236,221,.55);display:flex;flex-direction:column;gap:6px;opacity:0;}
-.hero-ledger b{color:var(--paper);font-size:13px;}
-.scroll-cue{position:absolute;bottom:30px;right:40px;z-index:2;display:flex;align-items:center;gap:10px;font-family:var(--f-mono);font-size:10px;letter-spacing:.14em;color:rgba(242,236,221,.5);opacity:0;}
-.scroll-cue-line{width:1px;height:38px;background:linear-gradient(var(--brass),transparent);}
+/* ============ AUTH CARD — VISIBLE IMMÉDIATEMENT ============ */
+.auth-card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:34px;box-shadow:0 20px 50px -20px rgba(20,23,30,.15);position:sticky;top:96px;}
+.auth-tabs{display:flex;background:var(--paper2);border-radius:10px;padding:4px;margin-bottom:24px;}
+.auth-tab{flex:1;text-align:center;padding:10px;border-radius:8px;font-size:13.5px;font-weight:600;color:var(--ink-soft);cursor:pointer;transition:all .15s;}
+.auth-tab.active{background:#fff;color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.08);}
+.field{margin-bottom:14px;}
+.field label{display:block;font-size:12.5px;font-weight:600;color:var(--ink-soft);margin-bottom:6px;}
+.field input,.field select{width:100%;padding:11px 13px;border:1px solid var(--line);border-radius:8px;background:var(--paper);font-size:14px;color:var(--ink);transition:border-color .15s;}
+.field input:focus,.field select:focus{border-color:var(--brass);outline:none;}
+.field-err{font-size:12.5px;color:#b3432f;margin-top:6px;display:none;}
+.field-err.show{display:block;}
+.auth-submit{width:100%;padding:13px;border-radius:8px;background:var(--brass-dark);color:#fff;font-weight:600;font-size:14px;margin-top:6px;transition:background .15s;}
+.auth-submit:hover{background:#725019;}
+.auth-note{text-align:center;font-size:12px;color:var(--ink-soft);margin-top:14px;}
+.auth-form{display:none;}
+.auth-form.active{display:block;}
+@media (max-width:900px){
+  #hero{grid-template-columns:1fr;gap:40px;padding:40px 20px 60px;}
+  .auth-card{position:relative;top:0;}
+}
 
-/* ============ LEDGER SECTIONS (rail + content) ============ */
-.ledger-rail{position:sticky;top:0;height:100vh;display:flex;flex-direction:column;justify-content:center;padding-left:40px;}
-.rail-num{font-family:var(--f-mono);font-size:15px;color:var(--brass);letter-spacing:.1em;writing-mode:vertical-rl;text-orientation:mixed;transform:rotate(180deg);}
-.rail-line{width:1px;height:120px;background:var(--line-d);margin:20px 0 20px 6px;}
+/* ============ FEATURES (ledger-style but calm) ============ */
+#features{background:var(--paper2);border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:80px 28px;}
+.features-inner{max-width:1180px;margin:0 auto;}
+.features-head{max-width:52ch;margin-bottom:52px;}
+.features-head .hero-eyebrow{margin-bottom:14px;}
+.features-head h2{font-family:var(--f-display);font-size:clamp(26px,3.4vw,36px);font-weight:700;line-height:1.15;}
+.features-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:14px;overflow:hidden;}
+.feature-card{background:var(--paper);padding:30px 26px;}
+.feature-card .fc-num{font-family:var(--f-mono);font-size:12px;color:var(--brass-dark);margin-bottom:14px;}
+.feature-card h3{font-family:var(--f-display);font-size:19px;font-weight:600;margin-bottom:10px;}
+.feature-card p{font-size:14px;color:var(--ink-soft);line-height:1.6;}
 
-section.ledger-section{position:relative;background:var(--ink);border-top:1px solid var(--line-d);}
-.ledger-grid{display:grid;grid-template-columns:90px 1fr;min-height:100vh;}
-.ledger-body{padding:120px 60px 120px 20px;max-width:920px;}
-.ledger-eyebrow{font-family:var(--f-mono);font-size:12px;color:var(--brass);letter-spacing:.16em;margin-bottom:18px;}
-.ledger-title{font-family:var(--f-display);font-size:clamp(32px,5vw,58px);font-weight:600;line-height:1.05;max-width:11ch;margin-bottom:26px;}
-.ledger-desc{font-size:16px;line-height:1.7;color:rgba(242,236,221,.72);max-width:52ch;margin-bottom:34px;}
-.ledger-feats{display:grid;grid-template-columns:repeat(2,1fr);gap:14px 30px;max-width:640px;margin-bottom:40px;}
-.ledger-feat{display:flex;gap:10px;font-size:14px;color:rgba(242,236,221,.85);align-items:flex-start;padding-bottom:12px;border-bottom:1px solid var(--line-d2);}
-.ledger-feat::before{content:'—';color:var(--brass);flex-shrink:0;}
-.ledger-visual{margin-top:10px;height:340px;border-radius:4px;border:1px solid var(--line-d);position:relative;overflow:hidden;background:
-  repeating-linear-gradient(0deg,transparent,transparent 27px,var(--line-d2) 28px),
-  linear-gradient(160deg,var(--ink3),var(--ink2));
-  display:flex;align-items:center;justify-content:center;}
-.ledger-visual .ph-label{font-family:var(--f-mono);font-size:11px;letter-spacing:.1em;color:rgba(242,236,221,.4);border:1px dashed rgba(242,236,221,.25);padding:10px 16px;border-radius:100px;}
-.ledger-visual .ph-glow{position:absolute;width:260px;height:260px;border-radius:50%;background:radial-gradient(circle,rgba(212,168,83,.18),transparent 70%);filter:blur(10px);}
-
-/* alt (paper) section for contrast */
-.ledger-section.alt{background:var(--paper);color:var(--ink);}
-.ledger-section.alt .ledger-desc{color:rgba(11,13,18,.68);}
-.ledger-section.alt .rail-line{background:var(--line-l);}
-.ledger-section.alt .ledger-feat{color:rgba(11,13,18,.8);border-bottom-color:rgba(11,13,18,.08);}
-.ledger-section.alt .ledger-visual{background:repeating-linear-gradient(0deg,transparent,transparent 27px,rgba(11,13,18,.06) 28px),linear-gradient(160deg,#e8e0cc,#f2ecdd);border-color:rgba(11,13,18,.12);}
-.ledger-section.alt .ledger-visual .ph-label{color:rgba(11,13,18,.45);border-color:rgba(11,13,18,.2);}
-
-/* ============ GALLERY (horizontal pin) ============ */
-#gallerySection{background:var(--ink);border-top:1px solid var(--line-d);overflow:hidden;}
-.gallery-pin{height:100vh;display:flex;align-items:center;overflow:hidden;position:relative;}
-.gallery-track{display:flex;gap:26px;padding-left:60px;will-change:transform;}
-.gallery-card{flex:0 0 auto;width:min(64vw,560px);}
-.gallery-card .gc-visual{height:380px;border-radius:6px;border:1px solid var(--line-d);background:linear-gradient(150deg,var(--ink3),var(--ink2));position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center;}
-.gallery-card .gc-num{font-family:var(--f-mono);font-size:11px;color:var(--brass);letter-spacing:.12em;margin:16px 0 6px;}
-.gallery-card .gc-title{font-family:var(--f-display);font-size:22px;font-weight:600;}
-.gallery-heading{position:absolute;top:70px;left:60px;z-index:3;}
-.gallery-heading .ledger-eyebrow{margin-bottom:10px;}
-
-/* ============ DEMO BOOKING ============ */
-#demo{background:var(--forest);color:var(--paper);border-top:1px solid var(--line-d);padding:130px 60px;}
-.demo-grid{display:grid;grid-template-columns:1fr 1fr;gap:70px;max-width:1200px;margin:0 auto;align-items:start;}
-.demo-copy .ledger-title{max-width:9ch;}
-.slot-picker{background:rgba(11,13,18,.28);border:1px solid rgba(242,236,221,.15);border-radius:10px;padding:26px;}
-.slot-days{display:flex;gap:8px;margin-bottom:20px;overflow-x:auto;}
-.slot-day{flex:0 0 auto;padding:12px 16px;border-radius:8px;border:1px solid rgba(242,236,221,.18);text-align:center;font-family:var(--f-mono);font-size:12px;transition:all .2s;}
-.slot-day .d{font-size:16px;font-weight:600;display:block;margin-top:4px;}
-.slot-day.active{background:var(--brass);color:var(--ink);border-color:var(--brass);}
-.slot-times{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:22px;}
-.slot-time{padding:11px 6px;border-radius:6px;border:1px solid rgba(242,236,221,.15);text-align:center;font-family:var(--f-mono);font-size:12.5px;transition:all .2s;}
-.slot-time.active{background:rgba(212,168,83,.18);border-color:var(--brass);color:var(--brass2);}
-.slot-time:hover{border-color:var(--brass);}
-.slot-confirm{width:100%;padding:15px;border-radius:8px;background:var(--brass);color:var(--ink);font-weight:600;font-size:14px;}
-.slot-note{font-family:var(--f-mono);font-size:11px;opacity:.6;margin-top:14px;text-align:center;}
-
-/* ============ PRICING ============ */
-#tarifs{background:var(--ink);padding:130px 60px;border-top:1px solid var(--line-d);}
-.tarifs-head{max-width:640px;margin:0 auto 70px;text-align:center;}
-.tarifs-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:22px;max-width:1180px;margin:0 auto;}
-.tarif-card{border:1px solid var(--line-d);border-radius:10px;padding:38px 30px;position:relative;transition:transform .4s var(--ease),border-color .4s;transform-style:preserve-3d;}
-.tarif-card:hover{border-color:rgba(212,168,83,.4);}
-.tarif-card.hi{background:linear-gradient(160deg,rgba(212,168,83,.09),transparent);border-color:var(--brass);}
-.tarif-badge{position:absolute;top:-12px;right:24px;background:var(--copper);color:var(--paper);font-family:var(--f-mono);font-size:10px;letter-spacing:.08em;padding:5px 12px;border-radius:100px;}
-.tarif-name{font-family:var(--f-display);font-size:22px;font-weight:600;margin-bottom:8px;}
-.tarif-desc{font-size:13px;color:rgba(242,236,221,.6);margin-bottom:24px;min-height:36px;}
-.tarif-price{font-family:var(--f-mono);font-size:38px;font-weight:500;margin-bottom:4px;}
-.tarif-price span{font-size:13px;opacity:.55;font-weight:400;}
-.tarif-list{margin:26px 0 30px;display:flex;flex-direction:column;gap:11px;}
-.tarif-list li{list-style:none;font-size:13.5px;color:rgba(242,236,221,.8);display:flex;gap:9px;}
-.tarif-list li::before{content:'✓';color:var(--brass);flex-shrink:0;}
-.tarif-cta{width:100%;padding:14px;border-radius:8px;border:1px solid rgba(242,236,221,.3);font-size:13.5px;font-weight:600;letter-spacing:.02em;transition:all .25s;}
-.tarif-card.hi .tarif-cta{background:var(--brass);color:var(--ink);border-color:var(--brass);}
-.tarif-cta:hover{background:var(--brass);color:var(--ink);border-color:var(--brass);}
-
-/* ============ TRUST MARQUEE ============ */
-#trust{background:var(--paper);color:var(--ink);padding:60px 0;border-top:1px solid var(--line-l);overflow:hidden;}
-.marquee-track{display:flex;gap:60px;white-space:nowrap;width:max-content;}
-.marquee-track span{font-family:var(--f-mono);font-size:13px;letter-spacing:.1em;opacity:.55;display:flex;align-items:center;gap:60px;}
-.marquee-track span::after{content:'◆';color:var(--copper);opacity:.6;}
+/* ============ PRICING (simple) ============ */
+#tarifs{max-width:1180px;margin:0 auto;padding:90px 28px;}
+.tarifs-head{text-align:center;max-width:520px;margin:0 auto 50px;}
+.tarifs-head h2{font-family:var(--f-display);font-size:clamp(26px,3.4vw,36px);font-weight:700;margin-bottom:12px;}
+.tarifs-head p{color:var(--ink-soft);font-size:15px;}
+.tarifs-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;}
+.tarif-card{border:1px solid var(--line);border-radius:14px;padding:32px 26px;position:relative;background:var(--paper);}
+.tarif-card.hi{border-color:var(--brass);background:#fff;box-shadow:0 20px 50px -25px rgba(182,134,58,.35);}
+.tarif-badge{position:absolute;top:-11px;right:22px;background:var(--brass-dark);color:#fff;font-family:var(--f-mono);font-size:10px;letter-spacing:.06em;padding:5px 12px;border-radius:100px;}
+.tarif-name{font-family:var(--f-display);font-size:20px;font-weight:600;margin-bottom:6px;}
+.tarif-desc{font-size:13px;color:var(--ink-soft);margin-bottom:20px;min-height:34px;}
+.tarif-price{font-family:var(--f-mono);font-size:32px;font-weight:500;margin-bottom:20px;}
+.tarif-price span{font-size:12.5px;color:var(--ink-soft);font-weight:400;}
+.tarif-list{list-style:none;display:flex;flex-direction:column;gap:10px;margin-bottom:26px;}
+.tarif-list li{font-size:13.5px;color:var(--ink-soft);display:flex;gap:8px;}
+.tarif-list li::before{content:'✓';color:var(--brass-dark);flex-shrink:0;font-weight:700;}
+@media (max-width:820px){ .tarifs-grid{grid-template-columns:1fr;} }
 
 /* ============ FOOTER ============ */
-footer{background:var(--ink);padding:90px 60px 40px;border-top:1px solid var(--line-d);}
-.foot-top{display:grid;grid-template-columns:1.4fr 1fr 1fr 1fr;gap:40px;max-width:1200px;margin:0 auto 70px;}
-.foot-brand{font-family:var(--f-display);font-size:28px;font-weight:600;margin-bottom:14px;}
-.foot-brand span{color:var(--brass);font-style:italic;font-weight:400;}
-.foot-tag{font-size:13px;color:rgba(242,236,221,.55);max-width:32ch;line-height:1.6;}
-.foot-col h4{font-family:var(--f-mono);font-size:11px;letter-spacing:.12em;color:var(--brass);margin-bottom:16px;}
-.foot-col a{display:block;font-size:13.5px;color:rgba(242,236,221,.7);margin-bottom:10px;transition:color .2s;}
-.foot-col a:hover{color:var(--brass2);}
-.foot-bottom{max-width:1200px;margin:0 auto;padding-top:26px;border-top:1px solid var(--line-d2);display:flex;justify-content:space-between;align-items:center;font-family:var(--f-mono);font-size:11px;color:rgba(242,236,221,.4);}
-.foot-sound{display:flex;align-items:center;gap:8px;}
-.foot-sound button{border:1px solid rgba(242,236,221,.25);border-radius:100px;padding:7px 14px;font-family:var(--f-mono);font-size:11px;transition:all .2s;}
-.foot-sound button.on{background:var(--brass);color:var(--ink);border-color:var(--brass);}
-
-/* ============ LOGIN TRANSITION (page-transition demo) ============ */
-#loginTransition{position:fixed;inset:0;z-index:2000;pointer-events:none;}
-.wipe-panel{position:absolute;inset:0;background:var(--forest);transform:translateY(101%);}
-.wipe-panel:nth-child(2){background:var(--ink);transition-delay:.08s;}
-#loginMock{position:fixed;inset:0;z-index:2001;background:var(--ink);display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;}
-#loginMock.show{pointer-events:auto;}
-.login-box{width:380px;padding:44px;border:1px solid var(--line-d);border-radius:12px;background:var(--ink2);}
-.login-box .lb-title{font-family:var(--f-display);font-size:24px;font-weight:600;margin-bottom:6px;}
-.login-box .lb-sub{font-size:13px;color:rgba(242,236,221,.55);margin-bottom:30px;}
-.lb-field{margin-bottom:16px;}
-.lb-field label{font-family:var(--f-mono);font-size:10.5px;letter-spacing:.1em;color:rgba(242,236,221,.5);display:block;margin-bottom:7px;}
-.lb-field input{width:100%;padding:12px 14px;background:rgba(255,255,255,.04);border:1px solid var(--line-d);border-radius:6px;color:var(--paper);font-size:13.5px;}
-.lb-btn{width:100%;padding:14px;background:var(--brass);color:var(--ink);border-radius:6px;font-weight:600;font-size:13.5px;margin-top:8px;}
-.lb-close{position:absolute;top:24px;right:28px;font-family:var(--f-mono);font-size:12px;opacity:.6;}
-
-/* ============ RESPONSIVE ============ */
-@media (max-width:860px){
-  #mainNav{padding:20px 22px;}
-  .hero-content{padding:0 22px 50px;}
-  .hero-ledger{display:none;}
-  .ledger-grid{grid-template-columns:1fr;}
-  .ledger-rail{position:relative;height:auto;flex-direction:row;padding:24px 22px 0;gap:14px;align-items:center;}
-  .rail-num{writing-mode:horizontal-tb;transform:none;font-size:13px;}
-  .rail-line{width:40px;height:1px;margin:0;}
-  .ledger-body{padding:20px 22px 80px;}
-  .ledger-feats{grid-template-columns:1fr;}
-  .demo-grid{grid-template-columns:1fr;gap:40px;}
-  #demo,#tarifs{padding:80px 22px;}
-  .tarifs-grid{grid-template-columns:1fr;}
-  .foot-top{grid-template-columns:1fr 1fr;}
-  #menuOverlay{padding:0 24px;}
-  .menu-link{font-size:32px;}
-  body{cursor:auto;} .cursor-dot,.cursor-ring{display:none;}
-}
-@media (prefers-reduced-motion:reduce){
-  *{animation-duration:.01ms !important;transition-duration:.01ms !important;}
-}
+footer{border-top:1px solid var(--line);padding:44px 28px;}
+.footer-inner{max-width:1180px;margin:0 auto;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:14px;font-size:13px;color:var(--ink-soft);}
+.footer-inner a{color:var(--ink-soft);}
+.footer-inner a:hover{color:var(--ink);}
+.footer-links{display:flex;gap:20px;}
 </style>
 </head>
 <body>
 
-<div id="preloader">
-  <div class="pl-mark">Comeo AI — Grand Livre Numérique</div>
-  <div class="pl-count mono" id="plCount">00</div>
-  <div class="pl-bar"><div class="pl-bar-fill" id="plFill"></div></div>
-</div>
-
-<div class="cursor-dot" id="cursorDot"></div>
-<div class="cursor-ring" id="cursorRing"></div>
-
-<nav id="mainNav">
-  <div class="nav-logo">COMEO<span>·AI</span></div>
-  <div class="nav-balance">SOLDE DE PAGE
-    <span class="nav-balance-track"><span class="nav-balance-fill" id="navBalanceFill"></span></span>
-    <span id="navBalancePct">0%</span>
+<header>
+  <div class="nav-inner">
+    <div class="logo">COMEO<span>·AI</span></div>
+    <nav class="nav-links">
+      <a href="#features">Fonctionnalités</a>
+      <a href="#tarifs">Tarifs</a>
+      <a href="#hero-auth">Connexion</a>
+    </nav>
+    <div class="nav-cta">
+      <a href="#hero-auth" class="btn btn-outline" onclick="switchTab('login')">Connexion</a>
+      <a href="#hero-auth" class="btn btn-primary" onclick="switchTab('register')">Essai gratuit</a>
+    </div>
   </div>
-  <button class="nav-toggle" id="navToggle" aria-label="Menu"><span></span><span></span><span></span></button>
-</nav>
-
-<div id="menuOverlay">
-  <div class="menu-links">
-    <a href="#fondation" class="menu-link" data-close><span class="mnum mono">101</span><span class="mtext">Fondation</span></a>
-    <a href="#clients" class="menu-link" data-close><span class="mnum mono">411</span><span class="mtext">Clients</span></a>
-    <a href="#achats" class="menu-link" data-close><span class="mnum mono">601</span><span class="mtext">Achats</span></a>
-    <a href="#ventes" class="menu-link" data-close><span class="mnum mono">701</span><span class="mtext">Ventes</span></a>
-    <a href="#resultat" class="menu-link" data-close><span class="mnum mono">891</span><span class="mtext">Résultat</span></a>
-    <a href="#demo" class="menu-link" data-close><span class="mnum mono">—</span><span class="mtext">Réserver</span></a>
-    <a href="#tarifs" class="menu-link" data-close><span class="mnum mono">—</span><span class="mtext">Tarifs</span></a>
-  </div>
-  <div class="menu-footer">
-    <span class="mono" style="font-size:11px;opacity:.6;letter-spacing:.1em">© 2026 COMEO AI · OHADA</span>
-    <button id="loginTrigger">Se connecter →</button>
-  </div>
-</div>
-
-<main>
+</header>
 
 <section id="hero">
-  <canvas id="heroCanvas"></canvas>
-  <div class="hero-grain"></div>
-  <div class="hero-ledger mono">
-    <div>ACTIF <b id="lgActif">0</b> FCFA</div>
-    <div>PASSIF <b id="lgPassif">0</b> FCFA</div>
-    <div style="color:var(--brass)">ÉCART <b>0</b></div>
-  </div>
-  <div class="hero-content">
-    <div class="hero-eyebrow mono">EXPERT-COMPTABLE IA · CONFORME SYSCOHADA OHADA 2023</div>
-    <h1 class="hero-title">
-      <span class="line"><span>Vos comptes</span></span>
-      <span class="line"><span>trouvent</span></span>
-      <span class="line"><span><em>leur équilibre.</em></span></span>
-    </h1>
-    <p class="hero-sub">Une IA qui scanne vos factures, tient votre grand-livre et parle SYSCOHADA couramment — pour les PME du Bénin, de Côte d'Ivoire et de toute la zone OHADA.</p>
-    <div class="hero-cta">
-      <button class="btn-magnetic" data-magnetic>Essai gratuit 12h →</button>
-      <button class="btn-ghost" data-magnetic>Voir la démo</button>
+  <div class="hero-pitch">
+    <span class="hero-eyebrow mono">EXPERT-COMPTABLE IA · CONFORME SYSCOHADA OHADA 2023</span>
+    <h1 class="hero-title">La comptabilité de votre entreprise, <em>enfin claire.</em></h1>
+    <p class="hero-sub">COMEO AI scanne vos factures, tient votre grand-livre et génère votre bilan en temps réel — pour les PME du Bénin, de Côte d'Ivoire et de toute la zone OHADA.</p>
+    <div class="hero-points">
+      <div class="hero-point"><span class="num mono">101</span> Configuration de votre plan comptable en 3 minutes</div>
+      <div class="hero-point"><span class="num mono">601</span> Scan de factures par photo — l'IA lit et comptabilise</div>
+      <div class="hero-point"><span class="num mono">891</span> Bilan et compte de résultat générés en continu</div>
+    </div>
+    <div class="hero-trust mono">
+      <span>+500 entreprises</span>
+      <span>Conforme e-MECeF · DGI Bénin</span>
+      <span>12h d'essai gratuit</span>
     </div>
   </div>
-  <div class="scroll-cue mono"><span class="scroll-cue-line"></span>DÉFILER</div>
-</section>
 
-<!-- 101 FONDATION -->
-<section class="ledger-section" id="fondation">
-  <div class="ledger-grid">
-    <div class="ledger-rail"><span class="rail-num mono">101 · FONDATION</span><span class="rail-line"></span></div>
-    <div class="ledger-body">
-      <div class="ledger-eyebrow mono">COMPTE 101 — CAPITAL</div>
-      <h2 class="ledger-title">Votre entreprise, posée en trois minutes.</h2>
-      <p class="ledger-desc">Nom, secteur, régime fiscal — l'IA configure votre plan comptable SYSCOHADA, votre exercice et vos comptes de base sans jargon ni formulaire interminable.</p>
-      <div class="ledger-feats">
-        <div class="ledger-feat">Détection automatique du secteur d'activité</div>
-        <div class="ledger-feat">Plan comptable pré-rempli selon votre métier</div>
-        <div class="ledger-feat">12h d'essai gratuit, sans carte bancaire</div>
-        <div class="ledger-feat">Migration de vos données existantes assistée</div>
+  <div class="auth-card" id="hero-auth">
+    <div class="auth-tabs">
+      <div class="auth-tab active" id="tab-login" onclick="switchTab('login')">Connexion</div>
+      <div class="auth-tab" id="tab-register" onclick="switchTab('register')">Créer un profil</div>
+    </div>
+
+    <div id="form-login" class="auth-form active">
+      <div class="field"><label>Email</label><input type="email" id="l-email" placeholder="contact@sotra.ci"></div>
+      <div class="field"><label>Mot de passe</label><input type="password" id="l-pass" placeholder="••••••••"></div>
+      <div class="field-err" id="l-err"></div>
+      <button class="auth-submit" onclick="doLogin()">Se connecter</button>
+      <p class="auth-note"><a href="#" onclick="return false">Mot de passe oublié ?</a></p>
+    </div>
+
+    <div id="form-register" class="auth-form">
+      <div class="field"><label>Nom de l'entreprise</label><input type="text" id="r-company" placeholder="ex: SOTRA SARL"></div>
+      <div class="field"><label>Email professionnel</label><input type="email" id="r-email" placeholder="contact@sotra.ci"></div>
+      <div class="field">
+        <label>Secteur d'activité</label>
+        <select id="r-secteur">
+          <option value="">— Sélectionner —</option>
+          <option value="commerce">Commerce</option>
+          <option value="services">Services</option>
+          <option value="industrie">Industrie / Production</option>
+          <option value="btp">BTP / Construction</option>
+          <option value="hotellerie">Hôtellerie / Restauration</option>
+          <option value="autre">Autre</option>
+        </select>
       </div>
-      <div class="ledger-visual"><div class="ph-glow"></div><span class="ph-label mono">📷 PHOTO — écran de configuration</span></div>
+      <div class="field"><label>Mot de passe (min 6 caractères)</label><input type="password" id="r-pass" placeholder="Minimum 6 caractères"></div>
+      <div class="field-err" id="r-err"></div>
+      <button class="auth-submit" onclick="doRegister()">Créer mon profil</button>
+      <p class="auth-note">🎁 12h d'essai gratuit · puis 15 000 FCFA/mois</p>
     </div>
   </div>
 </section>
 
-<!-- 411 CLIENTS -->
-<section class="ledger-section alt" id="clients">
-  <div class="ledger-grid">
-    <div class="ledger-rail"><span class="rail-num mono">411 · CLIENTS</span><span class="rail-line"></span></div>
-    <div class="ledger-body">
-      <div class="ledger-eyebrow mono">COMPTE 411 — CRÉANCES CLIENTS</div>
-      <h2 class="ledger-title">Facturez. L'écriture se passe toute seule.</h2>
-      <p class="ledger-desc">Devis, factures, relances — chaque document généré déclenche automatiquement l'écriture comptable correspondante, lettrée et prête pour votre bilan.</p>
-      <div class="ledger-feats">
-        <div class="ledger-feat">Facturation conforme e-MECeF / DGI Bénin</div>
-        <div class="ledger-feat">Relances automatiques des impayés</div>
-        <div class="ledger-feat">Suivi du solde client en temps réel</div>
-        <div class="ledger-feat">Export PDF avec sceau fiscal QR code</div>
+<section id="features">
+  <div class="features-inner">
+    <div class="features-head">
+      <span class="hero-eyebrow mono">CE QUE FAIT COMEO AI</span>
+      <h2>Toute votre comptabilité, dans une app pensée pour le terrain.</h2>
+    </div>
+    <div class="features-grid">
+      <div class="feature-card">
+        <div class="fc-num mono">411 · CLIENTS</div>
+        <h3>Facturation automatique</h3>
+        <p>Devis et factures conformes e-MECeF, avec l'écriture comptable générée automatiquement.</p>
       </div>
-      <div class="ledger-visual"><div class="ph-glow"></div><span class="ph-label mono">📷 PHOTO — facture générée</span></div>
-    </div>
-  </div>
-</section>
-
-<!-- 601 ACHATS -->
-<section class="ledger-section" id="achats">
-  <div class="ledger-grid">
-    <div class="ledger-rail"><span class="rail-num mono">601 · ACHATS</span><span class="rail-line"></span></div>
-    <div class="ledger-body">
-      <div class="ledger-eyebrow mono">COMPTE 601 — ACHATS FOURNISSEURS</div>
-      <h2 class="ledger-title">Une photo de facture suffit.</h2>
-      <p class="ledger-desc">Prenez la facture reçue en photo. L'OCR lit le fournisseur, le montant, la TVA — et verrouille l'écriture pour garantir l'intégrité de vos comptes.</p>
-      <div class="ledger-feats">
-        <div class="ledger-feat">Lecture automatique par IA (OCR + QR code)</div>
-        <div class="ledger-feat">Champs verrouillés après confirmation</div>
-        <div class="ledger-feat">Détection du mode de paiement</div>
-        <div class="ledger-feat">Classement par fournisseur automatique</div>
+      <div class="feature-card">
+        <div class="fc-num mono">601 · ACHATS</div>
+        <h3>Scan de factures</h3>
+        <p>Une photo suffit : l'IA lit le fournisseur, le montant et la TVA, et verrouille l'écriture.</p>
       </div>
-      <div class="ledger-visual"><div class="ph-glow"></div><span class="ph-label mono">📷 PHOTO — scan de facture</span></div>
-    </div>
-  </div>
-</section>
-
-<!-- 701 VENTES -->
-<section class="ledger-section alt" id="ventes">
-  <div class="ledger-grid">
-    <div class="ledger-rail"><span class="rail-num mono">701 · VENTES</span><span class="rail-line"></span></div>
-    <div class="ledger-body">
-      <div class="ledger-eyebrow mono">COMPTE 701 — VENTES DE MARCHANDISES</div>
-      <h2 class="ledger-title">Encaissez au comptoir, comme au bureau.</h2>
-      <p class="ledger-desc">Un mode caisse pensé pour le commerce et la restauration : chaque vente du jour alimente directement votre compte de résultat.</p>
-      <div class="ledger-feats">
-        <div class="ledger-feat">Caisse tactile pour ventes quotidiennes</div>
-        <div class="ledger-feat">Espèces, Mobile Money, virement, crédit</div>
-        <div class="ledger-feat">Clôture de caisse en un geste</div>
-        <div class="ledger-feat">Suivi de stock lié aux ventes</div>
+      <div class="feature-card">
+        <div class="fc-num mono">701 · VENTES</div>
+        <h3>Caisse au quotidien</h3>
+        <p>Encaissez en espèces, Mobile Money ou virement — chaque vente alimente votre résultat.</p>
       </div>
-      <div class="ledger-visual"><div class="ph-glow"></div><span class="ph-label mono">📷 PHOTO — écran de caisse</span></div>
-    </div>
-  </div>
-</section>
-
-<!-- 891 RESULTAT -->
-<section class="ledger-section" id="resultat">
-  <div class="ledger-grid">
-    <div class="ledger-rail"><span class="rail-num mono">891 · RÉSULTAT</span><span class="rail-line"></span></div>
-    <div class="ledger-body">
-      <div class="ledger-eyebrow mono">COMPTE 891 — RÉSULTAT DE L'EXERCICE</div>
-      <h2 class="ledger-title">Votre bilan, lisible avant même de le demander.</h2>
-      <p class="ledger-desc">Bilan, compte de résultat, grand-livre — générés en continu, expliqués en langage clair par l'IA, exportables en un clic pour votre expert-comptable ou la DGI.</p>
-      <div class="ledger-feats">
-        <div class="ledger-feat">Bilan SYSCOHADA généré en temps réel</div>
-        <div class="ledger-feat">Explications en langage clair par l'IA</div>
-        <div class="ledger-feat">Export PDF / Excel conforme</div>
-        <div class="ledger-feat">Alertes sur anomalies comptables</div>
+      <div class="feature-card">
+        <div class="fc-num mono">891 · RÉSULTAT</div>
+        <h3>Bilan en temps réel</h3>
+        <p>Bilan et compte de résultat SYSCOHADA à jour en permanence, expliqués en langage clair.</p>
       </div>
-      <div class="ledger-visual"><div class="ph-glow"></div><span class="ph-label mono">📷 PHOTO — tableau de bord</span></div>
     </div>
   </div>
 </section>
 
-<!-- GALLERY -->
-<section id="gallerySection">
-  <div class="gallery-pin">
-    <div class="gallery-heading">
-      <div class="ledger-eyebrow mono">EN COULISSES</div>
-      <h2 class="ledger-title" style="max-width:8ch;font-size:clamp(28px,4vw,44px)">L'app, en images.</h2>
-    </div>
-    <div class="gallery-track" id="galleryTrack">
-      <div class="gallery-card"><div class="gc-visual"><span class="ph-label mono">📷 Tableau de bord</span></div><div class="gc-num mono">FIG. 01</div><div class="gc-title">Vue d'ensemble</div></div>
-      <div class="gallery-card"><div class="gc-visual"><span class="ph-label mono">📷 Scan facture</span></div><div class="gc-num mono">FIG. 02</div><div class="gc-title">OCR intelligent</div></div>
-      <div class="gallery-card"><div class="gc-visual"><span class="ph-label mono">📷 Grand-livre</span></div><div class="gc-num mono">FIG. 03</div><div class="gc-title">Grand-livre 3D</div></div>
-      <div class="gallery-card"><div class="gc-visual"><span class="ph-label mono">📷 Sceau fiscal</span></div><div class="gc-num mono">FIG. 04</div><div class="gc-title">Sceau e-MECeF</div></div>
-      <div class="gallery-card"><div class="gc-visual"><span class="ph-label mono">📷 Assistant IA</span></div><div class="gc-num mono">FIG. 05</div><div class="gc-title">Assistant conversationnel</div></div>
-    </div>
-  </div>
-</section>
-
-<!-- DEMO -->
-<section id="demo">
-  <div class="demo-grid">
-    <div class="demo-copy">
-      <div class="ledger-eyebrow mono" style="color:var(--brass2)">RENDEZ-VOUS</div>
-      <h2 class="ledger-title">Réservez une démo avec un conseiller.</h2>
-      <p class="ledger-desc" style="color:rgba(242,236,221,.75)">20 minutes pour voir COMEO AI configuré sur votre propre activité, en visio ou par téléphone.</p>
-    </div>
-    <div class="slot-picker">
-      <div class="slot-days mono" id="slotDays"></div>
-      <div class="slot-times mono" id="slotTimes"></div>
-      <button class="slot-confirm" id="slotConfirm">Confirmer le créneau →</button>
-      <div class="slot-note">Aucun paiement requis · confirmation par SMS/WhatsApp</div>
-    </div>
-  </div>
-</section>
-
-<!-- TARIFS -->
 <section id="tarifs">
   <div class="tarifs-head">
-    <div class="ledger-eyebrow mono" style="justify-content:center;display:flex">SOUSCRIPTION EN LIGNE</div>
-    <h2 class="ledger-title" style="max-width:none;margin:0 auto">Un forfait pour chaque taille d'entreprise.</h2>
+    <h2>Un forfait pour chaque taille d'entreprise</h2>
+    <p>Sans engagement. Résiliable à tout moment.</p>
   </div>
   <div class="tarifs-grid">
-    <div class="tarif-card" data-tilt>
+    <div class="tarif-card">
       <div class="tarif-name">Essentiel</div>
       <div class="tarif-desc">Pour l'indépendant ou la petite boutique.</div>
       <div class="tarif-price">8 000<span> FCFA/mois</span></div>
       <ul class="tarif-list">
-        <li>1 utilisateur</li><li>Facturation illimitée</li><li>Scan factures (50/mois)</li><li>Bilan mensuel</li>
+        <li>1 utilisateur</li><li>Facturation illimitée</li><li>Scan de factures (50/mois)</li><li>Bilan mensuel</li>
       </ul>
-      <button class="tarif-cta">Souscrire</button>
+      <button class="btn btn-outline" style="width:100%" onclick="switchTab('register')">Souscrire</button>
     </div>
-    <div class="tarif-card hi" data-tilt>
+    <div class="tarif-card hi">
       <span class="tarif-badge mono">LE PLUS CHOISI</span>
       <div class="tarif-name">Pro</div>
       <div class="tarif-desc">Pour les PME en croissance.</div>
       <div class="tarif-price">15 000<span> FCFA/mois</span></div>
       <ul class="tarif-list">
-        <li>3 utilisateurs</li><li>Scan factures illimité</li><li>Caisse + stock</li><li>Assistant IA avancé</li><li>Support WhatsApp prioritaire</li>
+        <li>3 utilisateurs</li><li>Scan de factures illimité</li><li>Caisse + gestion de stock</li><li>Assistant IA avancé</li>
       </ul>
-      <button class="tarif-cta">Souscrire</button>
+      <button class="btn btn-primary" style="width:100%" onclick="switchTab('register')">Souscrire</button>
     </div>
-    <div class="tarif-card" data-tilt>
+    <div class="tarif-card">
       <div class="tarif-name">Cabinet</div>
       <div class="tarif-desc">Pour experts-comptables multi-clients.</div>
       <div class="tarif-price">Sur devis</div>
       <ul class="tarif-list">
-        <li>Utilisateurs illimités</li><li>Multi-entreprises</li><li>API & exports personnalisés</li><li>Accompagnement dédié</li>
+        <li>Utilisateurs illimités</li><li>Multi-entreprises</li><li>Accompagnement dédié</li>
       </ul>
-      <button class="tarif-cta">Nous contacter</button>
+      <button class="btn btn-outline" style="width:100%">Nous contacter</button>
     </div>
-  </div>
-</section>
-
-<!-- TRUST -->
-<section id="trust">
-  <div class="marquee-track" id="marqueeTrack">
-    <span>SOTRA SARL <span>COMPTOIR DU GOLFE <span>ATELIER KESSOU <span>DGI BÉNIN — e-MECeF <span>SYSCOHADA 2023 <span>OHADA 17 ÉTATS <span>MOBILE MONEY <span>COMEO AI</span></span></span></span></span></span></span></span>
   </div>
 </section>
 
 <footer>
-  <div class="foot-top">
-    <div>
-      <div class="foot-brand">COMEO<span>·AI</span></div>
-      <p class="foot-tag">L'expert-comptable IA conforme SYSCOHADA, pensé pour les entreprises de la zone OHADA.</p>
-    </div>
-    <div class="foot-col"><h4>PRODUIT</h4><a href="#fondation">Fondation</a><a href="#clients">Clients</a><a href="#tarifs">Tarifs</a></div>
-    <div class="foot-col"><h4>ENTREPRISE</h4><a href="#">À propos</a><a href="#demo">Réserver une démo</a><a href="#">Contact</a></div>
-    <div class="foot-col"><h4>LÉGAL</h4><a href="#">Politique de confidentialité</a><a href="#">CGU</a></div>
-  </div>
-  <div class="foot-bottom">
+  <div class="footer-inner">
     <span>© 2026 COMEO AI — Conforme OHADA 2023</span>
-    <span class="foot-sound"><button id="soundToggle">🔈 Ambiance sonore</button></span>
+    <div class="footer-links">
+      <a href="#">Politique de confidentialité</a>
+      <a href="#">CGU</a>
+      <a href="#hero-auth">Se connecter</a>
+    </div>
   </div>
 </footer>
 
-</main>
-
-<div id="loginTransition"><div class="wipe-panel"></div><div class="wipe-panel"></div></div>
-<div id="loginMock">
-  <button class="lb-close mono" id="loginClose">FERMER ✕</button>
-  <div class="login-box">
-    <div class="lb-title">Bon retour.</div>
-    <div class="lb-sub">Connectez-vous à votre espace COMEO AI.</div>
-    <div class="lb-field"><label>EMAIL</label><input type="email" placeholder="contact@sotra.ci"></div>
-    <div class="lb-field"><label>MOT DE PASSE</label><input type="password" placeholder="••••••••"></div>
-    <button class="lb-btn">Se connecter →</button>
-  </div>
-</div>
-
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js"></script>
 <script>
-gsap.registerPlugin(ScrollTrigger);
-
-/* ============ PRELOADER ============ */
-const plCount = document.getElementById('plCount');
-const plFill = document.getElementById('plFill');
-let plVal = 0;
-const plInterval = setInterval(()=>{
-  plVal += Math.random()*14;
-  if(plVal>=100){plVal=100;clearInterval(plInterval);
-    gsap.to(plFill,{width:'100%',duration:.3});
-    setTimeout(initSite,350);
-  }
-  plCount.textContent = String(Math.floor(plVal)).padStart(2,'0');
-  plFill.style.width = plVal+'%';
-},90);
-
-function initSite(){
-  document.getElementById('preloader').classList.add('done');
-  playHeroIntro();
+function switchTab(t){
+  document.getElementById('tab-login').classList.toggle('active', t==='login');
+  document.getElementById('tab-register').classList.toggle('active', t==='register');
+  document.getElementById('form-login').classList.toggle('active', t==='login');
+  document.getElementById('form-register').classList.toggle('active', t==='register');
 }
 
-/* ============ CUSTOM CURSOR ============ */
-const cDot = document.getElementById('cursorDot'), cRing = document.getElementById('cursorRing');
-let mx=innerWidth/2,my=innerHeight/2,rx=mx,ry=my;
-window.addEventListener('mousemove', e=>{mx=e.clientX;my=e.clientY;cDot.style.left=mx+'px';cDot.style.top=my+'px';});
-(function loop(){rx+=(mx-rx)*.16;ry+=(my-ry)*.16;cRing.style.left=rx+'px';cRing.style.top=ry+'px';requestAnimationFrame(loop);})();
-document.querySelectorAll('a,button,[data-magnetic],[data-tilt]').forEach(el=>{
-  el.addEventListener('mouseenter',()=>cRing.classList.add('big'));
-  el.addEventListener('mouseleave',()=>cRing.classList.remove('big'));
-});
-
-/* ============ MAGNETIC BUTTONS ============ */
-document.querySelectorAll('[data-magnetic]').forEach(btn=>{
-  btn.addEventListener('mousemove', e=>{
-    const r = btn.getBoundingClientRect();
-    const relX = e.clientX - r.left - r.width/2, relY = e.clientY - r.top - r.height/2;
-    gsap.to(btn,{x:relX*.35,y:relY*.5,duration:.4,ease:'power3.out'});
-  });
-  btn.addEventListener('mouseleave', ()=>gsap.to(btn,{x:0,y:0,duration:.5,ease:'elastic.out(1,.4)'}));
-});
-
-/* ============ NAV MENU TOGGLE ============ */
-const navToggle = document.getElementById('navToggle'), menuOverlay = document.getElementById('menuOverlay');
-navToggle.addEventListener('click', ()=>{
-  const open = menuOverlay.classList.toggle('open');
-  navToggle.classList.toggle('open', open);
-});
-document.querySelectorAll('.menu-link').forEach(l=>l.addEventListener('click',()=>{
-  menuOverlay.classList.remove('open'); navToggle.classList.remove('open');
-}));
-
-/* ============ SCROLL PROGRESS (nav balance) ============ */
-window.addEventListener('scroll', ()=>{
-  const h = document.documentElement;
-  const pct = (h.scrollTop)/(h.scrollHeight - h.clientHeight)*100;
-  document.getElementById('navBalanceFill').style.width = pct+'%';
-  document.getElementById('navBalancePct').textContent = Math.round(pct)+'%';
-});
-
-/* ============ HERO TEXT REVEAL ============ */
-function playHeroIntro(){
-  const tl = gsap.timeline({defaults:{ease:'power4.out'}});
-  tl.to('.hero-title .line span',{y:'0%',duration:1.1,stagger:.1})
-    .to('.hero-eyebrow',{opacity:1,duration:.6},'-=0.9')
-    .to('.hero-sub',{opacity:1,duration:.6},'-=0.7')
-    .to('.hero-cta',{opacity:1,duration:.6},'-=0.5')
-    .to('.hero-ledger',{opacity:1,duration:.6},'-=0.5')
-    .to('.scroll-cue',{opacity:1,duration:.6},'-=0.4');
-  // ledger counter animation
-  gsap.to({v:0},{v:4128500,duration:2.4,delay:.6,ease:'power2.out',onUpdate:function(){
-    document.getElementById('lgActif').textContent = Math.round(this.targets()[0].v).toLocaleString('fr-FR');
-    document.getElementById('lgPassif').textContent = Math.round(this.targets()[0].v).toLocaleString('fr-FR');
-  }});
+/* ============ AUTH LOGIC (front-end validation shown; branchez sur votre backend Firebase existant) ============ */
+function doLogin(){
+  const email = document.getElementById('l-email').value.trim();
+  const pass = document.getElementById('l-pass').value;
+  const err = document.getElementById('l-err');
+  err.classList.remove('show');
+  if(!email || !pass){ err.textContent='Remplissez tous les champs'; err.classList.add('show'); return; }
+  // → brancher ici sur signInWithEmailAndPassword(auth, email, pass) comme dans as.js
+  console.log('login', email);
 }
 
-/* ============ THREE.JS HERO — GLSL PARTICLE LEDGER ============ */
-(function(){
-  const canvas = document.getElementById('heroCanvas');
-  const renderer = new THREE.WebGLRenderer({canvas, antialias:true, alpha:true});
-  renderer.setPixelRatio(Math.min(devicePixelRatio,2));
-  renderer.setSize(innerWidth, innerHeight);
-  const scene = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, .1, 100);
-  camera.position.set(0,0,9);
-
-  const COLS=64, ROWS=34, COUNT=COLS*ROWS;
-  const positions = new Float32Array(COUNT*3);
-  const randoms = new Float32Array(COUNT);
-  const targets = new Float32Array(COUNT*3);
-  let i3=0;
-  for(let y=0;y<ROWS;y++){
-    for(let x=0;x<COLS;x++){
-      const gx = (x/(COLS-1)-0.5)*13;
-      const gy = (y/(ROWS-1)-0.5)*7;
-      targets[i3] = gx; targets[i3+1] = gy; targets[i3+2]=0;
-      positions[i3] = (Math.random()-0.5)*20;
-      positions[i3+1] = (Math.random()-0.5)*12;
-      positions[i3+2] = (Math.random()-0.5)*14;
-      randoms[i3/3] = Math.random();
-      i3+=3;
-    }
-  }
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(positions,3));
-  geo.setAttribute('aTarget', new THREE.BufferAttribute(targets,3));
-  geo.setAttribute('aRandom', new THREE.BufferAttribute(randoms,1));
-
-  const uniforms = {
-    uTime:{value:0}, uProgress:{value:0}, uMouse:{value:new THREE.Vector2(0,0)},
-    uColorA:{value:new THREE.Color(0xd4a853)}, uColorB:{value:new THREE.Color(0x2a5c46)}
-  };
-  const mat = new THREE.ShaderMaterial({
-    uniforms,
-    transparent:true, depthWrite:false, blending:THREE.AdditiveBlending,
-    vertexShader:`
-      attribute vec3 aTarget; attribute float aRandom;
-      uniform float uTime; uniform float uProgress; uniform vec2 uMouse;
-      varying float vRandom; varying float vDist;
-      void main(){
-        vRandom = aRandom;
-        vec3 p = mix(position, aTarget, uProgress);
-        float n = sin(uTime*0.6 + aRandom*20.0) * (1.0-uProgress*0.85);
-        p.z += n * 0.6;
-        p.x += sin(uTime*0.3 + aRandom*10.0) * 0.12 * (1.0-uProgress*0.6);
-        p.y += cos(uTime*0.4 + aRandom*10.0) * 0.10 * (1.0-uProgress*0.6);
-        float d = distance(p.xy, uMouse*6.0);
-        vDist = d;
-        float repel = smoothstep(2.2, 0.0, d) * uProgress;
-        vec2 dir = normalize(p.xy - uMouse*6.0 + 0.0001);
-        p.xy += dir * repel * 0.9;
-        vec4 mv = modelViewMatrix * vec4(p,1.0);
-        gl_PointSize = (2.2 + aRandom*2.2) * (300.0/-mv.z);
-        gl_Position = projectionMatrix * mv;
-      }`,
-    fragmentShader:`
-      uniform vec3 uColorA; uniform vec3 uColorB;
-      varying float vRandom; varying float vDist;
-      void main(){
-        vec2 uv = gl_PointCoord - 0.5;
-        float d = length(uv);
-        if(d>0.5) discard;
-        float alpha = smoothstep(0.5,0.0,d);
-        vec3 col = mix(uColorA, uColorB, vRandom);
-        gl_FragColor = vec4(col, alpha*0.9);
-      }`
-  });
-  const points = new THREE.Points(geo, mat);
-  scene.add(points);
-
-  gsap.to(uniforms.uProgress,{value:1, duration:2.6, delay:1.0, ease:'power3.inOut'});
-
-  let mouseX=0, mouseY=0;
-  window.addEventListener('mousemove', e=>{
-    mouseX = (e.clientX/innerWidth - 0.5);
-    mouseY = -(e.clientY/innerHeight - 0.5);
-  });
-
-  ScrollTrigger.create({
-    trigger:'#hero', start:'top top', end:'bottom top', scrub:true,
-    onUpdate:self=>{
-      camera.position.z = 9 + self.progress*6;
-      points.rotation.x = self.progress*0.3;
-      mat.opacity = 1-self.progress;
-    }
-  });
-
-  const clock = new THREE.Clock();
-  function animate(){
-    uniforms.uTime.value = clock.getElapsedTime();
-    uniforms.uMouse.value.x += (mouseX - uniforms.uMouse.value.x)*0.05;
-    uniforms.uMouse.value.y += (mouseY - uniforms.uMouse.value.y)*0.05;
-    renderer.render(scene,camera);
-    requestAnimationFrame(animate);
-  }
-  animate();
-  window.addEventListener('resize', ()=>{
-    camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
-    renderer.setSize(innerWidth, innerHeight);
-  });
-})();
-
-/* ============ SCROLL REVEALS FOR LEDGER SECTIONS ============ */
-gsap.utils.toArray('.ledger-section').forEach(sec=>{
-  gsap.from(sec.querySelectorAll('.ledger-eyebrow,.ledger-title,.ledger-desc,.ledger-feat'),{
-    y:40, opacity:0, duration:.9, ease:'power3.out', stagger:.06,
-    scrollTrigger:{trigger:sec, start:'top 70%'}
-  });
-  gsap.from(sec.querySelector('.ledger-visual'),{
-    scale:.92, opacity:0, duration:1, ease:'power3.out',
-    scrollTrigger:{trigger:sec, start:'top 65%'}
-  });
-});
-
-/* ============ HORIZONTAL GALLERY PIN ============ */
-(function(){
-  const track = document.getElementById('galleryTrack');
-  const pin = document.querySelector('.gallery-pin');
-  function getScrollAmount(){ return -(track.scrollWidth - window.innerWidth + 80); }
-  let st = ScrollTrigger.create({
-    trigger:'#gallerySection', start:'top top', end:()=>`+=${Math.abs(getScrollAmount())+600}`,
-    pin:true, scrub:1,
-    onUpdate:self=>{ gsap.set(track,{x: self.progress * getScrollAmount()}); }
-  });
-})();
-
-/* ============ TARIF CARD TILT ============ */
-document.querySelectorAll('[data-tilt]').forEach(card=>{
-  card.addEventListener('mousemove', e=>{
-    const r = card.getBoundingClientRect();
-    const px = (e.clientX-r.left)/r.width - .5, py = (e.clientY-r.top)/r.height - .5;
-    gsap.to(card,{rotateY:px*8, rotateX:-py*8, duration:.4, ease:'power2.out', transformPerspective:600});
-  });
-  card.addEventListener('mouseleave', ()=>gsap.to(card,{rotateY:0,rotateX:0,duration:.6,ease:'power3.out'}));
-});
-
-/* ============ MARQUEE ============ */
-gsap.to('#marqueeTrack',{xPercent:-50, duration:22, repeat:-1, ease:'none'});
-document.getElementById('marqueeTrack').innerHTML += document.getElementById('marqueeTrack').innerHTML;
-
-/* ============ DEMO SLOT PICKER ============ */
-(function(){
-  const days = ['LUN','MAR','MER','JEU','VEN'];
-  const dayNums = [2,3,4,5,6];
-  const times = ['09:00','10:30','12:00','14:00','15:30','17:00'];
-  const dayWrap = document.getElementById('slotDays'), timeWrap = document.getElementById('slotTimes');
-  days.forEach((d,i)=>{
-    const el = document.createElement('div');
-    el.className = 'slot-day'+(i===0?' active':'');
-    el.innerHTML = `${d}<span class="d">${dayNums[i]}</span>`;
-    el.addEventListener('click', ()=>{ document.querySelectorAll('.slot-day').forEach(x=>x.classList.remove('active')); el.classList.add('active'); });
-    dayWrap.appendChild(el);
-  });
-  times.forEach((t,i)=>{
-    const el = document.createElement('div');
-    el.className = 'slot-time'+(i===1?' active':'');
-    el.textContent = t;
-    el.addEventListener('click', ()=>{ document.querySelectorAll('.slot-time').forEach(x=>x.classList.remove('active')); el.classList.add('active'); });
-    timeWrap.appendChild(el);
-  });
-  document.getElementById('slotConfirm').addEventListener('click', function(){
-    this.textContent = '✓ Créneau réservé — confirmation envoyée';
-    gsap.fromTo(this,{scale:.97},{scale:1,duration:.4,ease:'elastic.out(1,.5)'});
-  });
-})();
-
-/* ============ PAGE TRANSITION: LOGIN ============ */
-const loginTrigger = document.getElementById('loginTrigger');
-const loginTransition = document.getElementById('loginTransition');
-const loginMock = document.getElementById('loginMock');
-const loginClose = document.getElementById('loginClose');
-loginTrigger.addEventListener('click', ()=>{
-  menuOverlay.classList.remove('open'); navToggle.classList.remove('open');
-  const panels = loginTransition.querySelectorAll('.wipe-panel');
-  gsap.set(panels,{transition:'none'});
-  const tl = gsap.timeline();
-  tl.to(panels,{yPercent:-101, duration:.7, ease:'power4.inOut', stagger:.08})
-    .add(()=>{ loginMock.classList.add('show'); gsap.to(loginMock,{opacity:1,duration:.4}); })
-    .to(panels,{yPercent:-202, duration:.01})
-    .set(panels,{yPercent:0});
-});
-loginClose.addEventListener('click', ()=>{
-  gsap.to(loginMock,{opacity:0,duration:.35,onComplete:()=>loginMock.classList.remove('show')});
-});
-
-/* ============ AMBIENT SOUND TOGGLE (WebAudio synth, no external files) ============ */
-(function(){
-  let ctx=null, ambientNodes=null, on=false;
-  const btn = document.getElementById('soundToggle');
-  function startAmbient(){
-    ctx = new (window.AudioContext||window.webkitAudioContext)();
-    const osc1 = ctx.createOscillator(), osc2 = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc1.type='sine'; osc1.frequency.value=110;
-    osc2.type='sine'; osc2.frequency.value=164.8;
-    gain.gain.value=0;
-    osc1.connect(gain); osc2.connect(gain); gain.connect(ctx.destination);
-    osc1.start(); osc2.start();
-    gain.gain.linearRampToValueAtTime(0.025, ctx.currentTime+1.2);
-    ambientNodes = {osc1,osc2,gain};
-  }
-  function stopAmbient(){
-    if(!ambientNodes) return;
-    ambientNodes.gain.gain.linearRampToValueAtTime(0, ctx.currentTime+.6);
-    setTimeout(()=>{ ambientNodes.osc1.stop(); ambientNodes.osc2.stop(); ctx.close(); ambientNodes=null; }, 700);
-  }
-  btn.addEventListener('click', ()=>{
-    on = !on;
-    btn.classList.toggle('on', on);
-    btn.textContent = on ? '🔊 Ambiance sonore' : '🔈 Ambiance sonore';
-    if(on) startAmbient(); else stopAmbient();
-  });
-  // subtle click blips on interactive elements
-  document.querySelectorAll('.btn-magnetic,.btn-ghost,.menu-link,.tarif-cta').forEach(el=>{
-    el.addEventListener('click', ()=>{
-      if(!on) return;
-      const c = ctx || new (window.AudioContext||window.webkitAudioContext)();
-      const o=c.createOscillator(), g=c.createGain();
-      o.type='sine'; o.frequency.value=880; g.gain.value=.05;
-      o.connect(g); g.connect(c.destination); o.start();
-      g.gain.exponentialRampToValueAtTime(.0001, c.currentTime+.2);
-      o.stop(c.currentTime+.2);
-    });
-  });
-})();
+function doRegister(){
+  const company = document.getElementById('r-company').value.trim();
+  const email = document.getElementById('r-email').value.trim();
+  const secteur = document.getElementById('r-secteur').value;
+  const pass = document.getElementById('r-pass').value;
+  const err = document.getElementById('r-err');
+  err.classList.remove('show');
+  if(!company){ err.textContent="Nom d'entreprise requis"; err.classList.add('show'); return; }
+  if(!email){ err.textContent='Email requis'; err.classList.add('show'); return; }
+  if(!secteur){ err.textContent="Secteur d'activité requis"; err.classList.add('show'); return; }
+  if(pass.length<6){ err.textContent='Mot de passe trop court (6 caractères min.)'; err.classList.add('show'); return; }
+  // → brancher ici sur createUserWithEmailAndPassword(auth, email, pass) comme dans as.js,
+  //    puis afficher la politique de confidentialité, puis :
+  switchTab('login');
+  document.getElementById('l-email').value = email;
+}
 </script>
 </body>
 </html>
