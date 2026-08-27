@@ -66,6 +66,8 @@ select.af-input option { color:#1a1408; background:#fff; padding:8px; }
 .af-input::placeholder { color:rgba(255,255,255,.2); }
 .auth-btn { background:linear-gradient(135deg, var(--warm), #b8912e); color:#0a0b10; border:none; border-radius:6px; padding:12px; font-size:13px; font-weight:700; cursor:pointer; transition:all .18s; font-family:var(--font-body); letter-spacing:.04em; margin-top:4px; }
 .auth-btn:hover { transform:translateY(-1px); box-shadow:0 6px 24px rgba(212,168,83,.35); }
+.auth-btn:disabled { opacity:.4; cursor:not-allowed; filter:grayscale(.3); }
+.auth-btn:disabled:hover { transform:none; box-shadow:none; }
 .auth-divider { display:flex; align-items:center; gap:10px; margin:14px 0; color:var(--faint); font-size:11px; text-transform:uppercase; letter-spacing:.06em; }
 .auth-divider::before, .auth-divider::after { content:''; flex:1; height:1px; background:rgba(255,255,255,.1); }
 .google-btn { background:#fff; color:#3c4043; display:flex; align-items:center; justify-content:center; border:1px solid rgba(0,0,0,.08); box-shadow:none; }
