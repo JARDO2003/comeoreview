@@ -386,6 +386,7 @@ comeoChargerLibResiliente(
 </div>
 <div class="sb-section">
   <div class="sb-title">Gestion</div>
+  <div class="nav-item" onclick="navigate('gestcom');closeMobileSidebar()"><span class="nav-icon">🧰</span> Gestion commerciale <span class="nav-badge" id="gcNavBadge" style="display:none">0</span></div>
   <div class="nav-item" onclick="navigate('stocks');closeMobileSidebar()"><span class="nav-icon">📦</span> Stocks</div>
   <div class="nav-item" onclick="navigate('rapprochement');closeMobileSidebar()"><span class="nav-icon">🏦</span> Rapprochement bancaire</div>
   <div class="nav-item" onclick="navigate('budgets');closeMobileSidebar()"><span class="nav-icon">🎯</span> Budgets</div>
@@ -1316,6 +1317,23 @@ comeoChargerLibResiliente(
       <div class="card" id="stockContent">
         <div class="empty-state"><div class="icon">📦</div><p>Aucun article en stock. Ajoutez un mouvement pour commencer.</p></div>
       </div>
+    </div>
+
+    <!-- ═══════════════════ GESTION COMMERCIALE (achats 601, ventes 701, inventaire, échéances fiscales, archives) ═══════════════════ -->
+    <div class="view" id="view-gestcom">
+      <div class="ph">
+        <div><h1>Gestion commerciale</h1><p>Achats 601 · Ventes 701 · Inventaire · Échéances fiscales · Archives annuelles</p></div>
+        <div class="ph-actions"><button class="btn btn-sm-wire" onclick="gcOpenGuide()">? Aide</button></div>
+      </div>
+      <div class="gc-tabs" id="gcTabs">
+        <button class="gc-tab active" data-gct="achats" onclick="gcTab('achats')">📥 Achats 601</button>
+        <button class="gc-tab" data-gct="ventes" onclick="gcTab('ventes')">🧾 Ventes 701</button>
+        <button class="gc-tab" data-gct="inventaire" onclick="gcTab('inventaire')">📦 Inventaire &amp; seuils</button>
+        <button class="gc-tab" data-gct="fiscal" onclick="gcTab('fiscal')">🏛️ Échéances fiscales</button>
+        <button class="gc-tab" data-gct="archives" onclick="gcTab('archives')">🗄️ Archives</button>
+        <button class="gc-tab" data-gct="alertes" onclick="gcTab('alertes')">🔔 Alertes <span class="gc-count" id="gcAlertCount">0</span></button>
+      </div>
+      <div id="gcContent"></div>
     </div>
 
     <!-- ═══════════════════ RAPPROCHEMENT BANCAIRE ═══════════════════ -->
