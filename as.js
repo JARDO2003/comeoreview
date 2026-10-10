@@ -2927,6 +2927,7 @@ async function loadApp() {
     loadImmobilisations(),
     loadEmprunts(),
     loadStocks(),
+    loadGestCom(),       // 🧰 Gestion commerciale (achats 601, ventes 701, fiscalité, archives)
     loadBudgets(),
     loadAnalytique(),
     loadSocietes(),
@@ -3101,6 +3102,7 @@ const VIEW_KEYS = {
   effets: 'effets',
   modifications: 'modificat',
   appels: 'messagerie',
+  gestcom: 'gestion commerciale',
 };
 const RENDERERS = {
   'dashboard-ceo': renderCeoDashboard,
@@ -3127,6 +3129,7 @@ const RENDERERS = {
   emprunts: renderEmprunts,
   declsociales: renderDeclarationsSociales,
   stocks: renderStocks,
+  gestcom: () => renderGestCom(),
   rapprochement: renderRapprochement,
   budgets: renderBudgets,
   lettrage: renderLettrage,
@@ -10449,6 +10452,675 @@ window.saveStock = saveStock;
 window.renderStocks = renderStocks;
 window.exportInventairePDF = exportInventairePDF;
 
+// ══════════════════════════════════════════════════════════════════
+// MODULE GESTION COMMERCIALE
+// Achats (601) · Ventes par article (701) · Inventaire & seuils · Échéances fiscales · Archives annuelles · Alertes
+// Données : profiles/{owner}/config/gestcom (+ pièces dans profiles/{owner}/gestcom_pieces), repli localStorage
+// ══════════════════════════════════════════════════════════════════
+const GC_ARCHIVE_DOCS = ['Bilan', 'Compte de résultat', 'Grand livre', 'Balance', 'Factures clients', 'Factures fournisseurs', 'Caisse', 'Banques', 'Fiscalité / Impôts / TVA', 'Salaires', 'CNSS', 'Preuves de paiement', 'Fiches de stocks', 'Documents administratifs'];
+const GC_STATUTS_FISCAUX = ['à préparer', 'à payer', 'payé', 'en retard', 'à vérifier'];
+function gcDefaut() {
+  return { achats: [], ventes: [], echeances: [], inventaires: [], archives: {}, critiques: {}, magasins: ['Principal'], corrections: [], rappelFrequence: 'connexion', dernierRappel: 0 };
+}
+let gc = gcDefaut();
+let gcTabCourant = 'achats';
+let gcFormOuvert = false;
+let gcVenteSel = null;
+let gcArchAnnee = String(new Date().getFullYear());
+const gcPhys = {};
+
+const gcEsc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const gcUid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+const gcToday = () => new Date().toISOString().split('T')[0];
+const gcUser = () => currentProfile?.email || currentProfile?.company || 'Utilisateur';
+const gcVal = (id) => (document.getElementById(id)?.value || '').trim();
+function gcHisto(obj, action) {
+  (obj.historique = obj.historique || []).push({ ts: new Date().toISOString(), user: gcUser(), action });
+}
+
+// ── Persistance ──
+function gcKey() { return 'gestcom_' + (getOwnerProfileId() || 'local'); }
+async function loadGestCom() {
+  let chargé = false;
+  try {
+    if (window._fbReady && currentProfile?.id) {
+      const snap = await window._fbGetDoc(window._fbDoc(window._db, 'profiles', getOwnerProfileId(), 'config', 'gestcom'));
+      if (snap.exists()) { gc = Object.assign(gcDefaut(), snap.data()); chargé = true; }
+    }
+  } catch (e) { console.warn('[GestCom] chargement Firestore impossible', e); }
+  if (!chargé) {
+    try { const raw = localStorage.getItem(gcKey()); if (raw) gc = Object.assign(gcDefaut(), JSON.parse(raw)); } catch (e) {}
+  }
+  setTimeout(() => { gcRefreshBadges(); gcNotifier(); }, 2500);
+}
+async function gcSave() {
+  try { localStorage.setItem(gcKey(), JSON.stringify(gc)); } catch (e) {}
+  if (window._fbReady && currentProfile?.id) {
+    try { await window._fbSetDoc(window._fbDoc(window._db, 'profiles', getOwnerProfileId(), 'config', 'gestcom'), gc); }
+    catch (e) { toast('Sauvegarde en ligne impossible : ' + e.message, 'error'); }
+  }
+  gcRefreshBadges();
+}
+
+// ── Pièces justificatives (image ou PDF) ──
+function gcLireFichier(file) {
+  return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(r.error); r.readAsDataURL(file); });
+}
+async function gcSavePiece(file) {
+  if (!file) return null;
+  if (!/^(image\/|application\/pdf)/.test(file.type)) { toast('Format non pris en charge (image ou PDF uniquement)', 'error'); return null; }
+  if (file.size > 700 * 1024) { toast(`« ${file.name} » dépasse 700 Ko — compressez l'image ou le PDF`, 'error'); return null; }
+  const data = await gcLireFichier(file);
+  const piece = { id: gcUid(), name: file.name, type: file.type };
+  try {
+    if (window._fbReady && currentProfile?.id) {
+      await window._fbSetDoc(window._fbDoc(window._db, 'profiles', getOwnerProfileId(), 'gestcom_pieces', piece.id), { ...piece, data, ts: new Date().toISOString() });
+    } else localStorage.setItem('gcpiece_' + piece.id, data);
+  } catch (e) { toast('Pièce non enregistrée : ' + e.message, 'error'); return null; }
+  return piece;
+}
+async function gcOuvrirPiece(id) {
+  try {
+    let data;
+    if (window._fbReady && currentProfile?.id) {
+      const s = await window._fbGetDoc(window._fbDoc(window._db, 'profiles', getOwnerProfileId(), 'gestcom_pieces', id));
+      if (!s.exists()) throw new Error('pièce introuvable');
+      data = s.data().data;
+    } else data = localStorage.getItem('gcpiece_' + id);
+    if (!data) throw new Error('pièce introuvable');
+    const bin = atob(data.split(',')[1]);
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    const mime = data.slice(5, data.indexOf(';'));
+    window.open(URL.createObjectURL(new Blob([arr], { type: mime })), '_blank');
+  } catch (e) { toast('Ouverture impossible : ' + e.message, 'error'); }
+}
+function gcAttacher(coll, id, kind) {
+  const inp = document.createElement('input');
+  inp.type = 'file'; inp.accept = 'image/*,.pdf';
+  inp.onchange = async () => {
+    const piece = await gcSavePiece(inp.files[0]);
+    if (!piece) return;
+    const obj = gc[coll].find((x) => x.id === id);
+    if (!obj) return;
+    obj[kind] = piece;
+    gcHisto(obj, `Pièce ajoutée : ${kind} (${piece.name})`);
+    await gcSave();
+    toast('✓ Pièce enregistrée', 'success');
+    renderGestCom();
+  };
+  inp.click();
+}
+function gcChip(label, p, coll, id, kind) {
+  return p
+    ? `<a href="#" class="gc-chip ok" title="${gcEsc(p.name)}" onclick="gcOuvrirPiece('${p.id}');return false">✓ ${label}</a>`
+    : `<a href="#" class="gc-chip nok" title="Cliquer pour joindre" onclick="gcAttacher('${coll}','${id}','${kind}');return false">✗ ${label} +</a>`;
+}
+
+// ── Mouvements de stock (même logique que saveStock : CMUP / FIFO) ──
+async function gcMouvementStock(nom, type, qte, pu, date) {
+  let art = stockArticles.find((a) => a.nom.toLowerCase() === nom.toLowerCase());
+  if (!art) {
+    if (type !== 'entree') return null;
+    art = { id: Date.now(), nom, methode: 'cmup', qteActuelle: 0, cmup: pu || 0, lots: [], coutSortiCumule: 0, seuil: 0, mouvements: [] };
+    stockArticles.push(art);
+  }
+  if (!art.lots) art.lots = [];
+  const mvt = { type, qte, pu, date, valeur: qte * pu, source: 'gestcom' };
+  art.mouvements.push(mvt);
+  if (art.methode === 'fifo') {
+    if (type === 'entree') { art.lots.push({ qte, pu }); art.qteActuelle += qte; }
+    else if (type === 'sortie') {
+      let reste = qte, cout = 0;
+      while (reste > 0 && art.lots.length) {
+        const lot = art.lots[0]; const pris = Math.min(lot.qte, reste);
+        cout += pris * lot.pu; lot.qte -= pris; reste -= pris;
+        if (lot.qte <= 0.0001) art.lots.shift();
+      }
+      mvt.coutSorti = cout; art.coutSortiCumule = (art.coutSortiCumule || 0) + cout;
+      art.qteActuelle = Math.max(0, art.qteActuelle - qte);
+    } else { art.qteActuelle = qte; art.lots = qte > 0 ? [{ qte, pu: pu || art.cmup || 0 }] : []; }
+  } else if (type === 'entree') {
+    const anc = art.qteActuelle * art.cmup;
+    art.qteActuelle += qte;
+    art.cmup = art.qteActuelle > 0 ? Math.round((anc + qte * pu) / art.qteActuelle) : pu;
+  } else if (type === 'sortie') { mvt.coutSorti = qte * art.cmup; art.qteActuelle = Math.max(0, art.qteActuelle - qte); }
+  else art.qteActuelle = qte;
+  await gcPersistStock(art);
+  return mvt;
+}
+async function gcPersistStock(art) {
+  if (window._fbReady && currentProfile?.id) {
+    try { await window._fbSetDoc(window._fbDoc(window._db, 'profiles', currentProfile.id, 'stocks', String(art.id)), art); } catch (e) {}
+  }
+}
+
+// ── Navigation interne ──
+function gcTab(t) { gcTabCourant = t; gcFormOuvert = false; renderGestCom(); }
+function gcForm(v) { gcFormOuvert = !!v; renderGestCom(); }
+function renderGestCom() {
+  const el = document.getElementById('gcContent');
+  if (!el) return;
+  document.querySelectorAll('#gcTabs .gc-tab').forEach((b) => b.classList.toggle('active', b.dataset.gct === gcTabCourant));
+  const R = { achats: gcRenderAchats, ventes: gcRenderVentes, inventaire: gcRenderInventaire, fiscal: gcRenderFiscal, archives: gcRenderArchives, alertes: gcRenderAlertes };
+  (R[gcTabCourant] || gcRenderAchats)(el);
+  gcRefreshBadges();
+}
+
+// ══════════ ACHATS & COMMANDES — compte 601 ══════════
+function gcManquant(a) { return a.qteRecue == null ? 0 : Math.max(0, a.qteCommandee - a.qteRecue); }
+function gcSurplus(a) { return a.qteRecue == null ? 0 : Math.max(0, a.qteRecue - a.qteCommandee); }
+function gcPiecesManquantes(a) {
+  const m = [];
+  if (!a.copie) m.push('copie de commande');
+  if (!a.facture) m.push('facture fournisseur');
+  if (!a.paiement) m.push('preuve de paiement');
+  return m;
+}
+function gcRenderAchats(el) {
+  const fournisseurs = (typeof fournisseursList !== 'undefined' ? fournisseursList : []).map((f) => `<option value="${gcEsc(f.nom || f.name || '')}">`).join('');
+  const articles = stockArticles.map((a) => `<option value="${gcEsc(a.nom)}">`).join('');
+  const mags = gc.magasins.map((m) => `<option value="${gcEsc(m)}">`).join('');
+  const nextNum = String(gc.achats.length + 1).padStart(3, '0');
+  const form = gcFormOuvert ? `<div class="card gc-form-card"><h3 style="margin:0 0 10px">Nouvelle commande / réception</h3>
+    <div class="gc-form">
+      <label>N° commande<input class="gc-in" id="ga-num" value="${nextNum}"></label>
+      <label>Date<input class="gc-in" type="date" id="ga-date" value="${gcToday()}"></label>
+      <label>Fournisseur<input class="gc-in" id="ga-four" list="ga-four-l"></label>
+      <label>Libellé<input class="gc-in" id="ga-lib" placeholder="Commande ciment"></label>
+      <label>Magasin<input class="gc-in" id="ga-mag" list="ga-mag-l" value="Principal"></label>
+      <label>Article<input class="gc-in" id="ga-art" list="ga-art-l" placeholder="Ciment"></label>
+      <label>Qté commandée<input class="gc-in" type="number" min="0" step="any" id="ga-qc"></label>
+      <label>Qté reçue<input class="gc-in" type="number" min="0" step="any" id="ga-qr" placeholder="à saisir à la réception"></label>
+      <label>Prix unitaire d'achat (FCFA)<input class="gc-in" type="number" min="0" step="any" id="ga-pu"></label>
+      <label style="grid-column:1/-1">Explication d'un écart (manquant / surplus / perte)<input class="gc-in" id="ga-note"></label>
+      <label>Copie de la commande (image/PDF)<input class="gc-in" type="file" id="ga-copie" accept="image/*,.pdf"></label>
+      <label>Facture fournisseur<input class="gc-in" type="file" id="ga-fac" accept="image/*,.pdf"></label>
+      <label>Preuve de paiement<input class="gc-in" type="file" id="ga-pay" accept="image/*,.pdf"></label>
+    </div>
+    <datalist id="ga-four-l">${fournisseurs}</datalist><datalist id="ga-art-l">${articles}</datalist><datalist id="ga-mag-l">${mags}</datalist>
+    <div style="margin-top:12px;display:flex;gap:8px"><button class="btn btn-ink" onclick="gcEnregistrerAchat()">Enregistrer la fiche</button><button class="btn btn-sm-wire" onclick="gcForm(false)">Annuler</button></div>
+  </div>` : '';
+  const rows = [...gc.achats].sort((a, b) => (b.date || '').localeCompare(a.date || '')).map((a) => {
+    const manq = gcManquant(a), sur = gcSurplus(a), pm = gcPiecesManquantes(a);
+    const art = stockArticles.find((s) => s.nom.toLowerCase() === a.article.toLowerCase());
+    const av = a.valide ? a.stockAvant : (art ? art.qteActuelle : 0);
+    const ap = a.valide ? a.stockApres : (a.qteRecue != null ? av + a.qteRecue : null);
+    let etat;
+    if (a.valide && !pm.length && !manq && !sur) etat = '<span class="gc-check" title="Fiche contrôlée et enregistrée">✔</span> <span class="badge-status ok">Contrôlé</span>';
+    else if (a.valide) etat = `<span class="gc-check" title="Validée">✔</span> <span class="badge-status warn" title="${gcEsc(pm.length ? 'Manque : ' + pm.join(', ') : 'Écart expliqué : ' + a.ecartNote)}">Validé · à compléter</span>`;
+    else etat = '<span class="badge-status warn">À vérifier</span>';
+    const actions = a.valide
+      ? `${a.compta ? '<span class="badge-status ok">Comptabilisé</span>' : `<button class="btn btn-sm-wire" onclick="gcComptabiliserAchat('${a.id}')">→ 601/401</button>`} <button class="btn btn-sm-wire" onclick="gcRouvrirAchat('${a.id}')">↩ Rouvrir</button>`
+      : `<button class="btn btn-ink" style="padding:5px 10px;font-size:11px" onclick="gcValiderAchat('${a.id}')">✔ Valider</button> <button class="btn btn-sm-wire" onclick="gcSupprimerAchat('${a.id}')">🗑</button>`;
+    const recue = a.qteRecue == null ? `<input class="gc-in gc-mini" type="number" min="0" step="any" placeholder="?" onchange="gcMajRecue('${a.id}',this.value)">` : (a.valide ? a.qteRecue : `<input class="gc-in gc-mini" type="number" min="0" step="any" value="${a.qteRecue}" onchange="gcMajRecue('${a.id}',this.value)">`);
+    return `<tr><td>${gcEsc(a.numero)}</td><td>${gcEsc(a.date)}</td><td><strong>${gcEsc(a.libelle)}</strong><div class="gc-sub">${gcEsc(a.fournisseur)} · ${gcEsc(a.article)}${a.pu ? ' · ' + fn(a.pu) + ' F' : ''}</div></td><td>${gcEsc(a.magasin)}</td>
+      <td class="r">${a.qteCommandee}</td><td class="r">${recue}</td>
+      <td class="r">${manq ? `<span class="gc-manque">−${manq}</span>` : sur ? `<span class="gc-surplus">+${sur}</span>` : '0'}</td>
+      <td class="r gc-sub">${ap == null ? '—' : av + ' → ' + ap}</td>
+      <td>${gcChip('Commande', a.copie, 'achats', a.id, 'copie')} ${gcChip('Facture', a.facture, 'achats', a.id, 'facture')} ${gcChip('Paiement', a.paiement, 'achats', a.id, 'paiement')}</td>
+      <td>${etat}</td><td style="white-space:nowrap">${actions}</td></tr>`;
+  }).join('');
+  el.innerHTML = `${form}<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+    <div><strong>Achats et commandes — compte 601</strong><div class="gc-sub">La validation contrôle les quantités et la copie de commande ; elle ne signifie pas que le fournisseur est payé.</div></div>
+    <button class="btn btn-ink" onclick="gcForm(true)">+ Nouvelle commande</button></div>
+    ${gc.achats.length ? `<div class="dtw"><table class="dt"><thead><tr><th>N°</th><th>Date</th><th>Libellé</th><th>Magasin</th><th class="r">Qté cmd</th><th class="r">Qté reçue</th><th class="r">Écart</th><th class="r">Stock av→ap</th><th>Pièces</th><th>État</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="empty-state"><div class="icon">📥</div><p>Aucune commande enregistrée.</p></div>'}</div>`;
+}
+async function gcEnregistrerAchat() {
+  const numero = gcVal('ga-num'), date = gcVal('ga-date'), fournisseur = gcVal('ga-four'), libelle = gcVal('ga-lib');
+  const magasin = gcVal('ga-mag') || 'Principal', article = gcVal('ga-art');
+  const qc = parseFloat(gcVal('ga-qc')) || 0, qr = parseFloat(gcVal('ga-qr')), pu = parseFloat(gcVal('ga-pu')) || 0;
+  if (!numero || !date || !fournisseur || !libelle || !article || !qc) { toast('N°, date, fournisseur, libellé, article et quantité commandée sont obligatoires', 'error'); return; }
+  if (gc.achats.some((a) => a.numero === numero)) { toast('Ce numéro de commande existe déjà', 'error'); return; }
+  const [copie, facture, paiement] = await Promise.all(['ga-copie', 'ga-fac', 'ga-pay'].map((id) => gcSavePiece(document.getElementById(id)?.files?.[0])));
+  const a = { id: gcUid(), numero, date, fournisseur, libelle, magasin, article, qteCommandee: qc, qteRecue: isNaN(qr) ? null : qr, pu, ecartNote: gcVal('ga-note'), copie, facture, paiement, valide: false, stockMaj: false, compta: false, historique: [] };
+  gcHisto(a, 'Fiche créée');
+  gc.achats.push(a);
+  if (!gc.magasins.includes(magasin)) gc.magasins.push(magasin);
+  auditLog('CREATION_ACHAT', 'GESTION_COMMERCIALE', `Commande ${numero} — ${libelle} (${fournisseur})`);
+  await gcSave();
+  gcFormOuvert = false;
+  toast(`✓ Commande ${numero} enregistrée`, 'success');
+  renderGestCom();
+}
+async function gcMajRecue(id, v) {
+  const a = gc.achats.find((x) => x.id === id);
+  if (!a || a.valide) return;
+  a.qteRecue = v === '' ? null : Math.max(0, parseFloat(v) || 0);
+  gcHisto(a, `Quantité reçue : ${a.qteRecue}`);
+  await gcSave(); renderGestCom();
+}
+async function gcValiderAchat(id) {
+  const a = gc.achats.find((x) => x.id === id);
+  if (!a || a.valide) return;
+  if (a.qteRecue == null) { toast('Saisissez la quantité reçue avant de valider', 'error'); return; }
+  if (!a.copie) { toast('Joignez la copie de la commande (image ou PDF) avant validation', 'error'); return; }
+  const ecart = a.qteRecue - a.qteCommandee;
+  if (ecart !== 0 && !a.ecartNote) {
+    const n = prompt(`Écart de ${ecart > 0 ? '+' : ''}${ecart} sur « ${a.article} ». Expliquez l'écart (obligatoire) :`);
+    if (!n || !n.trim()) { toast('Écart non expliqué — validation refusée', 'error'); return; }
+    a.ecartNote = n.trim();
+  }
+  const art = stockArticles.find((s) => s.nom.toLowerCase() === a.article.toLowerCase());
+  a.stockAvant = art ? art.qteActuelle : 0;
+  if (a.qteRecue > 0) await gcMouvementStock(a.article, 'entree', a.qteRecue, a.pu, a.date);
+  a.stockApres = a.stockAvant + a.qteRecue;
+  a.stockMaj = a.qteRecue > 0;
+  a.valide = true; a.valideLe = gcToday(); a.validePar = gcUser();
+  gcHisto(a, 'Validation — stock mis à jour');
+  auditLog('VALIDATION_ACHAT', 'GESTION_COMMERCIALE', `Commande ${a.numero} validée — reçu ${a.qteRecue}/${a.qteCommandee}`);
+  await gcSave();
+  const pm = gcPiecesManquantes(a);
+  toast(pm.length ? `✓ Fiche validée — pièce(s) manquante(s) : ${pm.join(', ')}` : '✓ Fiche contrôlée et enregistrée', pm.length ? 'info' : 'success');
+  renderGestCom(); renderStocks();
+}
+async function gcRouvrirAchat(id) {
+  const a = gc.achats.find((x) => x.id === id);
+  if (!a || !a.valide) return;
+  if (a.compta) { toast('Écriture comptable déjà générée : passez une écriture de correction', 'error'); return; }
+  const m = prompt('Motif de la réouverture (obligatoire) :');
+  if (!m || !m.trim()) return;
+  if (a.stockMaj) await gcMouvementStock(a.article, 'sortie', a.qteRecue, a.pu, gcToday());
+  a.valide = false; a.stockMaj = false;
+  gcHisto(a, `Réouverture — motif : ${m.trim()} (stock annulé)`);
+  auditLog('REOUVERTURE_ACHAT', 'GESTION_COMMERCIALE', `Commande ${a.numero} rouverte — ${m.trim()}`);
+  await gcSave(); renderGestCom(); renderStocks();
+}
+async function gcSupprimerAchat(id) {
+  const a = gc.achats.find((x) => x.id === id);
+  if (!a || a.valide) return;
+  if (!confirm(`Supprimer la fiche ${a.numero} ?`)) return;
+  gc.achats = gc.achats.filter((x) => x.id !== id);
+  auditLog('SUPPRESSION_ACHAT', 'GESTION_COMMERCIALE', `Fiche ${a.numero} supprimée avant validation`);
+  await gcSave(); renderGestCom();
+}
+async function gcComptabiliserAchat(id) {
+  const a = gc.achats.find((x) => x.id === id);
+  if (!a || !a.valide || a.compta) return;
+  const montant = Math.round((a.qteRecue || 0) * (a.pu || 0));
+  if (!montant) { toast("Prix unitaire ou quantité reçue manquant : montant nul", 'error'); return; }
+  const ecr = {
+    id: Date.now(), date: a.date, journal: 'AC', piece: 'ACH-' + a.numero, libelle: `Achat ${a.article} — ${a.fournisseur}`, createdAt: new Date().toISOString(),
+    lignes: [
+      { compte: '601', libelle: `${a.article} (${a.numero})`, debit: montant, credit: 0 },
+      { compte: '401', libelle: a.fournisseur, debit: 0, credit: montant },
+    ],
+  };
+  const docId = await saveEcritureToFirestore(ecr);
+  if (!docId) return;
+  ecritures.push(ecr);
+  a.compta = true; gcHisto(a, `Comptabilisé : ${fn(montant)} FCFA (601/401, hors TVA)`);
+  auditLog('COMPTA_ACHAT', 'GESTION_COMMERCIALE', `Commande ${a.numero} comptabilisée — ${fn(montant)} FCFA`);
+  await gcSave(); updateStats(); renderGestCom();
+  toast(`✓ Écriture 601/401 générée — ${fn(montant)} FCFA (HT : ajoutez la TVA si applicable)`, 'success');
+}
+
+// ══════════ VENTES PAR ARTICLE — compte 701 ══════════
+function gcFicheVente(id) { return gc.ventes.find((f) => f.id === id); }
+function gcTotaux(lignes, ref) {
+  const d = ref || gcToday(), m = d.slice(0, 7), y = d.slice(0, 4);
+  const s = (f) => lignes.filter(f).reduce((t, l) => t + l.qte * l.pu, 0);
+  return { jour: s((l) => l.date === d), mois: s((l) => l.date.slice(0, 7) === m), annee: s((l) => l.date.slice(0, 4) === y) };
+}
+function gcSelFiche(id) { gcVenteSel = id; renderGestCom(); }
+async function gcCreerFiche() {
+  const nom = gcVal('gv-nom'), prix = parseFloat(gcVal('gv-prix')) || 0;
+  if (!nom) { toast("Nom de l'article obligatoire", 'error'); return; }
+  if (gc.ventes.some((f) => f.nom.toLowerCase() === nom.toLowerCase())) { toast('Une fiche existe déjà pour cet article', 'error'); return; }
+  const f = { id: gcUid(), nom, prix, lignes: [] };
+  gc.ventes.push(f); gcVenteSel = f.id;
+  auditLog('CREATION_FICHE_VENTE', 'GESTION_COMMERCIALE', `Fiche article « ${nom} »`);
+  await gcSave(); renderGestCom();
+}
+async function gcAjouterVente() {
+  const f = gcFicheVente(gcVenteSel); if (!f) return;
+  const date = gcVal('gv-date'), qte = parseFloat(gcVal('gv-qte')) || 0, pu = parseFloat(gcVal('gv-pu')) || 0;
+  if (!date || qte <= 0 || pu <= 0) { toast('Date, quantité et prix unitaire sont obligatoires', 'error'); return; }
+  const art = stockArticles.find((a) => a.nom.toLowerCase() === f.nom.toLowerCase());
+  let coutUnit = null;
+  if (art) {
+    if (qte > art.qteActuelle) { toast(`Stock insuffisant : ${art.qteActuelle} disponible(s)`, 'error'); return; }
+    const m = await gcMouvementStock(f.nom, 'sortie', qte, pu, date);
+    coutUnit = qte ? (m?.coutSorti || 0) / qte : 0;
+  }
+  f.lignes.push({ id: gcUid(), date, qte, pu, coutUnit, stockMaj: !!art, compta: false });
+  if (!f.prix) f.prix = pu;
+  await gcSave(); renderGestCom(); if (art) renderStocks();
+  toast(`✓ Vente enregistrée — ${fn(qte * pu)} FCFA${art ? ' (stock mis à jour)' : ' (article non suivi en stock)'}`, 'success');
+}
+async function gcSupprimerVente(fid, lid) {
+  const f = gcFicheVente(fid), l = f?.lignes.find((x) => x.id === lid); if (!l) return;
+  if (l.compta) { toast('Vente déjà comptabilisée : passez une écriture de correction', 'error'); return; }
+  const motif = prompt('Motif de la correction (obligatoire) :');
+  if (!motif || !motif.trim()) return;
+  if (l.stockMaj) await gcMouvementStock(f.nom, 'entree', l.qte, l.coutUnit || 0, gcToday());
+  f.lignes = f.lignes.filter((x) => x.id !== lid);
+  gc.corrections.unshift({ ts: new Date().toISOString(), user: gcUser(), module: 'ventes', detail: `${f.nom} : ligne du ${l.date} (${l.qte} × ${l.pu}) supprimée — ${motif.trim()}` });
+  auditLog('CORRECTION_VENTE', 'GESTION_COMMERCIALE', `${f.nom} — ligne du ${l.date} supprimée : ${motif.trim()}`);
+  await gcSave(); renderGestCom(); renderStocks();
+}
+async function gcComptabiliserVentes() {
+  const f = gcFicheVente(gcVenteSel); if (!f) return;
+  const mode = gcVal('gv-mode') || '571';
+  const nonC = f.lignes.filter((l) => !l.compta);
+  if (!nonC.length) { toast('Aucune vente à comptabiliser', 'info'); return; }
+  const parDate = {};
+  nonC.forEach((l) => (parDate[l.date] = parDate[l.date] || []).push(l));
+  let nb = 0;
+  for (const [date, ls] of Object.entries(parDate)) {
+    const total = Math.round(ls.reduce((s, l) => s + l.qte * l.pu, 0));
+    const ecr = {
+      id: Date.now() + nb, date, journal: 'VE', piece: `VT-${f.nom.slice(0, 6).toUpperCase().replace(/\s/g, '')}-${date}`, libelle: `Ventes ${f.nom} du ${date}`, createdAt: new Date().toISOString(),
+      lignes: [
+        { compte: mode, libelle: `Ventes ${f.nom}`, debit: total, credit: 0 },
+        { compte: '701', libelle: `Ventes ${f.nom}`, debit: 0, credit: total },
+      ],
+    };
+    const docId = await saveEcritureToFirestore(ecr);
+    if (!docId) break;
+    ecritures.push(ecr); ls.forEach((l) => (l.compta = true)); nb++;
+  }
+  if (nb) auditLog('COMPTA_VENTES', 'GESTION_COMMERCIALE', `${f.nom} : ${nb} écriture(s) de ventes générée(s)`);
+  await gcSave(); updateStats(); renderGestCom();
+  if (nb) toast(`✓ ${nb} écriture(s) générée(s) (${mode} / 701, hors TVA)`, 'success');
+}
+function gcRenderVentes(el) {
+  const toutes = gc.ventes.flatMap((f) => f.lignes);
+  const T = gcTotaux(toutes);
+  if (!gcVenteSel || !gcFicheVente(gcVenteSel)) gcVenteSel = gc.ventes[0]?.id || null;
+  const f = gcFicheVente(gcVenteSel);
+  const kpi = (l, v, c) => `<div class="kpi"><div class="kpi-label">${l}</div><div class="kpi-value" style="color:${c}">${fn(v)}</div><div class="kpi-sub">FCFA — toutes fiches</div></div>`;
+  let detail = '<div class="empty-state"><div class="icon">🧾</div><p>Créez une fiche par article (ciment, pointes de 10, fer, tôles…).</p></div>';
+  if (f) {
+    const FT = gcTotaux(f.lignes);
+    const rows = [...f.lignes].sort((a, b) => b.date.localeCompare(a.date)).map((l, i) => `<tr><td>${f.lignes.length - i}</td><td>${l.date}</td><td class="r">${l.qte}</td><td class="r">${fn(l.pu)}</td><td class="r"><strong>${fn(l.qte * l.pu)}</strong></td><td>${l.compta ? '<span class="badge-status ok">Comptabilisé</span>' : '<span class="badge-status muted">À comptabiliser</span>'}</td><td><button class="btn btn-sm-wire" onclick="gcSupprimerVente('${f.id}','${l.id}')">🗑</button></td></tr>`).join('');
+    const annee = gcToday().slice(0, 4);
+    const mois = ['Janv', 'Févr', 'Mars', 'Avr', 'Mai', 'Juin', 'Juil', 'Août', 'Sept', 'Oct', 'Nov', 'Déc'].map((n, i) => {
+      const k = `${annee}-${String(i + 1).padStart(2, '0')}`;
+      const ls = f.lignes.filter((l) => l.date.slice(0, 7) === k);
+      return `<tr><td>${n} ${annee}</td><td class="r">${ls.reduce((s, l) => s + l.qte, 0)}</td><td class="r">${fn(ls.reduce((s, l) => s + l.qte * l.pu, 0))}</td></tr>`;
+    }).join('');
+    detail = `<div class="card"><div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px"><strong>Fiche : ${gcEsc(f.nom)}</strong>
+      <span class="gc-sub">Jour <b>${fn(FT.jour)}</b> · Mois <b>${fn(FT.mois)}</b> · Année <b>${fn(FT.annee)}</b> FCFA</span></div>
+      <div class="gc-form" style="grid-template-columns:repeat(4,1fr)"><label>Date<input class="gc-in" type="date" id="gv-date" value="${gcToday()}"></label>
+      <label>Quantité<input class="gc-in" type="number" min="0" step="any" id="gv-qte"></label>
+      <label>Prix unitaire (FCFA)<input class="gc-in" type="number" min="0" step="any" id="gv-pu" value="${f.prix || ''}"></label>
+      <label>&nbsp;<button class="btn btn-ink" onclick="gcAjouterVente()">+ Ajouter la vente</button></label></div>
+      ${f.lignes.length ? `<div class="dtw" style="margin-top:12px"><table class="dt"><thead><tr><th>N°</th><th>Date</th><th class="r">Quantité</th><th class="r">Prix unitaire</th><th class="r">Montant</th><th>Compta</th><th></th></tr></thead><tbody>${rows}
+      <tr class="gc-total"><td colspan="2">Total</td><td class="r">${f.lignes.reduce((s, l) => s + l.qte, 0)}</td><td></td><td class="r">${fn(f.lignes.reduce((s, l) => s + l.qte * l.pu, 0))}</td><td colspan="2"></td></tr></tbody></table></div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap"><span class="gc-sub">Encaissement :</span>
+      <select class="gc-in" id="gv-mode" style="width:auto"><option value="571">Caisse (571)</option><option value="521">Banque (521)</option><option value="411">À crédit — client (411)</option></select>
+      <button class="btn btn-sm-wire" onclick="gcComptabiliserVentes()">→ Comptabiliser les ventes (VE : 701)</button></div>` : '<p class="gc-sub" style="margin-top:12px">Aucune vente sur cette fiche.</p>'}
+      <details style="margin-top:12px"><summary class="gc-sub" style="cursor:pointer">Synthèse mensuelle ${annee}</summary><div class="dtw"><table class="dt"><thead><tr><th>Mois</th><th class="r">Quantité</th><th class="r">Montant</th></tr></thead><tbody>${mois}</tbody></table></div></details></div>`;
+  }
+  el.innerHTML = `<div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:16px">${kpi("Ventes aujourd'hui", T.jour, 'var(--warm)')}${kpi('Ventes du mois', T.mois, 'var(--green)')}${kpi("Ventes de l'année", T.annee, 'var(--blue)')}</div>
+    <div class="card"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">${gc.ventes.map((x) => `<button class="gc-chipbtn ${x.id === gcVenteSel ? 'active' : ''}" onclick="gcSelFiche('${x.id}')">${gcEsc(x.nom)}</button>`).join('')}
+    <span style="flex:1"></span><input class="gc-in" id="gv-nom" placeholder="Nouvel article" style="width:160px" list="gv-art-l"><datalist id="gv-art-l">${stockArticles.map((a) => `<option value="${gcEsc(a.nom)}">`).join('')}</datalist>
+    <input class="gc-in" id="gv-prix" type="number" placeholder="Prix unitaire" style="width:120px"><button class="btn btn-ink" onclick="gcCreerFiche()">+ Fiche article</button></div>
+    <div class="gc-sub" style="margin-top:6px">Si le nom correspond à un article du module Stocks, chaque vente diminue automatiquement le stock.</div></div>${detail}`;
+}
+
+// ══════════ INVENTAIRE, SURPLUS / MANQUANTS & SEUILS ══════════
+function gcNiveau(a) {
+  const crit = gc.critiques[a.nom] || 0;
+  if (crit > 0 && a.qteActuelle <= crit) return 'crit';
+  if (a.qteActuelle <= (a.seuil || 0)) return 'warn';
+  return 'ok';
+}
+async function gcSeuil(idx, champ, v) {
+  const a = stockArticles[idx]; if (!a) return;
+  const n = Math.max(0, parseFloat(v) || 0);
+  if (champ === 'alerte') { a.seuil = n; await gcPersistStock(a); } else gc.critiques[a.nom] = n;
+  await gcSave(); renderGestCom(); renderStocks();
+}
+function gcPhysInput(idx, v) {
+  gcPhys[idx] = v;
+  const a = stockArticles[idx], cell = document.getElementById('gi-ecart-' + idx);
+  if (!a || !cell) return;
+  if (v === '') { cell.innerHTML = '—'; return; }
+  const e = parseFloat(v) - a.qteActuelle;
+  cell.innerHTML = e > 0 ? `<span class="gc-surplus">+${e} surplus</span>` : e < 0 ? `<span class="gc-manque">${e} manquant</span>` : '<span class="gc-sub">conforme</span>';
+}
+async function gcValiderInventaire(idx) {
+  const a = stockArticles[idx], v = gcPhys[idx];
+  if (!a || v === undefined || v === '') { toast('Saisissez le stock physique compté', 'error'); return; }
+  const phys = Math.max(0, parseFloat(v) || 0), ecart = phys - a.qteActuelle;
+  let motif = '';
+  if (ecart !== 0) {
+    motif = prompt(`${a.nom} : ${ecart > 0 ? 'surplus' : 'manquant'} de ${Math.abs(ecart)}. Cause / justification (obligatoire) :`) || '';
+    if (!motif.trim()) { toast('Écart non documenté — inventaire non validé', 'error'); return; }
+  }
+  const theorique = a.qteActuelle;
+  await gcMouvementStock(a.nom, 'inventaire', phys, a.cmup || 0, gcToday());
+  gc.inventaires.unshift({ id: gcUid(), date: gcToday(), article: a.nom, theorique, physique: phys, ecart, motif: motif.trim(), user: gcUser() });
+  delete gcPhys[idx];
+  auditLog('INVENTAIRE', 'GESTION_COMMERCIALE', `${a.nom} : théorique ${theorique}, physique ${phys}, écart ${ecart}${motif ? ' — ' + motif.trim() : ''}`);
+  await gcSave(); renderGestCom(); renderStocks();
+  toast(`✓ Inventaire validé — ${a.nom} : ${ecart === 0 ? 'conforme' : (ecart > 0 ? 'surplus ' : 'manquant ') + Math.abs(ecart)}`, ecart === 0 ? 'success' : 'info');
+}
+function gcRenderInventaire(el) {
+  const rows = stockArticles.map((a, i) => {
+    const niv = gcNiveau(a);
+    const badge = { ok: '<span class="stock-badge ok">✓ OK</span>', warn: '<span class="stock-badge gc-orange">⚠ Alerte</span>', crit: '<span class="stock-badge low">⛔ Critique</span>' }[niv];
+    return `<tr><td><strong>${gcEsc(a.nom)}</strong></td><td class="r">${a.qteActuelle}</td>
+      <td class="r"><input class="gc-in gc-mini" type="number" min="0" value="${a.seuil || 0}" onchange="gcSeuil(${i},'alerte',this.value)"></td>
+      <td class="r"><input class="gc-in gc-mini" type="number" min="0" value="${gc.critiques[a.nom] || 0}" onchange="gcSeuil(${i},'critique',this.value)"></td><td>${badge}</td>
+      <td class="r"><input class="gc-in gc-mini" type="number" min="0" step="any" value="${gcPhys[i] ?? ''}" oninput="gcPhysInput(${i},this.value)"></td>
+      <td class="r" id="gi-ecart-${i}">—</td><td><button class="btn btn-sm-wire" onclick="gcValiderInventaire(${i})">✔ Valider</button></td></tr>`;
+  }).join('');
+  const hist = gc.inventaires.slice(0, 30).map((h) => `<tr><td>${h.date}</td><td>${gcEsc(h.article)}</td><td class="r">${h.theorique}</td><td class="r">${h.physique}</td><td class="r">${h.ecart > 0 ? `<span class="gc-surplus">+${h.ecart}</span>` : h.ecart < 0 ? `<span class="gc-manque">${h.ecart}</span>` : '0'}</td><td>${gcEsc(h.motif || '—')}</td><td class="gc-sub">${gcEsc(h.user)}</td></tr>`).join('');
+  el.innerHTML = `<div class="card"><strong>Inventaire physique et seuils d'alerte</strong>
+    <div class="gc-sub">Stock théorique = stock initial + entrées − sorties. Un surplus s'affiche en vert, un manquant en rouge ; chaque écart doit être justifié. Seuils paramétrables par article (exemple : alerte à 15 sacs, critique à 10).</div>
+    ${stockArticles.length ? `<div class="dtw" style="margin-top:10px"><table class="dt"><thead><tr><th>Article</th><th class="r">Stock théorique</th><th class="r">Seuil alerte</th><th class="r">Seuil critique</th><th>Niveau</th><th class="r">Stock physique</th><th class="r">Écart</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="empty-state"><div class="icon">📦</div><p>Aucun article en stock : validez une réception d\'achat ou ajoutez un mouvement dans « Stocks ».</p></div>'}</div>
+    ${gc.inventaires.length ? `<div class="card"><strong>Historique des inventaires</strong><div class="dtw" style="margin-top:8px"><table class="dt"><thead><tr><th>Date</th><th>Article</th><th class="r">Théorique</th><th class="r">Physique</th><th class="r">Écart</th><th>Justification</th><th>Par</th></tr></thead><tbody>${hist}</tbody></table></div></div>` : ''}`;
+}
+
+// ══════════ ÉCHÉANCES FISCALES ══════════
+function gcStatutEff(e) { return e.statut === 'payé' ? 'payé' : (e.date && e.date < gcToday() ? 'en retard' : e.statut); }
+function gcCalcMontant() {
+  const b = parseFloat(gcVal('gf-base')) || 0, t = parseFloat(gcVal('gf-taux')) || 0;
+  const m = document.getElementById('gf-montant'); if (m && b && t) m.value = Math.round(b * t / 100);
+}
+async function gcAjouterEcheance() {
+  const impot = gcVal('gf-impot'), date = gcVal('gf-date');
+  if (!impot || !date) { toast("Impôt et date limite sont obligatoires", 'error'); return; }
+  const base = parseFloat(gcVal('gf-base')) || 0, taux = parseFloat(gcVal('gf-taux')) || 0;
+  const montant = parseFloat(gcVal('gf-montant')) || Math.round(base * taux / 100);
+  const e = { id: gcUid(), impot, periode: gcVal('gf-periode'), base, taux, montant, date, rappelJours: parseInt(gcVal('gf-rappel')) || 7, statut: 'à préparer', recu: null, declaration: null, paiement: null, historique: [] };
+  gcHisto(e, 'Échéance créée');
+  gc.echeances.push(e);
+  auditLog('ECHEANCE_FISCALE', 'GESTION_COMMERCIALE', `${impot} — échéance ${date}`);
+  await gcSave(); renderGestCom();
+}
+async function gcPresetEcheances() {
+  const an = new Date().getFullYear();
+  const dates = [`${an}-03-01`, `${an}-06-01`, `${an}-09-01`, `${an}-12-01`];
+  dates.forEach((d) => gc.echeances.push({ id: gcUid(), impot: 'Échéance à paramétrer', periode: '', base: 0, taux: 0, montant: 0, date: d, rappelJours: 7, statut: 'à vérifier', recu: null, declaration: null, paiement: null, historique: [{ ts: new Date().toISOString(), user: gcUser(), action: 'Date souhaitée à confirmer (non issue du calendrier officiel)' }] }));
+  auditLog('ECHEANCES_PRESET', 'GESTION_COMMERCIALE', '4 dates souhaitées créées (1er mars/juin/sept/déc)');
+  await gcSave(); renderGestCom();
+  toast('4 dates créées en statut « à vérifier » : renseignez l\'impôt réel et confirmez le calendrier officiel', 'info');
+}
+async function gcMajEcheance(id, champ, v) {
+  const e = gc.echeances.find((x) => x.id === id); if (!e) return;
+  if (champ === 'statut' && v === 'payé' && !e.paiement) toast('Statut « payé » sans preuve de paiement jointe : pensez à l\'ajouter', 'info');
+  e[champ] = ['rappelJours', 'montant', 'base', 'taux'].includes(champ) ? (parseFloat(v) || 0) : v;
+  gcHisto(e, `${champ} → ${v}`);
+  await gcSave(); renderGestCom();
+}
+async function gcSupprimerEcheance(id) {
+  if (!confirm('Supprimer cette échéance ?')) return;
+  gc.echeances = gc.echeances.filter((x) => x.id !== id);
+  auditLog('SUPPR_ECHEANCE', 'GESTION_COMMERCIALE', 'Échéance fiscale supprimée');
+  await gcSave(); renderGestCom();
+}
+function gcRenderFiscal(el) {
+  const rows = [...gc.echeances].sort((a, b) => a.date.localeCompare(b.date)).map((e) => {
+    const eff = gcStatutEff(e);
+    const cls = { 'payé': 'ok', 'en retard': 'nok' }[eff] || 'warn';
+    const opts = GC_STATUTS_FISCAUX.map((s) => `<option ${s === e.statut ? 'selected' : ''}>${s}</option>`).join('');
+    return `<tr><td><strong>${gcEsc(e.impot)}</strong><div class="gc-sub">${gcEsc(e.periode || '')}</div><div class="gc-sub">${e.base ? `${fn(e.base)} × ${e.taux}% = ${fn(e.montant)}` : ''}</div></td>
+      <td class="r">${fn(e.montant)}</td><td><input class="gc-in" type="date" value="${e.date}" onchange="gcMajEcheance('${e.id}','date',this.value)"></td>
+      <td class="r"><input class="gc-in gc-mini" type="number" min="0" value="${e.rappelJours}" onchange="gcMajEcheance('${e.id}','rappelJours',this.value)"> j</td>
+      <td><select class="gc-in" onchange="gcMajEcheance('${e.id}','statut',this.value)">${opts}</select>${eff !== e.statut ? `<div><span class="badge-status ${cls}">${eff}</span></div>` : ''}</td>
+      <td>${gcChip('Déclaration', e.declaration, 'echeances', e.id, 'declaration')} ${gcChip('Reçu', e.recu, 'echeances', e.id, 'recu')} ${gcChip('Paiement', e.paiement, 'echeances', e.id, 'paiement')}</td>
+      <td><button class="btn btn-sm-wire" onclick="gcSupprimerEcheance('${e.id}')">🗑</button></td></tr>`;
+  }).join('');
+  el.innerHTML = `<div class="gc-note">⚠️ Les dates et taux saisis ici sont des paramètres de suivi. Les échéances officielles (impôt, régime fiscal, calendrier en vigueur en Côte d'Ivoire) et les calculs doivent être validés par un professionnel compétent.</div>
+    <div class="card"><strong>Nouvelle échéance</strong><div class="gc-form" style="margin-top:8px">
+      <label>Impôt / taxe<input class="gc-in" id="gf-impot" placeholder="ex : TVA, acompte, patente…"></label><label>Période<input class="gc-in" id="gf-periode" placeholder="T3 2026"></label>
+      <label>Base de calcul (FCFA)<input class="gc-in" type="number" id="gf-base" oninput="gcCalcMontant()"></label><label>Taux (%)<input class="gc-in" type="number" step="any" id="gf-taux" oninput="gcCalcMontant()"></label>
+      <label>Montant dû (FCFA)<input class="gc-in" type="number" id="gf-montant"></label><label>Date limite<input class="gc-in" type="date" id="gf-date"></label>
+      <label>Rappel (jours avant)<input class="gc-in" type="number" id="gf-rappel" value="7"></label><label>&nbsp;<button class="btn btn-ink" onclick="gcAjouterEcheance()">+ Ajouter</button></label></div>
+      <div style="margin-top:8px"><button class="btn btn-sm-wire" onclick="gcPresetEcheances()">Créer les dates souhaitées (1er mars · juin · sept · déc)</button></div></div>
+    <div class="card"><strong>Impôts et échéances</strong>${gc.echeances.length ? `<div class="dtw" style="margin-top:8px"><table class="dt"><thead><tr><th>Impôt / calcul</th><th class="r">Montant</th><th>Date limite</th><th class="r">Rappel</th><th>Statut</th><th>Pièces</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="empty-state"><div class="icon">🏛️</div><p>Aucune échéance paramétrée.</p></div>'}</div>`;
+}
+
+// ══════════ ARCHIVES PAR EXERCICE ══════════
+function gcDossier(an) {
+  if (!gc.archives[an]) {
+    gc.archives[an] = { cloture: false, docs: {}, historique: [] };
+    GC_ARCHIVE_DOCS.forEach((d) => (gc.archives[an].docs[d] = { present: false, ref: '' }));
+  }
+  return gc.archives[an];
+}
+function gcAnnees() {
+  const s = new Set([String(new Date().getFullYear()), String(new Date().getFullYear() - 1), ...Object.keys(gc.archives)]);
+  ecritures.forEach((e) => e.date && s.add(e.date.slice(0, 4)));
+  return [...s].sort();
+}
+function gcSelAnnee(a) { gcArchAnnee = a; renderGestCom(); }
+async function gcNouvelExercice() {
+  const a = gcVal('gar-new');
+  if (!/^\d{4}$/.test(a)) { toast('Année invalide (ex : 2026)', 'error'); return; }
+  gcDossier(a); gcArchAnnee = a; await gcSave(); renderGestCom();
+}
+async function gcArchMaj(an, doc, champ, v) {
+  const d = gcDossier(an); if (d.cloture) { toast('Exercice clôturé : rouvrez-le avec un motif pour modifier', 'error'); renderGestCom(); return; }
+  d.docs[doc][champ] = v;
+  gcHisto(d, `${doc} : ${champ} → ${v}`);
+  await gcSave(); renderGestCom();
+}
+function gcExportSauvegarde(an) {
+  const data = {
+    exercice: an, exporteLe: new Date().toISOString(), dossier: gc.archives[an],
+    achats: gc.achats.filter((a) => (a.date || '').startsWith(an)),
+    ventes: gc.ventes.map((f) => ({ ...f, lignes: f.lignes.filter((l) => l.date.startsWith(an)) })),
+    echeances: gc.echeances.filter((e) => (e.date || '').startsWith(an)),
+    inventaires: gc.inventaires.filter((i) => i.date.startsWith(an)),
+    ecritures: ecritures.filter((e) => (e.date || '').startsWith(an)),
+    stocks: stockArticles,
+  };
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+  a.download = `sauvegarde_exercice_${an}.json`; a.click();
+}
+async function gcCloturerArchive(an) {
+  const d = gcDossier(an);
+  if (!confirm(`Clôturer l'exercice ${an} ?\n\nUne sauvegarde JSON va être téléchargée, puis le dossier sera protégé contre les modifications.`)) return;
+  gcExportSauvegarde(an);
+  d.cloture = true; d.clotureLe = gcToday(); gcHisto(d, 'Exercice clôturé (sauvegarde préalable téléchargée)');
+  auditLog('CLOTURE_ARCHIVE', 'GESTION_COMMERCIALE', `Dossier ${an} clôturé`);
+  await gcSave(); renderGestCom(); toast(`✓ Exercice ${an} clôturé et protégé`, 'success');
+}
+async function gcRouvrirArchive(an) {
+  const d = gcDossier(an);
+  const m = prompt('Motif de la réouverture (obligatoire, tracé dans l\'historique) :');
+  if (!m || !m.trim()) return;
+  d.cloture = false; gcHisto(d, `Réouverture — motif : ${m.trim()}`);
+  auditLog('REOUVERTURE_ARCHIVE', 'GESTION_COMMERCIALE', `Dossier ${an} rouvert : ${m.trim()}`);
+  await gcSave(); renderGestCom();
+}
+function gcRenderArchives(el) {
+  const an = gcArchAnnee, d = gcDossier(an);
+  const manquants = GC_ARCHIVE_DOCS.filter((k) => !d.docs[k]?.present);
+  const items = GC_ARCHIVE_DOCS.map((k) => {
+    const x = d.docs[k] || { present: false, ref: '' };
+    return `<label class="gc-doc ${x.present ? 'ok' : ''}"><input type="checkbox" ${x.present ? 'checked' : ''} ${d.cloture ? 'disabled' : ''} onchange="gcArchMaj('${an}','${gcEsc(k)}','present',this.checked)"> <span>${k}</span>
+      <input class="gc-in" placeholder="Référence / emplacement" value="${gcEsc(x.ref)}" ${d.cloture ? 'disabled' : ''} onchange="gcArchMaj('${an}','${gcEsc(k)}','ref',this.value)"></label>`;
+  }).join('');
+  el.innerHTML = `<div class="card"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">${gcAnnees().map((a) => `<button class="gc-chipbtn ${a === an ? 'active' : ''}" onclick="gcSelAnnee('${a}')">📁 ${a}${gc.archives[a]?.cloture ? ' 🔒' : ''}</button>`).join('')}
+    <span style="flex:1"></span><input class="gc-in" id="gar-new" placeholder="Année" style="width:90px"><button class="btn btn-sm-wire" onclick="gcNouvelExercice()">+ Dossier</button></div></div>
+    <div class="card"><div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px"><div><strong>Dossier ${an}</strong> ${d.cloture ? `<span class="badge-status ok">Clôturé le ${d.clotureLe}</span>` : '<span class="badge-status warn">Ouvert</span>'}
+      <div class="gc-sub">${GC_ARCHIVE_DOCS.length - manquants.length}/${GC_ARCHIVE_DOCS.length} documents présents</div></div>
+      <div style="display:flex;gap:8px"><button class="btn btn-sm-wire" onclick="gcExportSauvegarde('${an}')">↓ Sauvegarde JSON</button>${d.cloture ? `<button class="btn btn-sm-wire" onclick="gcRouvrirArchive('${an}')">↩ Rouvrir</button>` : `<button class="btn btn-ink" onclick="gcCloturerArchive('${an}')">🔒 Clôturer l'exercice</button>`}</div></div>
+      <div class="gc-docs">${items}</div></div>
+    <div class="card"><strong>Pièces manquantes — ${an}</strong>${manquants.length ? `<ul class="gc-miss">${manquants.map((m) => `<li>${m}</li>`).join('')}</ul>` : '<p class="gc-sub">✓ Dossier complet.</p>'}</div>
+    ${d.historique.length ? `<details class="card"><summary style="cursor:pointer"><strong>Historique du dossier</strong></summary><div class="gc-sub" style="margin-top:8px">${d.historique.slice(-30).reverse().map((h) => `${h.ts.slice(0, 16).replace('T', ' ')} · ${gcEsc(h.user)} · ${gcEsc(h.action)}`).join('<br>')}</div></details>` : ''}`;
+}
+
+// ══════════ ALERTES & NOTIFICATIONS ══════════
+function gcCalcAlertes() {
+  const out = [], today = gcToday();
+  stockArticles.forEach((a) => {
+    const niv = gcNiveau(a);
+    if (niv === 'crit') out.push({ n: 3, tab: 'inventaire', t: `⛔ Stock critique : ${a.nom} (${a.qteActuelle} ≤ ${gc.critiques[a.nom]})` });
+    else if (niv === 'warn') out.push({ n: 2, tab: 'inventaire', t: `⚠ Stock bas : ${a.nom} (${a.qteActuelle} ≤ ${a.seuil || 0}) — prévoir un réapprovisionnement` });
+  });
+  gc.achats.forEach((a) => {
+    const manq = gcManquant(a);
+    if (!a.valide) out.push({ n: 1, tab: 'achats', t: `📥 Commande ${a.numero} (${a.libelle}) à vérifier` });
+    if (manq && !a.ecartNote) out.push({ n: 2, tab: 'achats', t: `📥 Commande ${a.numero} : ${manq} manquant(s) non expliqué(s)` });
+    const pm = gcPiecesManquantes(a);
+    if (pm.length) out.push({ n: pm.includes('copie de commande') ? 2 : 1, tab: 'achats', t: `📎 Commande ${a.numero} : pièce(s) manquante(s) — ${pm.join(', ')}` });
+  });
+  gc.echeances.forEach((e) => {
+    if (gcStatutEff(e) === 'payé') return;
+    const jours = Math.round((new Date(e.date) - new Date(today)) / 864e5);
+    if (jours < 0) out.push({ n: 3, tab: 'fiscal', t: `🏛️ ${e.impot} : échéance dépassée de ${-jours} j (${e.date})` });
+    else if (jours <= (e.rappelJours || 0)) out.push({ n: 2, tab: 'fiscal', t: `🏛️ ${e.impot} : échéance dans ${jours} j (${e.date})` });
+    if (e.statut === 'payé' && !e.paiement) out.push({ n: 1, tab: 'fiscal', t: `🏛️ ${e.impot} : preuve de paiement manquante` });
+  });
+  Object.entries(gc.archives).forEach(([an, d]) => {
+    if (d.cloture) return;
+    const m = GC_ARCHIVE_DOCS.filter((k) => !d.docs[k]?.present).length;
+    if (m && an === String(new Date().getFullYear())) out.push({ n: 1, tab: 'archives', t: `🗄️ Dossier ${an} : ${m} document(s) manquant(s)` });
+  });
+  return out.sort((a, b) => b.n - a.n);
+}
+function gcRefreshBadges() {
+  const n = gcCalcAlertes().length;
+  const c = document.getElementById('gcAlertCount'), b = document.getElementById('gcNavBadge');
+  if (c) c.textContent = n;
+  if (b) { b.textContent = n; b.style.display = n ? '' : 'none'; }
+}
+function gcNotifier(force) {
+  const prio = gcCalcAlertes().filter((a) => a.n >= 2);
+  if (!prio.length) return;
+  const delai = { quotidien: 864e5, hebdo: 6048e5 }[gc.rappelFrequence] || 0;
+  if (!force && delai && Date.now() - (gc.dernierRappel || 0) < delai) return;
+  gc.dernierRappel = Date.now(); gcSave();
+  toast(`🔔 ${prio.length} alerte(s) prioritaire(s) — Gestion commerciale`, 'info');
+}
+async function gcFrequence(v) { gc.rappelFrequence = v; await gcSave(); toast('Fréquence des rappels enregistrée', 'success'); }
+function gcRenderAlertes(el) {
+  const al = gcCalcAlertes();
+  const lab = { 3: 'Critique', 2: 'Important', 1: 'À traiter' }, cls = { 3: 'nok', 2: 'warn', 1: 'muted' };
+  el.innerHTML = `<div class="card"><div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px"><strong>Centre de notifications</strong>
+    <span class="gc-sub">Rappels prioritaires : <select class="gc-in" style="width:auto" onchange="gcFrequence(this.value)">${[['connexion', 'à chaque connexion'], ['quotidien', 'une fois par jour'], ['hebdo', 'une fois par semaine']].map(([v, l]) => `<option value="${v}" ${gc.rappelFrequence === v ? 'selected' : ''}>${l}</option>`).join('')}</select></span></div>
+    ${al.length ? al.map((a) => `<div class="gc-alert"><span class="badge-status ${cls[a.n]}">${lab[a.n]}</span><span style="flex:1">${gcEsc(a.t)}</span><button class="btn btn-sm-wire" onclick="gcTab('${a.tab}')">Ouvrir</button></div>`).join('') : '<div class="empty-state"><div class="icon">✅</div><p>Aucune alerte.</p></div>'}</div>
+    ${gc.corrections.length ? `<div class="card"><strong>Corrections tracées</strong><div class="gc-sub" style="margin-top:8px">${gc.corrections.slice(0, 20).map((c) => `${c.ts.slice(0, 16).replace('T', ' ')} · ${gcEsc(c.user)} · ${gcEsc(c.detail)}`).join('<br>')}</div></div>` : ''}`;
+}
+
+GUIDES.gestcom = {
+  title: '🧰 Gestion commerciale — Guide',
+  sub: 'Achats, ventes, stocks, fiscalité et archives reliés entre eux',
+  steps: [
+    '<strong>Achats 601</strong> — créez une fiche par commande, saisissez la quantité reçue et joignez la copie de la commande. « ✔ Valider » contrôle les quantités, justifie les écarts et met le stock à jour ; la coche verte apparaît quand la fiche est complète. La validation ne vaut pas paiement du fournisseur.',
+    '<strong>Ventes 701</strong> — une fiche par article : le montant (quantité × prix) et les totaux jour/mois/année sont calculés automatiquement. Chaque vente diminue le stock de l\'article du même nom. Toute correction exige un motif et reste tracée.',
+    '<strong>Inventaire &amp; seuils</strong> — comparez le stock physique au stock théorique : surplus en vert, manquant en rouge, écart à justifier. Réglez le seuil d\'alerte et le seuil critique de chaque article.',
+    '<strong>Échéances fiscales</strong> — paramétrez impôt, base, taux, date limite et rappel. Joignez déclaration, reçu et preuve de paiement. Les dates (1er mars/juin/sept/déc) sont des dates souhaitées, à confirmer avec le calendrier officiel.',
+    '<strong>Archives</strong> — un dossier par exercice avec la liste des documents. La clôture télécharge une sauvegarde puis protège le dossier ; la réouverture exige un motif.',
+    '⚠️ Les écritures générées (601/401, 571-521-411/701) sont hors TVA : faites valider le plan de comptes et le traitement fiscal par un professionnel comptable.',
+  ],
+};
+window.gcOpenGuide = () => openGuide('gestcom');
+Object.assign(window, {
+  renderGestCom, gcTab, gcOuvrirPiece, gcAttacher, gcEnregistrerAchat, gcMajRecue, gcValiderAchat, gcRouvrirAchat, gcSupprimerAchat, gcComptabiliserAchat,
+  gcSelFiche, gcCreerFiche, gcAjouterVente, gcSupprimerVente, gcComptabiliserVentes, gcSeuil, gcPhysInput, gcValiderInventaire,
+  gcCalcMontant, gcAjouterEcheance, gcPresetEcheances, gcMajEcheance, gcSupprimerEcheance, gcSelAnnee, gcNouvelExercice, gcArchMaj, gcExportSauvegarde,
+  gcCloturerArchive, gcRouvrirArchive, gcFrequence, gcForm,
+});
+
 // ══════════════════════════════════════════
 // MODULE EMPRUNTS — Tableau d'amortissement de prêts (méthode française, mensualité constante)
 // ══════════════════════════════════════════
@@ -12200,8 +12872,8 @@ function getMonSessionId() {
 
 const ROLES = {
   admin:       { label: 'Administrateur', couleur: 'var(--warm)',  perms: ['*'] },
-  comptable:   { label: 'Comptable',      couleur: 'var(--blue)',  perms: ['saisie','journal','grandlivre','balance','bilan','resultat','tresorerie','factures','devis','clients','fournisseurs','paie','immobilisations','stocks','rapprochement','budgets','lettrage','declarations','analytique','effets'] },
-  gestionnaire:{ label: 'Gestionnaire',   couleur: 'var(--teal)',  perms: ['factures','devis','clients','fournisseurs','stocks','budgets'] },
+  comptable:   { label: 'Comptable',      couleur: 'var(--blue)',  perms: ['saisie','journal','grandlivre','balance','bilan','resultat','tresorerie','factures','devis','clients','fournisseurs','paie','immobilisations','stocks','rapprochement','budgets','lettrage','declarations','analytique','effets','gestcom'] },
+  gestionnaire:{ label: 'Gestionnaire',   couleur: 'var(--teal)',  perms: ['factures','devis','clients','fournisseurs','stocks','budgets','gestcom'] },
   lecteur:     { label: 'Lecture seule',  couleur: 'var(--muted)', perms: ['journal','grandlivre','balance','bilan','resultat','tresorerie'] },
 };
 
@@ -12985,6 +13657,7 @@ async function chargerDonneesProprietaire(ownerUid) {
     loadImmobilisations(),
     loadEmprunts(),
     loadStocks(),
+    loadGestCom(),
     loadBudgets(),
   ]);
   await Promise.all([
