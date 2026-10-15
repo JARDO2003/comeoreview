@@ -3,13 +3,17 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SYSCOHADA Pro — COMEO AI v4</title>
+<title>COMEO AI — Espace comptable SYSCOHADA</title>
+<meta name="description" content="COMEO AI : comptabilité SYSCOHADA, factures et gestion de votre entreprise.">
+<meta property="og:title" content="COMEO AI — Espace comptable SYSCOHADA">
+<meta property="og:description" content="Votre espace comptable, facturation et gestion d’entreprise.">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;0,900;1,400&family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
-<script src="chart.umd.min.js" onerror="var s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js';s.onerror=function(){var s2=document.createElement('script');s2.src='https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js';document.head.appendChild(s2);};document.head.appendChild(s);console.warn('[SYSCOHADA] chart.umd.min.js local introuvable, bascule sur CDN.');"></script>
 <link rel="stylesheet" href="as.css">
 <script>
 // Chargeur résilient : contrairement à onerror (qui ne détecte QUE les échecs réseau),
@@ -35,7 +39,7 @@ function comeoChargerLibResiliente(sources, verifier, nomLog, i) {
   document.head.appendChild(s);
 }
 comeoChargerLibResiliente(
-  ['qrcode.min.js', 'https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js', 'https://unpkg.com/qrcode@1.5.3/build/qrcode.min.js'],
+  ['https://cdn.jsdelivr.net/npm/qrcode@1.5.1/build/qrcode.js', 'https://unpkg.com/qrcode@1.5.1/build/qrcode.js'],
   function () { return window.QRCode && typeof window.QRCode.toCanvas === 'function'; },
   'qrcode.min.js',
 );
@@ -45,6 +49,7 @@ comeoChargerLibResiliente(
   'jsQR',
 );
 </script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js" onerror="comeoChargerLibResiliente(['https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js'],function(){return typeof window.Chart==='function';},'Chart.js');"></script>
 </head>
 <body>
 
@@ -52,17 +57,17 @@ comeoChargerLibResiliente(
 <div id="authOverlay">
   <div class="auth-box">
     <div class="auth-emblem">
-      <div class="logo-big">COMEO AI V4</div>
+      <div class="logo-big">COMEO <span>AI</span></div>
       <div class="ai-badge">Expert Comptable SYSCOHADA · Conforme OHADA 2023</div>
     </div>
     <div class="auth-tabs">
-      <div class="auth-tab active" id="tab-login" onclick="switchTab('login')">Connexion</div>
-      <div class="auth-tab" id="tab-register" onclick="switchTab('register')">Créer un profil</div>
+      <button type="button" class="auth-tab active" id="tab-login" onclick="switchTab('login')">Connexion</button>
+      <button type="button" class="auth-tab" id="tab-register" onclick="switchTab('register')">Créer un profil</button>
     </div>
     <div id="form-login" class="auth-form">
-  <div class="af-field"><label class="af-label">Email</label><input class="af-input" type="email" id="l-email" placeholder="contact@sotra.ci"></div>
-  <div class="af-field"><label class="af-label">Mot de passe</label><input class="af-input" type="password" id="l-pass" placeholder="••••••••" onkeydown="if(event.key==='Enter')doLogin()"></div>
-  <div class="auth-err" id="l-err"></div>
+  <div class="af-field"><label class="af-label" for="l-email">Email</label><input class="af-input" type="email" id="l-email" autocomplete="username" placeholder="contact@sotra.ci"></div>
+  <div class="af-field"><label class="af-label" for="l-pass">Mot de passe</label><input class="af-input" type="password" id="l-pass" autocomplete="current-password" placeholder="••••••••" onkeydown="if(event.key==='Enter')doLogin()"></div>
+  <div class="auth-err" id="l-err" role="alert"></div>
   <button class="auth-btn" onclick="doLogin()">⚡ Se connecter</button>
   <div class="auth-divider"><span>ou</span></div>
   <button class="auth-btn google-btn" onclick="doGoogleSignIn()">
@@ -75,12 +80,12 @@ comeoChargerLibResiliente(
     Continuer avec Google
   </button>
   <div style="text-align:center;margin-top:10px">
-    <a href="#" style="font-size:12px;color:var(--warm);opacity:.7" onclick="doForgotPassword()">Mot de passe oublié ?</a>
+    <a href="#" style="font-size:12px;color:var(--warm);opacity:.7" onclick="event.preventDefault();doForgotPassword()">Mot de passe oublié ?</a>
   </div>
 </div>
    <div id="form-register" class="auth-form" style="display:none">
-  <div class="af-field"><label class="af-label">Nom de l'entreprise</label><input class="af-input" type="text" id="r-company" placeholder="ex: SOTRA SARL"></div>
-  <div class="af-field"><label class="af-label">Email professionnel</label><input class="af-input" type="email" id="r-email" placeholder="contact@sotra.ci"></div>
+  <div class="af-field"><label class="af-label" for="r-company">Nom de l'entreprise</label><input class="af-input" type="text" id="r-company" placeholder="ex: SOTRA SARL"></div>
+  <div class="af-field"><label class="af-label" for="r-email">Email professionnel</label><input class="af-input" type="email" id="r-email" autocomplete="email" placeholder="contact@sotra.ci"></div>
   <div class="af-field">
     <label class="af-label">Secteur d'activité</label>
     <select class="af-input" id="r-secteur" onchange="toggleSecteurActiviteField()">
@@ -111,10 +116,10 @@ comeoChargerLibResiliente(
     </div>
   </div>
   <input type="hidden" id="r-activite-autre" value="">
-  <div class="af-field"><label class="af-label">N° Compte ventes</label><input class="af-input" type="text" id="r-compte701" placeholder="701" value="701"></div>
-  <div class="af-field"><label class="af-label">Exercice comptable</label><input class="af-input" type="text" id="r-exercice" placeholder="2024" value="2024" maxlength="4"></div>
-  <div class="af-field"><label class="af-label">Mot de passe (min 6 car.)</label><input class="af-input" type="password" id="r-pass" placeholder="Minimum 6 caractères"></div>
-  <div class="auth-err" id="r-err"></div>
+  <div class="af-field"><label class="af-label" for="r-compte701">N° Compte ventes</label><input class="af-input" type="text" id="r-compte701" placeholder="701" value="701"></div>
+  <div class="af-field"><label class="af-label" for="r-exercice">Exercice comptable</label><input class="af-input" type="text" id="r-exercice" placeholder="2024" value="2024" maxlength="4"></div>
+  <div class="af-field"><label class="af-label" for="r-pass">Mot de passe (min 6 car.)</label><input class="af-input" type="password" id="r-pass" autocomplete="new-password" placeholder="Minimum 6 caractères"></div>
+  <div class="auth-err" id="r-err" role="alert"></div>
   <button class="auth-btn" onclick="doRegister()">✓ Créer mon profil</button>
   <p class="auth-trial-note">🎁 12 heures d'essai gratuit · puis 15&nbsp;000 FCFA/mois — abonnement via WhatsApp</p>
 </div>
@@ -643,15 +648,15 @@ comeoChargerLibResiliente(
     <!-- Totaux -->
     <div style="display:flex;justify-content:flex-end;margin-bottom:14px">
       <div style="background:var(--ink);border-radius:var(--r);padding:14px 20px;min-width:280px">
-        <div style="display:flex;justify-content:space-between;padding:4px 0;font-size:12px;color:rgba(255,255,255,.5);border-bottom:1px solid rgba(255,255,255,.06)">
-          <span>Sous-total HT</span><span id="fac-subtotal" style="font-family:var(--font-mono);color:rgba(255,255,255,.7)">0 FCFA</span>
+        <div style="display:flex;justify-content:space-between;padding:4px 0;font-size:12px;color:var(--wash-on-primary-78);border-bottom:1px solid var(--wash-on-primary-6)">
+          <span>Sous-total HT</span><span id="fac-subtotal" style="font-family:var(--font-mono);color:var(--wash-on-primary-70)">0 FCFA</span>
         </div>
-        <div style="display:flex;justify-content:space-between;padding:4px 0;font-size:12px;color:rgba(255,255,255,.5);border-bottom:1px solid rgba(255,255,255,.06)">
+        <div style="display:flex;justify-content:space-between;padding:4px 0;font-size:12px;color:var(--wash-on-primary-78);border-bottom:1px solid var(--wash-on-primary-6)">
           <span>Remise globale</span>
           <span><input type="number" id="fac-remise-globale" value="0" min="0" max="100" style="width:50px;background:transparent;border:none;color:var(--warm);font-family:var(--font-mono);text-align:right;outline:none" oninput="updateFacTotaux()">%</span>
         </div>
-        <div style="display:flex;justify-content:space-between;padding:4px 0;font-size:12px;color:rgba(255,255,255,.5);border-bottom:1px solid rgba(255,255,255,.06)">
-          <span>TVA</span><span id="fac-tva-total" style="font-family:var(--font-mono);color:#60a5fa">0 FCFA</span>
+        <div style="display:flex;justify-content:space-between;padding:4px 0;font-size:12px;color:var(--wash-on-primary-78);border-bottom:1px solid var(--wash-on-primary-6)">
+          <span>TVA</span><span id="fac-tva-total" style="font-family:var(--font-mono);color:var(--info-text)">0 FCFA</span>
         </div>
         <div style="display:flex;justify-content:space-between;padding:8px 0 0;font-size:15px;font-weight:700;color:var(--warm)">
           <span>TOTAL TTC</span><span id="fac-ttc-total" style="font-family:var(--font-mono)">0 FCFA</span>
@@ -971,8 +976,8 @@ comeoChargerLibResiliente(
       </div>
 
       <!-- IMAGE DE MARQUE À LA PLACE DU CHAT IA -->
-      <div style="margin-top:20px;border-radius:12px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.18)">
-        <img src="images/as.jpeg" alt="COMEO AI" style="width:100%;display:block;object-fit:cover">
+      <div style="margin-top:20px;border-radius:12px;overflow:hidden;box-shadow:0 4px 24px var(--wash-ink-18)">
+        <div class="comeo-brand-panel" role="img" aria-label="COMEO AI — SYSCOHADA"><span class="comeo-brand-mark">C</span><strong>COMEO AI</strong><span>SYSCOHADA</span></div>
       </div>
 
       <!-- Éléments cachés requis par le JS du tableau de bord -->
@@ -994,7 +999,7 @@ comeoChargerLibResiliente(
   <div class="saisie-queue-bar" id="saisieQueueBar">
     <span class="sqb-label">ÉCRITURES EN FILE</span>
     <span class="sqb-counter" id="sqbCounter">0</span>
-    <span style="color:rgba(255,255,255,.4);font-size:11px;flex:1" id="sqbHint">Validez cette écriture pour passer à la suivante</span>
+    <span style="color:var(--wash-on-primary-68);font-size:11px;flex:1" id="sqbHint">Validez cette écriture pour passer à la suivante</span>
     <button class="btn-validate-all" id="btnValidateAll" onclick="autoSaveAllEcritures()">⚡ Tout enregistrer</button>
     <button class="sqb-skip" onclick="skipToNextEcriture()">Ignorer →</button>
   </div>
@@ -1031,8 +1036,8 @@ comeoChargerLibResiliente(
         <div id="lignesCardContainer"></div>
         <button class="add-line-btn" onclick="addLigne()">＋ Ajouter une ligne</button>
         <div class="bal-bar">
-          <div class="bal-item"><label>Débit</label><span class="val" id="totalDebitDisplay" style="color:#60a5fa">0</span></div>
-          <div class="bal-item"><label>Crédit</label><span class="val" id="totalCreditDisplay" style="color:#4ade80">0</span></div>
+          <div class="bal-item"><label>Débit</label><span class="val" id="totalDebitDisplay" style="color:var(--info-text)">0</span></div>
+          <div class="bal-item"><label>Crédit</label><span class="val" id="totalCreditDisplay" style="color:var(--success-text)">0</span></div>
           <div class="bal-item" style="margin-left:auto"><label>Solde</label><span class="val bok" id="soldeDisplay">0</span></div>
         </div>
       </div>
@@ -1099,8 +1104,8 @@ comeoChargerLibResiliente(
       <div id="journal-totaux-footer" style="display:none">
         <div class="jnl-footer-totaux">
           <div class="jnl-footer-item"><span class="jnl-footer-label">Opérations</span><span class="jnl-footer-val" id="jnl-nb-groupes" style="color:var(--warm)">0</span></div>
-          <div class="jnl-footer-item"><span class="jnl-footer-label">Écritures</span><span class="jnl-footer-val" id="jnl-nb-ecr" style="color:rgba(255,255,255,.5)">0</span></div>
-          <div class="jnl-footer-item"><span class="jnl-footer-label">Lignes</span><span class="jnl-footer-val" id="jnl-nb-lignes" style="color:rgba(255,255,255,.3)">0</span></div>
+          <div class="jnl-footer-item"><span class="jnl-footer-label">Écritures</span><span class="jnl-footer-val" id="jnl-nb-ecr" style="color:var(--wash-on-primary-78)">0</span></div>
+          <div class="jnl-footer-item"><span class="jnl-footer-label">Lignes</span><span class="jnl-footer-val" id="jnl-nb-lignes" style="color:var(--wash-on-primary-58)">0</span></div>
           <div class="jnl-footer-item"><span class="jnl-footer-label">Total Débit</span><span class="jnl-footer-val d" id="jnl-total-debit">0</span></div>
           <div class="jnl-footer-item"><span class="jnl-footer-label">Total Crédit</span><span class="jnl-footer-val c" id="jnl-total-credit">0</span></div>
           <div class="jnl-footer-item"><span id="jnl-equil-label" class="jnl-footer-val eq">✓ Équilibré</span></div>
@@ -2014,7 +2019,7 @@ comeoChargerLibResiliente(
         background:linear-gradient(135deg,var(--surface2),var(--surface));
         border:1.5px solid var(--line);border-radius:12px;
         padding:20px 24px;margin-bottom:16px;
-        box-shadow:0 8px 32px rgba(0,0,0,.18);
+        box-shadow:0 8px 32px var(--wash-ink-18);
         transform:translateZ(8px);
         text-align:center;position:relative;overflow:hidden
       ">
@@ -2022,12 +2027,12 @@ comeoChargerLibResiliente(
         <div id="collabCodeText" style="
           font-family:var(--font-mono);font-size:26px;font-weight:700;
           letter-spacing:.25em;color:var(--warm);
-          text-shadow:0 0 20px rgba(212,168,83,.3)
+          text-shadow:0 0 20px var(--wash-warm-30)
         ">——————</div>
         <div id="collabCodeExpiry" style="font-size:11px;color:var(--muted);margin-top:6px"></div>
         <!-- Décoration 3D -->
-        <div style="position:absolute;top:-20px;right:-20px;width:80px;height:80px;border-radius:50%;background:rgba(212,168,83,.06)"></div>
-        <div style="position:absolute;bottom:-30px;left:-10px;width:100px;height:100px;border-radius:50%;background:rgba(59,130,246,.04)"></div>
+        <div style="position:absolute;top:-20px;right:-20px;width:80px;height:80px;border-radius:50%;background:var(--wash-warm-6)"></div>
+        <div style="position:absolute;bottom:-30px;left:-10px;width:100px;height:100px;border-radius:50%;background:var(--wash-blue-4)"></div>
       </div>
 
       <!-- Boutons action code -->
@@ -2048,7 +2053,7 @@ comeoChargerLibResiliente(
       <!-- Bouton appel vidéo -->
       <div id="collabVideoSection" style="margin-top:16px;display:none">
         <div style="font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:8px">Appel vidéo</div>
-        <button class="btn btn-ink" style="width:100%;font-size:13px;background:rgba(34,197,94,.12);border-color:rgba(34,197,94,.3);color:#22c55e"
+        <button class="btn btn-ink" style="width:100%;font-size:13px;background:var(--wash-green-12);border-color:var(--wash-green-30);color:var(--success-text)"
           onclick="ouvrirAppelVideo()">📹 Démarrer un appel vidéo avec les collaborateurs</button>
       </div>
 
@@ -2073,7 +2078,7 @@ comeoChargerLibResiliente(
     <div style="
       background:var(--surface2);border:1.5px solid var(--line);
       border-radius:12px;padding:16px;margin-bottom:16px;
-      box-shadow:inset 0 2px 8px rgba(0,0,0,.12);
+      box-shadow:inset 0 2px 8px var(--wash-ink-12);
       transform:perspective(600px) rotateX(2deg)
     ">
       <input id="joinCodeInput" type="text" placeholder="COMEO-XXXXXX"
@@ -2107,10 +2112,10 @@ comeoChargerLibResiliente(
       border-bottom:1px solid var(--line)
     ">
       <div style="display:flex;align-items:center;gap:10px">
-        <div style="width:10px;height:10px;border-radius:50%;background:#22c55e;box-shadow:0 0 8px #22c55e"></div>
+        <div style="width:10px;height:10px;border-radius:50%;background:var(--success-text);box-shadow:0 0 8px var(--success-text)"></div>
         <span style="font-weight:600;font-size:14px">Appel vidéo COMEO — <span id="videoCallTitle">En attente...</span></span>
       </div>
-      <button onclick="terminerAppelVideo()" style="background:rgba(220,38,38,.15);border:1px solid rgba(220,38,38,.3);color:#dc2626;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px">✕ Raccrocher</button>
+      <button onclick="terminerAppelVideo()" style="background:var(--wash-red-15);border:1px solid var(--wash-red-30);color:var(--red);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px">✕ Raccrocher</button>
     </div>
 
     <!-- Grille vidéos 3D -->
@@ -2122,30 +2127,30 @@ comeoChargerLibResiliente(
       <!-- Vidéo locale -->
       <div style="
         position:relative;border-radius:10px;overflow:hidden;
-        background:#0a0b10;border:1px solid var(--line);
+        background:var(--ink);border:1px solid var(--line);
         transform:perspective(600px) rotateY(-2deg) translateZ(4px);
         transition:transform .3s
       ">
         <video id="localVideo" autoplay muted playsinline style="width:100%;height:200px;object-fit:cover;display:block"></video>
-        <div style="position:absolute;bottom:8px;left:10px;font-size:11px;color:#fff;background:rgba(0,0,0,.6);padding:2px 8px;border-radius:20px">
+        <div style="position:absolute;bottom:8px;left:10px;font-size:11px;color:var(--surface);background:var(--wash-ink-60);padding:2px 8px;border-radius:20px">
           Vous
         </div>
         <!-- Controles -->
         <div style="position:absolute;bottom:8px;right:8px;display:flex;gap:6px" id="localVideoControls">
-          <button id="btnMicToggle" onclick="toggleMic()" style="width:30px;height:30px;border-radius:50%;background:rgba(0,0,0,.6);border:1px solid rgba(255,255,255,.2);color:#fff;font-size:13px;cursor:pointer" title="Micro">🎤</button>
-          <button id="btnCamToggle" onclick="toggleCam()" style="width:30px;height:30px;border-radius:50%;background:rgba(0,0,0,.6);border:1px solid rgba(255,255,255,.2);color:#fff;font-size:13px;cursor:pointer" title="Caméra">📷</button>
-          <button id="btnShareScreen" onclick="shareScreen()" style="width:30px;height:30px;border-radius:50%;background:rgba(0,0,0,.6);border:1px solid rgba(255,255,255,.2);color:#fff;font-size:13px;cursor:pointer" title="Partager l'écran">🖥️</button>
+          <button id="btnMicToggle" onclick="toggleMic()" style="width:30px;height:30px;border-radius:50%;background:var(--wash-ink-60);border:1px solid var(--wash-on-primary-48);color:var(--surface);font-size:13px;cursor:pointer" title="Micro">🎤</button>
+          <button id="btnCamToggle" onclick="toggleCam()" style="width:30px;height:30px;border-radius:50%;background:var(--wash-ink-60);border:1px solid var(--wash-on-primary-48);color:var(--surface);font-size:13px;cursor:pointer" title="Caméra">📷</button>
+          <button id="btnShareScreen" onclick="shareScreen()" style="width:30px;height:30px;border-radius:50%;background:var(--wash-ink-60);border:1px solid var(--wash-on-primary-48);color:var(--surface);font-size:13px;cursor:pointer" title="Partager l'écran">🖥️</button>
         </div>
       </div>
       <!-- Vidéo distante -->
       <div style="
         position:relative;border-radius:10px;overflow:hidden;
-        background:#0a0b10;border:1px solid var(--line);
+        background:var(--ink);border:1px solid var(--line);
         transform:perspective(600px) rotateY(2deg) translateZ(4px);
         transition:transform .3s
       ">
         <video id="remoteVideo" autoplay playsinline style="width:100%;height:200px;object-fit:cover;display:block"></video>
-        <div style="position:absolute;bottom:8px;left:10px;font-size:11px;color:#fff;background:rgba(0,0,0,.6);padding:2px 8px;border-radius:20px" id="remoteVideoLabel">
+        <div style="position:absolute;bottom:8px;left:10px;font-size:11px;color:var(--surface);background:var(--wash-ink-60);padding:2px 8px;border-radius:20px" id="remoteVideoLabel">
           Collaborateur
         </div>
         <div id="remoteVideoPlaceholder" style="
