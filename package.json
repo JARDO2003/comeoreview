@@ -1,13 +1,7 @@
 {
-  "name": "functions",
-  "description": "Cloud Functions — proxy sécurisé vers l'API e-MECeF (DGI Bénin)",
+  "name": "comeoreview",
+  "version": "1.0.0",
   "engines": {
-    "node": "20"
-  },
-  "main": "index.js",
-  "dependencies": {
-    "firebase-admin": "^12.1.0",
-    "firebase-functions": "^5.0.0"
-  },
-  "private": true
+    "node": "24.x"
+  }
 }
