@@ -409,7 +409,7 @@ function hidePremiumPaywall() {
 function updateServiceAvailabilityUI() {
   const banner = document.getElementById('serviceUnavailableBanner');
   if (!banner) return;
-  const show = !aiServiceAvailable || GROQ_API_KEYS.length === 0;
+  const show = !isAiServiceReady();
 
   banner.style.display = show ? 'flex' : 'none';
   banner.setAttribute('aria-hidden', show ? 'false' : 'true');
@@ -420,7 +420,7 @@ function getAiUnavailableMessage() {
 }
 
 function isAiServiceReady() {
-  return aiServiceAvailable && GROQ_API_KEYS.length > 0;
+  return serverConfigLoaded && aiServiceAvailable && (GROQ_API_KEYS.length > 0 || GROQ_DIRECT_KEYS.length > 0 || GEMINI_KEYS.length > 0);
 }
 
 // ══════════════════════════════════════════
@@ -2806,6 +2806,8 @@ async function doLogin() {
     const msgs = {
       'auth/user-not-found': 'Aucun compte avec cet email.',
       'auth/wrong-password': 'Mot de passe incorrect.',
+      'auth/invalid-credential': 'Email ou mot de passe incorrect.',
+      'auth/network-request-failed': 'Connexion indisponible. Vérifiez votre réseau puis réessayez.',
       'auth/invalid-email': 'Email invalide.',
       'auth/too-many-requests': 'Trop de tentatives. Réessayez plus tard.',
     };
@@ -12244,15 +12246,25 @@ window.closePcModal = closePcModal;
 window.renderPcModal = renderPcModal;
 window.filterPcClass = filterPcClass;
 window.pickPcAccount = pickPcAccount;
-document.addEventListener('firebase-ready', async () => {
-  await loadServerConfig();
+// Subscribe after module initialization; restore only the initial session.
+queueMicrotask(() => {
+  let initialAuthState = true;
   onAuthStateChanged(auth, async (user) => {
-    if (user) {
+    if (!initialAuthState) return;
+    initialAuthState = false;
+    if (!user) return;
+    try {
       const snap = await window._fbGetDoc(window._fbDoc(window._db, 'profiles', user.uid));
       if (snap.exists()) {
         currentProfile = { ...snap.data(), id: user.uid };
         conversationHistory = [];
         await loadApp();
+      }
+    } catch (error) {
+      const err = document.getElementById('l-err');
+      if (err) {
+        err.textContent = 'Impossible de restaurer votre session. Vérifiez votre connexion et réessayez.';
+        err.classList.add('show');
       }
     }
   });
