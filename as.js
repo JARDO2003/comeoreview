@@ -2919,6 +2919,8 @@ async function loadApp() {
   
   // ✅ Charger TOUTES les données avec le propriétaire si collaborateur
   await Promise.all([
+    loadPlanPerso(),
+    loadModeles(),
     loadEcrituresFromFirestore(),
     loadClientsFromFirestore(),
     loadFournisseursFromFirestore(),
@@ -3757,13 +3759,13 @@ function goToSaisie() {
 function ligneRowHTML(i, l) {
   return `<tr data-li="${i}">
       <td><div class="asw">
-        <input type="text" id="cpt-t-${i}" value="${l.compte}" placeholder="Compte…" style="width:100%;font-family:var(--font-mono)"
+        <input type="text" id="cpt-t-${i}" value="${escapeAttr(l.compte)}" placeholder="Compte…" style="width:100%;font-family:var(--font-mono)"
           oninput="lignes[${i}].compte=this.value;updateAccountSuggest(${i},this,'table')"
           onfocus="openPcModal((code,lib)=>{selectAccount(${i},code,lib);})"
           onblur="hideDropdown('t-${i}')">
         <div class="adrop" id="drop-t-${i}"></div>
       </div></td>
-      <td><input type="text" id="lib-t-${i}" value="${l.libelle || ''}" placeholder="Libellé…" style="width:100%" oninput="lignes[${i}].libelle=this.value"></td>
+      <td><input type="text" id="lib-t-${i}" value="${escapeAttr(l.libelle || '')}" placeholder="Libellé…" style="width:100%" oninput="lignes[${i}].libelle=this.value"></td>
       <td><input type="text" id="deb-t-${i}" value="${l.debit || ''}" placeholder="0" style="text-align:right;width:100%;font-family:var(--font-mono)"
         oninput="lignes[${i}].debit=parseFloat(this.value.replace(/[^0-9.]/g,''))||0;updateBalance()"></td>
       <td><input type="text" id="cre-t-${i}" value="${l.credit || ''}" placeholder="0" style="text-align:right;width:100%;font-family:var(--font-mono)"
@@ -3777,7 +3779,7 @@ function ligneCardHTML(i, l) {
           <div class="ligne-card-field">
             <div class="ligne-card-label">Compte</div>
             <div style="position:relative">
-              <input class="ligne-card-input" type="text" id="cpt-c-${i}" value="${l.compte}" placeholder="Compte…" style="font-family:var(--font-mono)"
+              <input class="ligne-card-input" type="text" id="cpt-c-${i}" value="${escapeAttr(l.compte)}" placeholder="Compte…" style="font-family:var(--font-mono)"
                 oninput="lignes[${i}].compte=this.value;updateAccountSuggest(${i},this,'card')"
                 onfocus="openPcModal((code,lib)=>{selectAccount(${i},code,lib);})"
                 onblur="hideDropdown('c-${i}')">
@@ -3786,7 +3788,7 @@ function ligneCardHTML(i, l) {
           </div>
           <div class="ligne-card-field">
             <div class="ligne-card-label">Libellé</div>
-            <input class="ligne-card-input" type="text" id="lib-c-${i}" value="${l.libelle || ''}" placeholder="Libellé…" oninput="lignes[${i}].libelle=this.value">
+            <input class="ligne-card-input" type="text" id="lib-c-${i}" value="${escapeAttr(l.libelle || '')}" placeholder="Libellé…" oninput="lignes[${i}].libelle=this.value">
           </div>
         </div>
         <div class="ligne-card-row">
@@ -4074,6 +4076,7 @@ async function saveEcriture() {
     societeId: currentSociete?.id || 'principale',
     ...groupInfo,
     createdAt: new Date().toISOString(),
+    ...(_pieceCourante ? { pieceRef: _pieceCourante.id || null, pieceHash: _pieceCourante.hash, pieceNom: _pieceCourante.nom } : {}),
     lignes: lignesSorted.map((l) => ({
       compte: String(l.compte),
       libelle: l.libelle || libelleCompte(l.compte),
@@ -4102,6 +4105,7 @@ async function saveEcriture() {
     const docId = await saveEcritureToFirestore(ecriture);
     if (!docId) return;
     ecritures.push(ecriture);
+    if (_pieceCourante) { _pieceCourante = null; pjStatut(''); }
     pieceCounter++;
     updateStats();
     if (comptesInconnus.length) {
@@ -4364,7 +4368,7 @@ function renderEcritureInGroupe(e, eIdx, totalInGroupe) {
       </span>
       <span class="jnl-step-equil ${equil ? 'ok' : 'nok'}">${equil ? '✓' : '✗'}</span>
       <button class="jnl-step-edit" onclick="ouvrirEditionEcriture('${e._docId}',${e.id},'journal')" title="Modifier cette écriture">✎</button>
-      <button class="jnl-step-del" onclick="deleteEcriture('${e._docId}',${e.id})" title="Supprimer cette écriture">✕</button>
+      ${e.pieceRef ? `<button class="jnl-step-edit" onclick="pjVoir('${escapeAttr(e.pieceRef)}')" title="Voir la pièce justificative">📎</button>` : ''}<button class="jnl-step-edit" onclick="dupliquerEcriture('${e._docId}',${e.id})" title="Dupliquer dans la saisie">⧉</button>${(!e.contrepasseePar && !e.contrepasseDe) ? `<button class="jnl-step-edit" onclick="contrepasserEcriture('${e._docId}',${e.id})" title="Contrepasser (annulation traçable)">↩</button>` : `<span class="jnl-step-edit" title="${e.contrepasseePar ? 'Contrepassée' : 'Écriture de contrepassation'}">⇄</span>`}<button class="jnl-step-del" onclick="deleteEcriture('${e._docId}',${e.id})" title="Supprimer cette écriture">✕</button>
     </div>
     <div class="jnl-ecriture-body">
       <table class="jnl-lignes-table">
@@ -4420,13 +4424,717 @@ async function deleteEcriture(docId, id) {
     toast(`🔒 Période ${String(ecr.date).substring(0,4)} verrouillée — suppression impossible. Exercice clôturé.`, 'error');
     return;
   }
-  if (!confirm('Supprimer cette écriture ?')) return;
+  if (ecr && (ecr.contrepasseePar || ecr.contrepasseDe)) {
+    toast('Suppression impossible : écriture liée à une contrepassation (conservée pour la traçabilité).', 'error');
+    return;
+  }
+  if (!confirm('Supprimer cette écriture ?\n\nPour conserver l\'historique, préférez « ↩ Contrepasser ».')) return;
   await deleteEcritureFromFirestore(docId);
   ecritures = ecritures.filter((e) => e.id !== id);
   updateStats();
   renderJournal();
   toast('Écriture supprimée', 'info');
 }
+
+// Contrepassation : crée une écriture inverse (débit/crédit échangés) et lie les deux, sans rien effacer.
+async function contrepasserEcriture(docId, id) {
+  const ecr = ecritures.find(e => e.id === id || (docId && e._docId === docId));
+  if (!ecr) { toast('Écriture introuvable', 'error'); return; }
+  if (ecr.contrepasseePar || ecr.contrepasseDe) { toast('Cette écriture a déjà été contrepassée ou est elle-même une contrepassation.', 'error'); return; }
+  const dateContre = new Date().toISOString().substring(0, 10);
+  if (isPeriodeLocked(dateContre)) { toast('🔒 Période courante verrouillée — contrepassation impossible.', 'error'); return; }
+  const motif = (prompt('Motif de la contrepassation (obligatoire) :') || '').trim();
+  if (!motif) { toast('Contrepassation annulée : motif requis.', 'info'); return; }
+  const contre = {
+    id: Date.now(),
+    date: dateContre,
+    journal: ecr.journal,
+    piece: ecr.piece || '',
+    libelle: 'Contrepassation — ' + (ecr.libelle || ''),
+    societeId: ecr.societeId || currentSociete?.id || 'principale',
+    createdAt: new Date().toISOString(),
+    contrepasseDe: ecr.id,
+    contrepasseMotif: motif,
+    lignes: ecr.lignes.map(l => ({
+      compte: String(l.compte),
+      libelle: l.libelle || '',
+      debit: Math.round((l.credit || 0) * 100) / 100,
+      credit: Math.round((l.debit || 0) * 100) / 100,
+    })),
+  };
+  const newDocId = await saveEcritureToFirestore(contre);
+  if (!newDocId) return;
+  ecritures.push(contre);
+  ecr.contrepasseePar = contre.id;
+  if (ecr._docId) await updateEcritureInFirestore(ecr._docId, { contrepasseePar: contre.id });
+  auditLog('CONTREPASSATION', 'COMPTABILITE', `Écriture ${ecr.piece || ecr.id} contrepassée (${motif})`);
+  updateStats();
+  renderJournal();
+  toast('↩ Contrepassation enregistrée — historique conservé', 'success');
+}
+window.contrepasserEcriture = contrepasserEcriture;
+
+function escapeAttr(str) {
+  return String(str ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+window.escapeAttr = escapeAttr;
+
+// ══════════════════════════════════════════
+// IMPORT EN MASSE DU JOURNAL — contrôle ligne par ligne, aperçu, rapport, aucun rejet silencieux
+// ══════════════════════════════════════════
+function csvParse(raw) {
+  let t = String(raw || '').replace(/^\uFEFF/, '');
+  const prem = t.split(/\r?\n/)[0] || '';
+  const sep = [';', '\t', ','].map((s) => [s, prem.split(s).length]).sort((a, b) => b[1] - a[1])[0][0];
+  const rows = []; let row = [], cur = '', q = false;
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i];
+    if (q) { if (ch === '"') { if (t[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += ch; }
+    else if (ch === '"') q = true;
+    else if (ch === sep) { row.push(cur); cur = ''; }
+    else if (ch === '\n' || ch === '\r') { if (ch === '\r' && t[i + 1] === '\n') i++; row.push(cur); cur = ''; if (row.some((c) => c.trim() !== '')) rows.push(row); row = []; }
+    else cur += ch;
+  }
+  row.push(cur); if (row.some((c) => c.trim() !== '')) rows.push(row);
+  return rows.map((r) => r.map((c) => c.trim()));
+}
+function montantImport(s) {
+  let t = String(s ?? '').replace(/[\s\u00a0\u202f]/g, '').replace(/^(?:F?CFA|XOF)|(?:F?CFA|XOF)$/gi, '');
+  if (t === '') return 0;
+  if (!/^\d[\d.,]*$/.test(t)) return NaN;
+  const p = t.lastIndexOf('.'), v = t.lastIndexOf(',');
+  const dec = Math.max(p, v);
+  if (p >= 0 && v >= 0) return parseFloat(t.slice(0, dec).replace(/[.,]/g, '') + '.' + t.slice(dec + 1));
+  if (dec >= 0) { const apres = t.length - dec - 1; if (apres === 3 && t.indexOf(t[dec]) === dec && t.split(t[dec]).length === 2 && dec > 0 && dec <= 3) return parseFloat(t.replace(/[.,]/g, '')); if (t.split(t[dec]).length > 2) return parseFloat(t.replace(/[.,]/g, '')); return apres <= 2 ? parseFloat(t.slice(0, dec) + '.' + t.slice(dec + 1)) : parseFloat(t.replace(/[.,]/g, '')); }
+  return parseFloat(t);
+}
+function dateImport(s) {
+  const t = String(s || '').trim(); let m;
+  let a, mo, j;
+  if ((m = t.match(/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})$/))) { a = +m[1]; mo = +m[2]; j = +m[3]; }
+  else if ((m = t.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4}|\d{2})$/))) { j = +m[1]; mo = +m[2]; a = m[3].length === 2 ? 2000 + +m[3] : +m[3]; }
+  else return null;
+  const d = new Date(Date.UTC(a, mo - 1, j));
+  if (d.getUTCFullYear() !== a || d.getUTCMonth() !== mo - 1 || d.getUTCDate() !== j || a < 1990 || a > 2100) return null;
+  return a + '-' + String(mo).padStart(2, '0') + '-' + String(j).padStart(2, '0');
+}
+const IMP_COLS = { date: ['date', 'dat', 'datepiece', 'dateecriture'], journal: ['journal', 'jnl', 'journ', 'codejournal'], piece: ['piece', 'numpiece', 'npiece', 'numeropiece', 'reference', 'ref'], compte: ['compte', 'numcompte', 'cpt', 'ncompte', 'numerocompte'], libelle: ['libelle', 'designation', 'intitule', 'description'], debit: ['debit', 'dbit', 'montantdebit'], credit: ['credit', 'crdit', 'montantcredit'] };
+function analyserLotJournal(raw, ctx) {
+  const tab = csvParse(raw);
+  const globales = [];
+  if (tab.length < 2) return { groupes: [], globales: ['Fichier vide ou non reconnu.'], nbLignes: 0 };
+  const nrm = (h) => String(h).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
+  const head = tab[0].map(nrm);
+  const idx = {};
+  Object.keys(IMP_COLS).forEach((k) => { idx[k] = head.findIndex((h) => IMP_COLS[k].includes(h)); });
+  ['date', 'piece', 'compte', 'debit', 'credit'].forEach((k) => { if (idx[k] < 0) globales.push('Colonne obligatoire introuvable : ' + k + '.'); });
+  if (globales.length) return { groupes: [], globales, nbLignes: tab.length - 1 };
+  const MAX = 5000;
+  if (tab.length - 1 > MAX) globales.push('Fichier limité à ' + MAX + ' lignes : scindez-le.');
+  const groupes = new Map();
+  tab.slice(1, MAX + 1).forEach((c, i) => {
+    const ligneN = i + 2; const g = (k) => (idx[k] >= 0 ? (c[idx[k]] || '') : '');
+    const date = dateImport(g('date')); const journal = (g('journal') || 'OD').toUpperCase(); const piece = g('piece');
+    const cle = (date || g('date')) + '|' + journal + '|' + piece;
+    if (!groupes.has(cle)) groupes.set(cle, { cle, date, journal, piece, libelle: '', lignes: [], msgs: [], nums: [] });
+    const G = groupes.get(cle); G.nums.push(ligneN);
+    const compte = g('compte').replace(/\s/g, ''); const lib = g('libelle');
+    const d = montantImport(g('debit')), cr = montantImport(g('credit'));
+    if (!G.libelle && lib) G.libelle = lib;
+    if (!compte) G.msgs.push({ n: 'critique', t: 'Ligne ' + ligneN + ' : compte manquant.' });
+    else if (!/^[1-9]\d{1,11}$/.test(compte)) G.msgs.push({ n: 'critique', t: 'Ligne ' + ligneN + ' : numéro de compte invalide (' + compte.substring(0, 14) + ').' });
+    if (isNaN(d) || isNaN(cr)) G.msgs.push({ n: 'critique', t: 'Ligne ' + ligneN + ' : montant illisible.' });
+    else if (d > 0 && cr > 0) G.msgs.push({ n: 'attention', t: 'Ligne ' + ligneN + ' : débit et crédit sur la même ligne.' });
+    else if (!(d > 0) && !(cr > 0)) G.msgs.push({ n: 'critique', t: 'Ligne ' + ligneN + ' : aucun montant.' });
+    G.lignes.push({ compte, libelle: lib, debit: isNaN(d) ? 0 : Math.round(d * 100) / 100, credit: isNaN(cr) ? 0 : Math.round(cr * 100) / 100 });
+  });
+  const vus = new Map();
+  const auj = new Date().toISOString().substring(0, 10);
+  const liste = [...groupes.values()];
+  liste.forEach((G) => {
+    if (!G.date) G.msgs.push({ n: 'critique', t: 'Date absente ou invalide (formats : AAAA-MM-JJ ou JJ/MM/AAAA).' });
+    else if (G.date > auj) G.msgs.push({ n: 'attention', t: 'Date future (' + G.date + ').' });
+    if (G.date && ctx.locked && ctx.locked(G.date)) G.msgs.push({ n: 'critique', t: 'Période verrouillée (' + G.date.substring(0, 4) + ').' });
+    if (!G.piece) G.msgs.push({ n: 'critique', t: 'Numéro de pièce manquant.' });
+    if (ctx.journaux && !ctx.journaux[G.journal]) G.msgs.push({ n: 'critique', t: 'Journal inconnu : ' + G.journal.substring(0, 10) + '.' });
+    if (G.lignes.length < 2) G.msgs.push({ n: 'critique', t: 'Moins de deux lignes.' });
+    const td = Math.round(G.lignes.reduce((s, l) => s + l.debit, 0) * 100) / 100, tc = Math.round(G.lignes.reduce((s, l) => s + l.credit, 0) * 100) / 100;
+    G.td = td; G.tc = tc;
+    if (Math.abs(td - tc) >= 0.01) G.msgs.push({ n: 'critique', t: 'Déséquilibre : débit ' + td + ' ≠ crédit ' + tc + '.' });
+    const inconnus = [...new Set(G.lignes.map((l) => l.compte).filter((c) => c && ctx.plan[c] === undefined))];
+    if (inconnus.length) G.msgs.push({ n: ctx.collab ? 'critique' : 'attention', t: (ctx.collab ? 'Compte(s) hors plan — validation du propriétaire requise : ' : 'Compte(s) hors plan comptable : ') + inconnus.slice(0, 5).join(', ') + '.' });
+    const exist = (ctx.existantes || []).find((e) => e.date === G.date && e.journal === G.journal && String(e.piece || '') === G.piece);
+    if (exist) G.msgs.push({ n: 'critique', t: 'Pièce déjà enregistrée (même date, journal et numéro).' });
+    const sig = [G.date, G.journal, td.toFixed(2), G.lignes.map((l) => l.compte).sort().join('|')].join('#');
+    if (vus.has(sig)) G.msgs.push({ n: 'attention', t: 'Doublon potentiel de la pièce ' + vus.get(sig) + ' dans ce fichier.' }); else vus.set(sig, G.piece);
+    const sigEx = (ctx.existantes || []).find((e) => !e.contrepasseDe && [e.date, e.journal, (e.lignes || []).reduce((s, l) => s + (l.debit || 0), 0).toFixed(2), (e.lignes || []).map((l) => String(l.compte).trim()).sort().join('|')].join('#') === sig);
+    if (sigEx && !exist) G.msgs.push({ n: 'attention', t: 'Doublon potentiel de la pièce ' + (sigEx.piece || sigEx.id) + ' déjà en base.' });
+    G.statut = G.msgs.some((m) => m.n === 'critique') ? 'erreur' : G.msgs.length ? 'avertissement' : 'ok';
+  });
+  return { groupes: liste, globales, nbLignes: tab.length - 1 };
+}
+
+function importFermer() { document.getElementById('impPreviewModal')?.remove(); }
+function importRapportCSV(res) {
+  const q = (v) => '"' + String(v).replace(/"/g, '""') + '"';
+  const l = ['Pièce;Date;Journal;Statut;Lignes fichier;Messages'].concat(res.groupes.map((g) => [q(g.piece), q(g.date || ''), q(g.journal), q(g.statut), q(g.nums.join(',')), q(g.msgs.map((m) => m.t).join(' | '))].join(';')));
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['\uFEFF' + l.join('\r\n')], { type: 'text/csv;charset=utf-8' })); a.download = 'rapport_import_journal.csv'; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+async function importJournalApercu(raw) {
+  const res = analyserLotJournal(raw, { plan: PC, existantes: ecritures, locked: isPeriodeLocked, journaux: JOURNAL_NAMES, collab: typeof isCollabMode !== 'undefined' && isCollabMode });
+  importFermer();
+  const ov = document.createElement('div');
+  ov.id = 'impPreviewModal'; ov.className = 'modal-overlay'; ov.style.display = 'flex';
+  const nb = (s) => res.groupes.filter((g) => g.statut === s).length;
+  const ico = { ok: '✓', avertissement: '⚠', erreur: '✕' };
+  const cls = { ok: 'ctl-info', avertissement: 'ctl-attention', erreur: 'ctl-critique' };
+  const MAXV = 200;
+  ov.innerHTML = `<div class="modal-box" style="width:820px;max-width:96vw;max-height:90vh;overflow-y:auto">
+    <div class="modal-title">📥 Import du journal — aperçu avant enregistrement</div>
+    ${res.globales.map((g) => `<div class="ctl-item ctl-critique"><div class="ctl-detail">${escapeHtml(g)}</div></div>`).join('')}
+    <div class="ctl-summary"><span class="ctl-pill ctl-info">${nb('ok')} valide(s)</span><span class="ctl-pill ctl-attention">${nb('avertissement')} avertissement(s)</span><span class="ctl-pill ctl-critique">${nb('erreur')} rejetée(s)</span><span class="ctl-meta">${res.nbLignes} ligne(s) · ${res.groupes.length} écriture(s)</span></div>
+    <label style="font-size:12.5px;display:block;margin:6px 0"><input type="checkbox" id="imp-avert" checked> Inclure les écritures avec avertissement</label>
+    <div style="max-height:46vh;overflow-y:auto">${res.groupes.slice(0, MAXV).map((g) => `<div class="ctl-item ${cls[g.statut]}"><div class="ctl-title">${ico[g.statut]} ${escapeHtml(g.piece || '(sans pièce)')} · ${escapeHtml(g.date || 'date ?')} · ${escapeHtml(g.journal)} · ${escapeHtml(g.libelle || '')}</div><div class="ctl-detail">Débit ${fn(g.td)} · Crédit ${fn(g.tc)} · ${g.lignes.length} ligne(s)</div>${g.msgs.map((m) => `<div class="ctl-action">${escapeHtml(m.t)}</div>`).join('')}</div>`).join('')}${res.groupes.length > MAXV ? `<div class="ctl-detail">… ${res.groupes.length - MAXV} autre(s) non affichée(s) (le rapport CSV les contient toutes).</div>` : ''}</div>
+    <div class="ph-actions" style="margin-top:12px;justify-content:flex-end">
+      <button type="button" class="btn btn-sm-wire" id="imp-rapport">↓ Rapport CSV</button>
+      <button type="button" class="btn btn-sm-wire" id="imp-annuler">Annuler</button>
+      <button type="button" class="btn btn-ink" id="imp-go"></button>
+    </div><div id="imp-prog" class="ctl-detail" style="margin-top:8px"></div></div>`;
+  document.body.appendChild(ov);
+  const choisies = () => res.groupes.filter((g) => g.statut === 'ok' || (g.statut === 'avertissement' && document.getElementById('imp-avert').checked));
+  const maj = () => { const b = document.getElementById('imp-go'); const n = choisies().length; b.textContent = 'Importer ' + n + ' écriture(s)'; b.disabled = n === 0; };
+  document.getElementById('imp-avert').addEventListener('change', maj); maj();
+  document.getElementById('imp-annuler').addEventListener('click', importFermer);
+  document.getElementById('imp-rapport').addEventListener('click', () => importRapportCSV(res));
+  document.getElementById('imp-go').addEventListener('click', async () => {
+    const sel = choisies(); const batch = 'IMP-' + Date.now(); const prog = document.getElementById('imp-prog');
+    document.getElementById('imp-go').disabled = true; let ok = 0;
+    try {
+      for (const G of sel) {
+        prog.textContent = 'Enregistrement ' + (ok + 1) + ' / ' + sel.length + '…';
+        const e = { id: Date.now() + ok, date: G.date, journal: G.journal, piece: G.piece, libelle: G.libelle || '', societeId: currentSociete?.id || 'principale', createdAt: new Date().toISOString(), source: 'import_csv', importBatch: batch, lignes: G.lignes.map((l) => ({ compte: l.compte, libelle: l.libelle || libelleCompte(l.compte), debit: l.debit, credit: l.credit })) };
+        const ref = await window._fbAddDoc(window._fbCollection(window._db, 'profiles', getOwnerProfileId(), 'ecritures'), e);
+        e._docId = ref.id; ecritures.push(e); ok++;
+      }
+      toast('✓ ' + ok + ' écriture(s) importée(s) — lot ' + batch, 'success');
+    } catch (err) {
+      toast('Import interrompu après ' + ok + ' écriture(s) : ' + err.message + ' — les écritures déjà enregistrées sont conservées (lot ' + batch + ').', 'error');
+    }
+    auditLog('IMPORT_JOURNAL', 'COMPTABILITE', `Lot ${batch} : ${ok} importée(s), ${res.groupes.length - sel.length} non importée(s) (${nb('erreur')} rejetée(s))`);
+    updateStats(); renderJournal(); importFermer();
+  });
+}
+window.importJournalApercu = importJournalApercu;
+
+// ══════════════════════════════════════════
+// PIÈCE JUSTIFICATIVE + OCR LOCAL → JOURNAL INTELLIGENT (aucune IA externe)
+// ══════════════════════════════════════════
+let _pieceCourante = null; // { id, nom, hash, mime }
+function ocrNombre(s) {
+  let t = String(s).replace(/[\s\u00a0\u202f]/g, '');
+  const m = t.match(/^(\d{1,3}(?:[.,]\d{3})+|\d+)(?:[.,](\d{1,2}))?$/);
+  if (!m) return null;
+  const ent = m[1].replace(/[.,]/g, '');
+  return parseFloat(ent + (m[2] ? '.' + m[2] : ''));
+}
+function ocrMontantsLigne(ligne) {
+  const sansPct = ligne.replace(/\d{1,2}(?:[.,]\d+)?\s*%/g, ' ');
+  const bruts = sansPct.match(/\d[\d\s\u00a0\u202f.,]*\d|\d/g) || [];
+  return bruts.map(ocrNombre).filter((n) => n !== null && n > 0);
+}
+function ocrExtraire(texte) {
+  const lignes = String(texte || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const norm = (l) => l.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const trouve = (re, exclure) => {
+    for (let i = 0; i < lignes.length; i++) {
+      const n = norm(lignes[i]);
+      if (re.test(n) && !(exclure && exclure.test(n))) {
+        let m = ocrMontantsLigne(lignes[i]);
+        if (!m.length && lignes[i + 1]) m = ocrMontantsLigne(lignes[i + 1]);
+        if (m.length) return Math.max(...m);
+      }
+    }
+    return null;
+  };
+  const ttc = trouve(/net a payer|total ttc|montant ttc|total general|a payer|total a regler/) ?? trouve(/\btotal\b/, /\bht\b|hors taxe|sous.?total/);
+  const ht = trouve(/total ht|montant ht|hors taxe|sous.?total/);
+  const tva = trouve(/\btva\b/, /taux/);
+  let taux = null;
+  for (const l of lignes) { if (/tva|t\.v\.a/i.test(l)) { const m = l.match(/(\d{1,2}(?:[.,]\d+)?)\s*%/); if (m) { taux = parseFloat(m[1].replace(',', '.')); break; } } }
+  let date = null;
+  for (const l of lignes) {
+    const m = l.match(/\b(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2}|\d{4})\b/);
+    if (m) { const a = m[3].length === 2 ? 2000 + +m[3] : +m[3]; const mo = +m[2], j = +m[1]; if (mo >= 1 && mo <= 12 && j >= 1 && j <= 31 && a >= 2000 && a <= 2100) { date = a + '-' + String(mo).padStart(2, '0') + '-' + String(j).padStart(2, '0'); break; } }
+  }
+  let numero = null;
+  for (const l of lignes) { const m = l.match(/(?:facture|fact\.?|invoice)\s*(?:n[°o]?|num[ée]ro|#|:)?\s*[:\-]?\s*([A-Z0-9][A-Z0-9\/\-]{2,19})/i); if (m && /\d/.test(m[1])) { numero = m[1]; break; } }
+  const t = norm(texte);
+  const mots = ['loyer', 'electricite', 'eau', 'carburant', 'fourniture', 'transport', 'entretien', 'reparation', 'telephone', 'marchandise', 'prestation'].filter((w) => new RegExp('\\b' + w).test(t));
+  const alertes = [];
+  if (ttc === null) alertes.push('Montant TTC non lu : saisissez-le.');
+  if (ttc !== null && ht !== null && tva !== null && Math.abs(ht + tva - ttc) > Math.max(1, ttc * 0.005)) alertes.push('HT + TVA ≠ TTC : vérifiez la lecture.');
+  if (ttc !== null && ht !== null && ht > ttc) alertes.push('HT supérieur au TTC : lecture douteuse.');
+  let tauxCalc = taux;
+  if (ttc !== null && ht !== null && ht > 0 && ht <= ttc) { const r = Math.round(((ttc / ht - 1) * 100) * 100) / 100; if (!alertes.length) tauxCalc = r; }
+  return { ttc, ht, tva, taux: tauxCalc, date, numero, mots, alertes };
+}
+
+function pjLireFichier(file) { return new Promise((ok, ko) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = () => ko(new Error('Lecture du fichier impossible')); r.readAsDataURL(file); }); }
+async function pjCompresser(dataUrl) {
+  const img = await new Promise((ok, ko) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => ko(new Error('Image illisible')); i.src = dataUrl; });
+  const k = Math.min(1, 1100 / Math.max(img.width, img.height));
+  const c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+  for (const q of [0.7, 0.55, 0.4, 0.3]) { const out = c.toDataURL('image/jpeg', q); if (out.length < 700000) return out; }
+  throw new Error('Image trop lourde même après compression.');
+}
+function pjStatut(html) { const el = document.getElementById('pj-status'); if (el) el.innerHTML = html; }
+async function pjDeposer(file) {
+  if (!file) return;
+  if (!/^image\/(jpeg|png|webp)$/.test(file.type)) { pjStatut('<div class="ctl-item ctl-attention"><div class="ctl-detail">Format non pris en charge : utilisez une image JPEG, PNG ou WebP (les PDF ne sont pas lus par l\'OCR).</div></div>'); return; }
+  if (file.size > 8 * 1024 * 1024) { pjStatut('<div class="ctl-item ctl-attention"><div class="ctl-detail">Fichier trop volumineux (8 Mo maximum).</div></div>'); return; }
+  pjStatut('<div class="ctl-detail">⏳ Lecture de la pièce (OCR local)… cela peut prendre quelques secondes.</div>');
+  try {
+    const dataUrl = await pjLireFichier(file);
+    const img = await _chargerImageDansCanvas(dataUrl);
+    let texte = await _ocrPass(pretraiterImageOCR(img, 'contrast'), { lang: 'fra' });
+    if (!String(texte || '').trim()) texte = await _ocrPass(pretraiterImageOCR(img, 'binarize'), { lang: 'fra' });
+    if (!String(texte || '').trim()) throw new Error('Aucun texte lisible (ou OCR indisponible). Reprenez la photo plus nette, ou saisissez la description à la main.');
+    const x = ocrExtraire(texte);
+    const comp = await pjCompresser(dataUrl);
+    const hash = await sha256Hex(comp);
+    const deja = ecritures.find((e) => e.pieceHash === hash);
+    let id = null;
+    try {
+      const ref = await window._fbAddDoc(window._fbCollection(window._db, 'profiles', getOwnerProfileId(), 'pieces_justificatives'), { nom: String(file.name).substring(0, 120), mime: 'image/jpeg', data: comp, hash, size: comp.length, createdAt: new Date().toISOString(), createdBy: currentProfile?.email || '', extraction: { ttc: x.ttc, ht: x.ht, tva: x.tva, taux: x.taux, date: x.date, numero: x.numero } });
+      id = ref.id;
+    } catch (e) { toast('Pièce lue mais non sauvegardée : ' + e.message, 'error'); }
+    _pieceCourante = { id, nom: file.name, hash };
+    const sens = document.getElementById('pj-sens').value;
+    const base = { achat_credit: 'achat', achat_banque: 'achat payé par banque', achat_caisse: 'achat payé par caisse', vente_credit: 'vente', vente_banque: 'vente encaissée par banque' }[sens] || 'achat';
+    document.getElementById('ij-desc').value = (base + ' ' + x.mots.join(' ') + (x.numero ? ' facture ' + x.numero : '')).replace(/\s+/g, ' ').trim();
+    if (x.ttc !== null) document.getElementById('ij-montant').value = x.ttc;
+    if (x.taux !== null) document.getElementById('ij-taux').value = x.taux;
+    const auj = new Date().toISOString().substring(0, 10);
+    if (x.date && x.date <= auj) document.getElementById('ecr-date').value = x.date;
+    const lu = [['TTC', x.ttc], ['HT', x.ht], ['TVA', x.tva], ['Taux', x.taux !== null ? x.taux + ' %' : null], ['Date', x.date], ['N°', x.numero]].filter((p) => p[1] !== null && p[1] !== undefined);
+    const al = x.alertes.slice(); if (deja) al.push('Cette pièce est déjà jointe à l\'écriture ' + (deja.piece || deja.id) + ' (même contenu).');
+    pjStatut(`<div class="ctl-item ctl-info"><div class="ctl-title">📎 ${escapeHtml(file.name)}</div><div class="ctl-detail">Lu automatiquement : ${escapeHtml(lu.map((p) => p[0] + ' ' + p[1]).join(' · ') || 'rien d\'exploitable')}. Vérifiez avant de valider.</div></div>` + al.map((a) => `<div class="ctl-item ctl-attention"><div class="ctl-detail">${escapeHtml(a)}</div></div>`).join('') + '<div class="ph-actions"><button type="button" class="btn btn-sm-wire" onclick="pjRetirer()">Retirer la pièce</button></div>');
+    auditLog('PIECE_JUSTIFICATIVE', 'COMPTABILITE', 'Pièce déposée : ' + file.name);
+    ijLancer();
+  } catch (e) { _pieceCourante = null; pjStatut(`<div class="ctl-item ctl-critique"><div class="ctl-detail">${escapeHtml(e.message || String(e))}</div></div>`); }
+}
+function pjRetirer() { _pieceCourante = null; pjStatut(''); }
+async function pjVoir(id) {
+  if (!id) return;
+  try {
+    const col = window._fbCollection(window._db, 'profiles', getOwnerProfileId(), 'pieces_justificatives');
+    const snap = await window._fbGetDocs(col);
+    let d = null; snap.forEach((x) => { if (x.id === id) d = x.data(); });
+    if (!d || !String(d.data || '').startsWith('data:image/')) { toast('Pièce introuvable', 'error'); return; }
+    const ov = document.createElement('div');
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px;cursor:zoom-out';
+    const im = document.createElement('img'); im.src = d.data; im.alt = d.nom || 'Pièce'; im.style.cssText = 'max-width:100%;max-height:100%;border-radius:8px';
+    ov.appendChild(im); ov.onclick = () => ov.remove(); document.body.appendChild(ov);
+  } catch (e) { toast('Erreur ouverture pièce : ' + e.message, 'error'); }
+}
+Object.assign(window, { pjDeposer, pjRetirer, pjVoir });
+
+// ══════════════════════════════════════════
+// SAISIE RAPIDE : modèles récurrents, duplication, prévisualisation, raccourcis
+// ══════════════════════════════════════════
+let _modeles = [];
+function ecrAnalyser(lg, plan, date, journal, existantes, soldesAvant) {
+  const lignesOk = (lg || []).filter((l) => String(l.compte || '').trim() && ((parseFloat(l.debit) || 0) > 0 || (parseFloat(l.credit) || 0) > 0));
+  const r2 = (n) => Math.round(n * 100) / 100;
+  const d = r2(lignesOk.reduce((s, l) => s + (parseFloat(l.debit) || 0), 0));
+  const c = r2(lignesOk.reduce((s, l) => s + (parseFloat(l.credit) || 0), 0));
+  const pb = [];
+  if (lignesOk.length < 2) pb.push({ n: 'critique', t: 'Il faut au moins deux lignes renseignées.' });
+  if (Math.abs(d - c) >= 0.01) pb.push({ n: 'critique', t: 'Écriture déséquilibrée : écart de ' + r2(Math.abs(d - c)) + '.' });
+  if (!date || isNaN(Date.parse(date))) pb.push({ n: 'critique', t: 'Date absente ou invalide.' });
+  lignesOk.forEach((l) => {
+    if ((parseFloat(l.debit) || 0) > 0 && (parseFloat(l.credit) || 0) > 0) pb.push({ n: 'attention', t: 'Compte ' + l.compte + ' : débit et crédit sur la même ligne.' });
+    if (plan[String(l.compte).trim()] === undefined) pb.push({ n: 'attention', t: 'Compte ' + l.compte + ' absent du plan comptable.' });
+  });
+  const cle = [date, journal, d.toFixed(2), lignesOk.map((l) => String(l.compte).trim()).sort().join('|')].join('#');
+  const dup = (existantes || []).find((e) => !e.contrepasseDe && [e.date, e.journal, (e.lignes || []).reduce((s, l) => s + (l.debit || 0), 0).toFixed(2), (e.lignes || []).map((l) => String(l.compte).trim()).sort().join('|')].join('#') === cle);
+  if (dup) pb.push({ n: 'attention', t: 'Doublon potentiel de la pièce ' + (dup.piece || dup.id) + ' (même date, journal, montant et comptes).' });
+  const impact = {};
+  lignesOk.forEach((l) => { const k = String(l.compte).trim(); impact[k] = r2((impact[k] || 0) + (parseFloat(l.debit) || 0) - (parseFloat(l.credit) || 0)); });
+  const soldes = Object.keys(impact).map((k) => ({ compte: k, avant: soldesAvant[k] || 0, variation: impact[k], apres: r2((soldesAvant[k] || 0) + impact[k]) }));
+  return { d, c, ecart: r2(d - c), pb, soldes, bloquant: pb.some((p) => p.n === 'critique') };
+}
+function ecrPrevisualiser() {
+  const box = document.getElementById('ecr-previsu');
+  if (!box) return;
+  const map = getMap();
+  const soldesAvant = {};
+  Object.keys(map).forEach((k) => { soldesAvant[k] = Math.round((map[k].debit - map[k].credit) * 100) / 100; });
+  const a = ecrAnalyser(lignes, PC, document.getElementById('ecr-date').value, document.getElementById('ecr-journal').value, ecritures, soldesAvant);
+  const sg = (n) => (n >= 0 ? fn(n) + ' D' : fn(-n) + ' C');
+  box.innerHTML = `<div class="ctl-summary"><span class="ctl-pill ${a.bloquant ? 'ctl-critique' : a.pb.length ? 'ctl-attention' : 'ctl-info'}">${a.bloquant ? 'Non validable' : a.pb.length ? 'À vérifier' : 'Prête à valider'}</span><span class="ctl-meta">Débit ${fn(a.d)} · Crédit ${fn(a.c)}</span></div>
+  ${a.pb.map((p) => `<div class="ctl-item ctl-${p.n}"><div class="ctl-detail">${escapeHtml(p.t)}</div></div>`).join('')}
+  ${a.soldes.length ? `<table class="ij-table"><thead><tr><th>Compte</th><th>Intitulé</th><th>Solde avant</th><th>Variation</th><th>Solde après</th></tr></thead><tbody>${a.soldes.map((s) => `<tr><td>${escapeHtml(s.compte)}</td><td>${escapeHtml(libelleCompte(s.compte))}</td><td style="text-align:right">${sg(s.avant)}</td><td style="text-align:right">${sg(s.variation)}</td><td style="text-align:right">${sg(s.apres)}</td></tr>`).join('')}</tbody></table>` : ''}`;
+  return a;
+}
+// ── Modèles d'écritures récurrentes (Firestore : profiles/{owner}/modeles_ecritures) ──
+function modelesRender() {
+  const sel = document.getElementById('mdl-select');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">— Modèles récurrents —</option>' + _modeles.map((m, i) => `<option value="${i}">${escapeHtml(m.nom)}</option>`).join('');
+}
+async function loadModeles() {
+  try {
+    const snap = await window._fbGetDocs(window._fbCollection(window._db, 'profiles', getOwnerProfileId(), 'modeles_ecritures'));
+    _modeles = []; snap.forEach((d) => _modeles.push({ ...d.data(), _docId: d.id }));
+    modelesRender();
+  } catch (e) { console.warn('[COMEO] Modèles non chargés :', e.message); }
+}
+async function modeleEnregistrer() {
+  const lg = lignes.filter((l) => String(l.compte || '').trim());
+  if (lg.length < 2) { toast('Renseignez au moins deux lignes avant d\'enregistrer un modèle.', 'error'); return; }
+  const nom = (prompt('Nom du modèle (ex. Loyer mensuel) :') || '').trim().substring(0, 60);
+  if (!nom) return;
+  const m = { nom, journal: document.getElementById('ecr-journal').value, libelle: (document.getElementById('ecr-libelle').value || '').substring(0, 120), lignes: lg.map((l) => ({ compte: String(l.compte).trim(), libelle: String(l.libelle || '').substring(0, 120), debit: parseFloat(l.debit) || 0, credit: parseFloat(l.credit) || 0 })), createdAt: new Date().toISOString(), createdBy: currentProfile?.email || '' };
+  try {
+    const ref = await window._fbAddDoc(window._fbCollection(window._db, 'profiles', getOwnerProfileId(), 'modeles_ecritures'), m);
+    m._docId = ref.id; _modeles.push(m); modelesRender();
+    auditLog('MODELE_ECRITURE', 'COMPTABILITE', 'Modèle créé : ' + nom);
+    toast('✓ Modèle « ' + nom + ' » enregistré', 'success');
+  } catch (e) { toast('Erreur enregistrement du modèle : ' + e.message, 'error'); }
+}
+function modeleAppliquer() {
+  const i = document.getElementById('mdl-select').value;
+  if (i === '') return;
+  const m = _modeles[+i]; if (!m) return;
+  chargerLignesDansSaisie(m.journal, m.libelle, m.lignes);
+  const absents = m.lignes.map((l) => l.compte).filter((c) => PC[c] === undefined);
+  toast(absents.length ? 'Modèle appliqué — compte(s) absent(s) du plan : ' + absents.join(', ') : 'Modèle appliqué — vérifiez les montants', absents.length ? 'error' : 'info');
+}
+async function modeleSupprimer() {
+  const i = document.getElementById('mdl-select').value;
+  const m = _modeles[+i]; if (i === '' || !m) return;
+  if (!confirm('Supprimer le modèle « ' + m.nom + ' » ?')) return;
+  try { await window._fbDeleteDoc(window._fbDoc(window._db, 'profiles', getOwnerProfileId(), 'modeles_ecritures', m._docId)); _modeles.splice(+i, 1); modelesRender(); auditLog('MODELE_ECRITURE', 'COMPTABILITE', 'Modèle supprimé : ' + m.nom); }
+  catch (e) { toast('Erreur suppression : ' + e.message, 'error'); }
+}
+function chargerLignesDansSaisie(journal, libelle, lg) {
+  lignes.length = 0;
+  lg.forEach((l) => addLigne(String(l.compte || ''), l.libelle || '', l.debit || '', l.credit || ''));
+  while (lignes.length < 4) addLigne();
+  const j = document.getElementById('ecr-journal'); if (j && journal) j.value = journal;
+  const lib = document.getElementById('ecr-libelle'); if (lib) lib.value = libelle || '';
+  document.getElementById('ecr-piece').value = '';
+  document.getElementById('ecr-date').value = new Date().toISOString().split('T')[0];
+  renderLignes();
+  if (typeof updateBalance === 'function') updateBalance();
+}
+// ── Duplication depuis le journal (nouvelle pièce, date du jour, rien n'est enregistré) ──
+function dupliquerEcriture(docId, id) {
+  const e = ecritures.find((x) => x.id === id || (docId && x._docId === docId));
+  if (!e) { toast('Écriture introuvable', 'error'); return; }
+  navigate('saisie');
+  chargerLignesDansSaisie(e.journal, e.libelle, e.lignes);
+  auditLog('DUPLICATION', 'COMPTABILITE', 'Écriture ' + (e.piece || e.id) + ' dupliquée dans la saisie');
+  toast('⧉ Écriture dupliquée dans la saisie — ajustez puis validez', 'info');
+}
+// ── Raccourcis clavier personnalisables (stockés dans ce navigateur) ──
+const RC_DEFAUT = { valider: 'Ctrl+Enter', ligne: 'Alt+N', previsu: 'Alt+P', modele: 'Alt+M' };
+const RC_NOMS = { valider: 'Valider l\'écriture', ligne: 'Ajouter une ligne', previsu: 'Prévisualiser', modele: 'Choisir un modèle' };
+function rcLire() { try { return { ...RC_DEFAUT, ...(JSON.parse(localStorage.getItem('comeo_raccourcis') || '{}')) }; } catch (e) { return { ...RC_DEFAUT }; } }
+function rcCombo(ev) { return (ev.ctrlKey || ev.metaKey ? 'Ctrl+' : '') + (ev.altKey ? 'Alt+' : '') + (ev.shiftKey ? 'Shift+' : '') + (ev.key.length === 1 ? ev.key.toUpperCase() : ev.key); }
+function rcEditer() {
+  const rc = rcLire();
+  const act = prompt('Action à modifier :\n' + Object.keys(RC_NOMS).map((k) => '- ' + k + ' (' + RC_NOMS[k] + ') = ' + rc[k]).join('\n') + '\n\nTapez le nom de l\'action :');
+  if (!act || !RC_NOMS[act]) return;
+  const nv = (prompt('Nouveau raccourci pour « ' + RC_NOMS[act] + ' » (ex. Alt+K, Ctrl+Enter) :', rc[act]) || '').trim();
+  if (!/^((Ctrl|Alt|Shift)\+)*[A-Za-z0-9]$|^((Ctrl|Alt|Shift)\+)*Enter$/.test(nv)) { toast('Format de raccourci invalide.', 'error'); return; }
+  if (Object.keys(rc).some((k) => k !== act && rc[k].toLowerCase() === nv.toLowerCase())) { toast('Ce raccourci est déjà utilisé.', 'error'); return; }
+  rc[act] = nv.replace(/^(.)/, (m) => m.toUpperCase());
+  try { localStorage.setItem('comeo_raccourcis', JSON.stringify(rc)); toast('Raccourci enregistré', 'success'); } catch (e) { toast('Stockage local indisponible', 'error'); }
+}
+document.addEventListener('keydown', (ev) => {
+  if (!document.getElementById('view-saisie')?.classList.contains('active')) return;
+  const combo = rcCombo(ev).toLowerCase();
+  const rc = rcLire();
+  const hit = Object.keys(rc).find((k) => rc[k].toLowerCase() === combo);
+  if (!hit) return;
+  ev.preventDefault();
+  if (hit === 'valider') { const a = ecrPrevisualiser(); if (a && a.bloquant) { toast('Validation bloquée : corrigez les points critiques.', 'error'); return; } saveEcriture(); }
+  else if (hit === 'ligne') addLigne();
+  else if (hit === 'previsu') ecrPrevisualiser();
+  else if (hit === 'modele') document.getElementById('mdl-select')?.focus();
+});
+Object.assign(window, { ecrPrevisualiser, modeleEnregistrer, modeleAppliquer, modeleSupprimer, dupliquerEcriture, rcEditer });
+
+// ══════════════════════════════════════════
+// PLAN COMPTABLE EXTENSIBLE (validation, persistance, historique, vérification)
+// ══════════════════════════════════════════
+let _pcStd = null;          // codes du référentiel (figés avant ajout des comptes perso)
+const _pcPerso = new Set(); // codes personnalisés de l'entreprise
+function pcValider(plan, code, libelle, opts = {}) {
+  const erreurs = [], avertissements = [];
+  code = String(code || '').trim();
+  libelle = String(libelle || '').trim();
+  if (!/^[1-8]\d{1,11}$/.test(code)) erreurs.push('Numéro invalide : 2 à 12 chiffres, première position de 1 à 8.');
+  if (!libelle) erreurs.push('Intitulé obligatoire.');
+  else if (libelle.length > 120) erreurs.push('Intitulé trop long (120 caractères maximum).');
+  if (!opts.modif && plan[code] !== undefined) erreurs.push('Ce numéro existe déjà : « ' + plan[code] + ' ».');
+  let parent = null;
+  if (!erreurs.length && code.length > 2) {
+    for (let l = code.length - 1; l >= 2; l--) { if (plan[code.slice(0, l)] !== undefined) { parent = code.slice(0, l); break; } }
+    if (!parent) erreurs.push('Aucun compte parent dans le plan (ex. ' + code.slice(0, 2) + '…). Créez d\'abord le compte de rang supérieur.');
+    else if (parent.length < code.length - 3) avertissements.push('Parent le plus proche : ' + parent + ' — plusieurs rangs intermédiaires manquent.');
+  }
+  return { ok: !erreurs.length, erreurs, avertissements, parent, code, libelle };
+}
+function pcVerifierPlan(plan, codesUtilises) {
+  const pb = [];
+  Object.keys(plan).forEach((c) => {
+    if (!/^[1-8]\d{1,11}$/.test(c)) { pb.push('Numéro invalide : ' + c); return; }
+    if (!String(plan[c] || '').trim()) pb.push('Intitulé vide : ' + c);
+    if (c.length > 2 && !Object.keys(plan).some((p) => p.length >= 2 && p.length < c.length && c.startsWith(p))) pb.push('Compte orphelin (aucun parent) : ' + c);
+  });
+  (codesUtilises || []).forEach((c) => { if (plan[c] === undefined) pb.push('Utilisé en écriture mais absent du plan : ' + c); });
+  return pb;
+}
+function pcEstPerso(code) { return _pcPerso.has(String(code)); }
+function pcCodesUtilises() { return [...new Set(ecritures.flatMap((e) => (e.lignes || []).map((l) => String(l.compte || '').trim())).filter(Boolean))]; }
+async function pcPersister(code, libelle, action, avant) {
+  try {
+    const owner = getOwnerProfileId();
+    const user = currentProfile?.email || currentProfile?.company || 'Inconnu';
+    const ts = new Date().toISOString();
+    if (action === 'SUPPRESSION') await window._fbDeleteDoc(window._fbDoc(window._db, 'profiles', owner, 'plan_perso', code));
+    else await window._fbSetDoc(window._fbDoc(window._db, 'profiles', owner, 'plan_perso', code), { code, libelle, updatedAt: ts, updatedBy: user }, { merge: true });
+    await window._fbAddDoc(window._fbCollection(window._db, 'profiles', owner, 'plan_historique'), { action, code, avant: avant || null, apres: action === 'SUPPRESSION' ? null : libelle, user, ts });
+  } catch (e) { toast('Erreur sauvegarde du plan comptable : ' + e.message, 'error'); return false; }
+  auditLog('PLAN_COMPTABLE', 'COMPTABILITE', `${action} compte ${code}`);
+  return true;
+}
+async function loadPlanPerso() {
+  if (!_pcStd) _pcStd = new Set(Object.keys(PC));
+  try {
+    const snap = await window._fbGetDocs(window._fbCollection(window._db, 'profiles', getOwnerProfileId(), 'plan_perso'));
+    snap.forEach((d) => { const x = d.data(); if (x && x.code && x.libelle && !_pcStd.has(String(x.code))) { PC[String(x.code)] = x.libelle; _pcPerso.add(String(x.code)); } });
+  } catch (e) { console.warn('[COMEO] Plan comptable personnalisé non chargé :', e.message); }
+}
+function pcInterdit() {
+  if (typeof isCollabMode !== 'undefined' && isCollabMode) { toast('Seul le propriétaire peut modifier le plan comptable.', 'error'); return true; }
+  return false;
+}
+function pcOuvrirAjout() { const p = document.getElementById('pcAddPanel'); if (p) p.style.display = p.style.display === 'none' ? 'block' : 'none'; }
+async function pcAjouter() {
+  if (pcInterdit()) return;
+  const msg = document.getElementById('pcAddMsg');
+  const v = pcValider(PC, document.getElementById('pcNewCode').value, document.getElementById('pcNewLib').value);
+  if (!v.ok) { msg.innerHTML = v.erreurs.map((x) => `<div class="ctl-item ctl-critique"><div class="ctl-detail">${escapeHtml(x)}</div></div>`).join(''); return; }
+  if (!(await pcPersister(v.code, v.libelle, 'CREATION', null))) return;
+  PC[v.code] = v.libelle; _pcPerso.add(v.code);
+  msg.innerHTML = v.avertissements.map((x) => `<div class="ctl-item ctl-attention"><div class="ctl-detail">${escapeHtml(x)}</div></div>`).join('');
+  document.getElementById('pcNewCode').value = ''; document.getElementById('pcNewLib').value = '';
+  renderPlanComptable();
+  toast('✓ Compte ' + v.code + ' créé (personnalisé)', 'success');
+}
+async function pcModifier(code) {
+  if (pcInterdit() || !pcEstPerso(code)) return;
+  const nv = prompt('Nouvel intitulé du compte ' + code + ' :', PC[code]);
+  if (nv === null) return;
+  const v = pcValider(PC, code, nv, { modif: true });
+  if (!v.ok) { toast(v.erreurs[0], 'error'); return; }
+  const avant = PC[code];
+  if (!(await pcPersister(code, v.libelle, 'MODIFICATION', avant))) return;
+  PC[code] = v.libelle; renderPlanComptable();
+}
+async function pcSupprimer(code) {
+  if (pcInterdit() || !pcEstPerso(code)) return;
+  if (pcCodesUtilises().includes(code)) { toast('Suppression impossible : compte utilisé dans des écritures.', 'error'); return; }
+  if (Object.keys(PC).some((c) => c !== code && c.startsWith(code) && pcEstPerso(c))) { toast('Suppression impossible : le compte possède des sous-comptes.', 'error'); return; }
+  if (!confirm('Supprimer le compte personnalisé ' + code + ' ?')) return;
+  if (!(await pcPersister(code, PC[code], 'SUPPRESSION', PC[code]))) return;
+  delete PC[code]; _pcPerso.delete(code); renderPlanComptable();
+}
+function pcVerifier() {
+  const pb = pcVerifierPlan(PC, pcCodesUtilises());
+  const box = document.getElementById('pcPanelOut');
+  box.innerHTML = pb.length ? `<div class="ctl-summary"><span class="ctl-pill ctl-attention">${pb.length} point(s)</span></div>` + pb.map((x) => `<div class="ctl-item ctl-attention"><div class="ctl-detail">${escapeHtml(x)}</div></div>`).join('')
+    : '<div class="ctl-item ctl-info"><div class="ctl-detail">✓ Plan cohérent : numéros valides, hiérarchie complète, comptes utilisés présents.</div></div>';
+}
+async function pcHistorique() {
+  const box = document.getElementById('pcPanelOut');
+  try {
+    const col = window._fbCollection(window._db, 'profiles', getOwnerProfileId(), 'plan_historique');
+    const snap = await window._fbGetDocs(window._fbQuery(col, window._fbOrderBy('ts', 'desc')));
+    const rows = []; snap.forEach((d) => rows.push(d.data()));
+    box.innerHTML = rows.length ? `<table class="ij-table"><thead><tr><th>Date</th><th>Action</th><th>Compte</th><th>Avant → Après</th><th>Utilisateur</th></tr></thead><tbody>${rows.slice(0, 100).map((r) => `<tr><td>${escapeHtml(String(r.ts || '').substring(0, 16).replace('T', ' '))}</td><td>${escapeHtml(r.action)}</td><td>${escapeHtml(r.code)}</td><td>${escapeHtml(r.avant || '—')} → ${escapeHtml(r.apres || '—')}</td><td>${escapeHtml(r.user)}</td></tr>`).join('')}</tbody></table>` : '<div class="empty-state"><p>Aucune modification enregistrée</p></div>';
+  } catch (e) { box.innerHTML = `<div class="ctl-item ctl-critique"><div class="ctl-detail">${escapeHtml(e.message)}</div></div>`; }
+}
+function pcExporter() {
+  const q = (v) => '"' + String(v).replace(/"/g, '""') + '"';
+  const lignes = ['Compte;Libelle;Type'].concat(Object.keys(PC).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).map((c) => [q(c), q(PC[c]), pcEstPerso(c) ? 'personnalise' : 'standard'].join(';')));
+  const blob = new Blob(['\uFEFF' + lignes.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'plan_comptable.csv'; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+Object.assign(window, { pcOuvrirAjout, pcAjouter, pcModifier, pcSupprimer, pcVerifier, pcHistorique, pcExporter });
+
+// ══════════════════════════════════════════
+// JOURNAL INTELLIGENT (règles locales — aucune clé API, aucun compte inventé)
+// ══════════════════════════════════════════
+function ijNorm(t) { return String(t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, ''); }
+// Résout un préfixe SYSCOHADA vers un compte RÉELLEMENT présent dans le plan actif (sinon null).
+function ijResoudre(plan, prefixes) {
+  for (const p of prefixes) {
+    if (plan[p]) return { code: p, libelle: plan[p] };
+    const k = Object.keys(plan).filter((c) => c.startsWith(p)).sort((a, b) => a.length - b.length || a.localeCompare(b))[0];
+    if (k) return { code: k, libelle: plan[k] };
+  }
+  return null;
+}
+function proposerEcritureIA(desc, ttc, taux, plan) {
+  const t = ijNorm(desc);
+  const has = (...w) => w.some((x) => new RegExp('\\b' + x).test(t));
+  const manque = [];
+  const absents = [];
+  const montant = parseFloat(ttc) || 0;
+  const tx = Math.max(0, parseFloat(taux) || 0);
+  if (!t.trim()) return { erreur: 'Décrivez l\'opération.' };
+  if (!(montant > 0)) manque.push('Montant TTC');
+  const banque = has('banque', 'virement', 'cheque', 'carte');
+  const caisse = has('caisse', 'especes', 'cash');
+  const tresoCode = banque ? ['521'] : caisse ? ['571'] : null;
+  const modeConnu = !!tresoCode;
+  const regl = has('reglement', 'regle', 'paiement fournisseur', 'paye le fournisseur');
+  const encaiss = has('encaissement', 'encaisse', 'paiement client', 'recu du client');
+  const vente = !encaiss && has('vente', 'vendu', 'facture client', 'prestation');
+  const achat = !regl && has('achat', 'achete', 'fourniture', 'facture fournisseur', 'loyer', 'electricite', 'eau', 'carburant', 'telephone', 'entretien', 'reparation', 'transport');
+  let nature = null, journal = 'OD', raison = '', lignesDef = [];
+  const ht = tx > 0 ? Math.round((montant / (1 + tx / 100)) * 100) / 100 : montant;
+  const tva = Math.round((montant - ht) * 100) / 100;
+  const L = (prefixes, libelle, sens, val) => lignesDef.push({ prefixes, libelle, sens, val });
+  if (regl || encaiss) {
+    if (!modeConnu) manque.push('Mode de règlement (banque ou caisse)');
+    const treso = tresoCode || ['521'];
+    if (regl) { nature = 'Règlement fournisseur'; journal = caisse ? 'CA' : 'BQ'; L(['401'], 'Fournisseurs', 'D', montant); L(treso, 'Trésorerie', 'C', montant); raison = 'Un règlement fournisseur solde la dette (401) contre la trésorerie.'; }
+    else { nature = 'Encaissement client'; journal = caisse ? 'CA' : 'BQ'; L(treso, 'Trésorerie', 'D', montant); L(['411'], 'Clients', 'C', montant); raison = 'Un encaissement client solde la créance (411) contre la trésorerie.'; }
+  } else if (achat) {
+    nature = 'Achat / charge';
+    let charge = ['605'];
+    if (has('loyer')) charge = ['622'];
+    else if (has('electricite')) charge = ['6052', '605'];
+    else if (has('eau')) charge = ['6051', '605'];
+    else if (has('carburant')) charge = ['6041', '604'];
+    else if (has('fourniture')) charge = ['604'];
+    else if (has('marchandise')) charge = ['601'];
+    else if (has('transport')) charge = ['61'];
+    else if (has('entretien', 'reparation')) charge = ['624', '62'];
+    else if (has('telephone')) charge = ['628', '62'];
+    else manque.push('Nature précise de la charge (compte de classe 6)');
+    journal = modeConnu ? (caisse ? 'CA' : 'BQ') : 'AC';
+    L(charge, 'Charge (HT)', 'D', ht);
+    if (tx > 0) L(['4452', '445'], 'TVA déductible', 'D', tva);
+    if (modeConnu) L(tresoCode, 'Trésorerie', 'C', montant); else { L(['401'], 'Fournisseurs', 'C', montant); manque.push('Mode de paiement (sinon enregistré à crédit sur 401)'); }
+    raison = 'Une charge est débitée HT, la TVA récupérable est portée au compte 445 et la contrepartie est la trésorerie si payée, sinon le fournisseur (401).';
+  } else if (vente) {
+    nature = 'Vente';
+    journal = modeConnu ? (caisse ? 'CA' : 'BQ') : 'VE';
+    L(modeConnu ? tresoCode : ['411'], modeConnu ? 'Trésorerie' : 'Clients', 'D', montant);
+    L(has('marchandise') ? ['701'] : has('prestation', 'service') ? ['706'] : ['701', '706'], 'Produit (HT)', 'C', ht);
+    if (tx > 0) L(['4431', '443'], 'TVA collectée', 'C', tva);
+    if (!modeConnu) manque.push('Mode d\'encaissement (sinon enregistré à crédit sur 411)');
+    if (!has('marchandise', 'prestation', 'service')) manque.push('Nature du produit (marchandises 701 ou services 706)');
+    raison = 'Une vente est créditée HT en classe 7, la TVA collectée est portée au compte 443, la contrepartie est le client (411) ou la trésorerie.';
+  } else {
+    return { erreur: 'Nature de l\'opération non reconnue. Précisez : achat, vente, règlement fournisseur ou encaissement client.' };
+  }
+  const lignes = lignesDef.map((d) => {
+    const c = ijResoudre(plan, d.prefixes);
+    if (!c) absents.push(d.libelle + ' (préfixe ' + d.prefixes.join('/') + ')');
+    return { compte: c ? c.code : '', libelle: c ? c.libelle : d.libelle, debit: d.sens === 'D' ? d.val : 0, credit: d.sens === 'C' ? d.val : 0, manquant: !c };
+  });
+  let confiance = 'élevée';
+  if (absents.length) confiance = 'faible';
+  else if (manque.length) confiance = 'moyenne';
+  return { nature, journal, libelle: String(desc).trim(), lignes, raison, manque, absents, confiance };
+}
+
+let _ijProp = null;
+function ijLancer() {
+  const box = document.getElementById('ij-result');
+  if (!box) return;
+  const r = proposerEcritureIA(document.getElementById('ij-desc').value, document.getElementById('ij-montant').value, document.getElementById('ij-taux').value, PC);
+  _ijProp = null;
+  if (r.erreur) { box.innerHTML = `<div class="ctl-item ctl-attention"><div class="ctl-detail">${escapeHtml(r.erreur)}</div></div>`; return; }
+  _ijProp = r;
+  const cls = r.confiance === 'élevée' ? 'ctl-info' : r.confiance === 'moyenne' ? 'ctl-attention' : 'ctl-critique';
+  const rows = r.lignes.map((l) => `<tr><td>${l.manquant ? '<em>à créer / choisir</em>' : escapeHtml(l.compte)}</td><td>${escapeHtml(l.libelle)}</td><td style="text-align:right">${l.debit ? fn(l.debit) : ''}</td><td style="text-align:right">${l.credit ? fn(l.credit) : ''}</td></tr>`).join('');
+  box.innerHTML = `<div class="ctl-summary"><span class="ctl-pill ${cls}">Confiance ${escapeHtml(r.confiance)}</span><span class="ctl-meta">${escapeHtml(r.nature)} · journal ${escapeHtml(r.journal)}</span></div>
+  <table class="ij-table"><thead><tr><th>Compte</th><th>Intitulé (plan actif)</th><th>Débit</th><th>Crédit</th></tr></thead><tbody>${rows}</tbody></table>
+  <div class="ctl-detail" style="margin-top:8px"><b>Pourquoi :</b> ${escapeHtml(r.raison)}</div>
+  ${r.manque.length ? `<div class="ctl-action">Informations manquantes : ${escapeHtml(r.manque.join(' ; '))}</div>` : ''}
+  ${r.absents.length ? `<div class="ctl-action" style="color:#e5484d">Compte absent du plan : ${escapeHtml(r.absents.join(' ; '))}. Créez le compte dans le Plan comptable ou choisissez-le à la main — rien n'est inventé.</div>` : ''}
+  <div class="ph-actions" style="margin-top:10px"><button class="btn btn-sm-wire" onclick="ijAppliquer()">↳ Appliquer à la saisie (non validée)</button></div>`;
+}
+function ijAppliquer() {
+  if (!_ijProp) return;
+  const r = _ijProp;
+  lignes.length = 0;
+  r.lignes.forEach((l) => addLigne(l.compte, l.libelle, l.debit || '', l.credit || ''));
+  const j = document.getElementById('ecr-journal'); if (j) j.value = r.journal;
+  const lib = document.getElementById('ecr-libelle'); if (lib) lib.value = r.libelle;
+  renderLignes();
+  auditLog('JOURNAL_INTELLIGENT', 'COMPTABILITE', `Proposition appliquée (${r.nature}, confiance ${r.confiance})`);
+  toast('Proposition appliquée — vérifiez puis validez vous-même l\'écriture', 'info');
+}
+window.ijLancer = ijLancer; window.ijAppliquer = ijAppliquer;
+
+// ══════════════════════════════════════════
+// CONTRÔLE DE COHÉRENCE (détection préventive, lecture seule)
+// ══════════════════════════════════════════
+function analyserCoherence() {
+  const anomalies = [];
+  const add = (niveau, titre, detail, action, ref) => anomalies.push({ niveau, titre, detail, action, ref });
+  const vus = new Map();
+  const aujourdhui = new Date().toISOString().substring(0, 10);
+  ecritures.forEach((e) => {
+    const ref = e.piece || e.id;
+    const lg = e.lignes || [];
+    const d = lg.reduce((s, l) => s + (l.debit || 0), 0);
+    const c = lg.reduce((s, l) => s + (l.credit || 0), 0);
+    if (Math.abs(d - c) >= 0.01) add('critique', 'Écriture déséquilibrée', `Pièce ${ref} : débit ${fn(d)} ≠ crédit ${fn(c)}.`, 'Corriger l\'écriture ou la contrepasser puis la ressaisir.', ref);
+    if (lg.length < 2) add('critique', 'Écriture à une seule ligne', `Pièce ${ref} n\'a pas de contrepartie.`, 'Ajouter la ligne de contrepartie.', ref);
+    if (!e.date || isNaN(Date.parse(e.date))) add('critique', 'Date invalide', `Pièce ${ref} : date absente ou illisible.`, 'Renseigner une date valide.', ref);
+    else if (e.date > aujourdhui) add('attention', 'Date future', `Pièce ${ref} datée du ${e.date}.`, 'Vérifier la date de l\'opération.', ref);
+    const inconnus = extraireComptesInconnus(e);
+    if (inconnus.length) add('attention', 'Compte hors plan comptable', `Pièce ${ref} utilise : ${inconnus.join(', ')}.`, 'Créer le compte dans le plan comptable ou corriger la ligne.', ref);
+    lg.forEach((l) => { if ((l.debit || 0) > 0 && (l.credit || 0) > 0) add('attention', 'Ligne à la fois débitrice et créditrice', `Pièce ${ref}, compte ${l.compte}.`, 'Scinder la ligne en deux.', ref); });
+    if (!e.piece) add('info', 'Numéro de pièce absent', `Écriture « ${e.libelle || e.id} » sans pièce justificative référencée.`, 'Renseigner le numéro de pièce.', ref);
+    if (e.contrepasseePar && !ecritures.some((x) => x.id === e.contrepasseePar)) add('attention', 'Contrepassation introuvable', `Pièce ${ref} référence une contrepassation absente.`, 'Vérifier l\'historique d\'audit.', ref);
+    const cle = [e.date, e.journal, d.toFixed(2), lg.map((l) => l.compte).sort().join('|')].join('#');
+    if (!e.contrepasseDe && !e.contrepasseePar) {
+      if (vus.has(cle)) add('attention', 'Doublon potentiel', `Pièces ${vus.get(cle)} et ${ref} : même date, journal, montant et comptes.`, 'Confirmer qu\'il ne s\'agit pas d\'une double saisie.', ref);
+      else vus.set(cle, ref);
+    }
+  });
+  return anomalies;
+}
+
+function renderControle() {
+  const box = document.getElementById('controleContent');
+  if (!box) return;
+  const an = analyserCoherence();
+  const ordre = { critique: 0, attention: 1, info: 2 };
+  an.sort((a, b) => ordre[a.niveau] - ordre[b.niveau]);
+  const nb = (n) => an.filter((a) => a.niveau === n).length;
+  const resume = `<div class="ctl-summary"><span class="ctl-pill ctl-critique">${nb('critique')} critique(s)</span><span class="ctl-pill ctl-attention">${nb('attention')} attention</span><span class="ctl-pill ctl-info">${nb('info')} info</span><span class="ctl-meta">${ecritures.length} écriture(s) analysée(s)</span></div>`;
+  if (!an.length) { box.innerHTML = resume + '<div class="empty-state"><div class="icon">✓</div><p>Aucune anomalie détectée sur le journal</p></div>'; return; }
+  box.innerHTML = resume + an.map((a) => `<div class="ctl-item ctl-${a.niveau}"><div class="ctl-title">${escapeHtml(a.titre)}</div><div class="ctl-detail">${escapeHtml(a.detail)}</div><div class="ctl-action">→ ${escapeHtml(a.action)}</div></div>`).join('');
+  auditLog('CONTROLE_COHERENCE', 'COMPTABILITE', `${an.length} anomalie(s) détectée(s)`);
+}
+RENDERERS['controle'] = renderControle;
+window.renderControle = renderControle;
 
 // ══════════════════════════════════════════
 // GRAND LIVRE
@@ -6527,7 +7235,7 @@ function renderPlanComptable() {
           const isHeader = lib === lib.toUpperCase() && lib.length > 3;
           const pad = Math.min((code.length - 1) * 10, 30);
           return `<div class="pc3d-account-row ${isHeader ? 'lvl-header' : ''}" style="padding-left:${16 + pad}px">
-            <span class="code">${code}</span><span>${lib.substring(0, 60)}</span>
+            <span class="code">${escapeHtml(code)}</span><span>${escapeHtml(lib.substring(0, 60))}</span>${pcEstPerso(code) ? `<span class="pc-badge">perso</span><button type="button" class="pc-mini" title="Modifier l'intitulé" onclick="pcModifier('${escapeHtml(code)}')">✎</button><button type="button" class="pc-mini" title="Supprimer" onclick="pcSupprimer('${escapeHtml(code)}')">✕</button>` : ''}
           </div>`;
         })
         .join('');
@@ -11937,6 +12645,8 @@ function openImportModal(type) {
 }
 
 async function parseAndImportCSV(raw, type) {
+  // Import du journal : analyse complète + aperçu (l'ancien importJournalRows reste disponible mais n'est plus appelé)
+  if (type === 'journal') { await importJournalApercu(raw); return; }
   // Normaliser séparateur : ; ou ,
   const lines = raw.replace(/\r/g, '').split('\n').filter(l => l.trim());
   if (lines.length < 2) { toast('Fichier vide ou non reconnu', 'error'); return; }
@@ -12046,7 +12756,11 @@ async function importPlanComptableRows(rows) {
     const code   = (r['compte'] || r['code'] || r['numcompte'] || '').replace(/\s/g,'');
     const libelle = r['libell'] || r['libelle'] || r['designation'] || '';
     if (!code || !libelle) continue;
-    if (!PC[code]) { PC[code] = libelle; imported++; }
+    if (PC[code] !== undefined) continue;
+    if (typeof isCollabMode !== 'undefined' && isCollabMode) continue;
+    const v = pcValider(PC, code, libelle);
+    if (!v.ok) continue;
+    if (await pcPersister(v.code, v.libelle, 'IMPORT', null)) { PC[v.code] = v.libelle; _pcPerso.add(v.code); imported++; }
   }
   renderPlanComptable();
   toast(`✓ ${imported} compte(s) ajouté(s) au plan comptable`, imported > 0 ? 'success' : 'info');
