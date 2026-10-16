@@ -415,6 +415,7 @@ comeoChargerLibResiliente(
   <div class="sb-title">RH & Paie</div>
   <div class="nav-item" onclick="navigate('paie');closeMobileSidebar()"><span class="nav-icon">💳</span> Paie & Bulletins</div>
   <div class="nav-item" onclick="navigate('tresorerie');closeMobileSidebar()"><span class="nav-icon">💰</span> Trésorerie + Réconciliation</div>
+  <div class="nav-item" onclick="navigate('controle');closeMobileSidebar()"><span class="nav-icon">🛡</span> Contrôle de cohérence</div>
   <div class="nav-item" onclick="navigate('taxes');closeMobileSidebar()"><span class="nav-icon">📋</span> Taxes & Déclarations</div>
   <div class="nav-item" onclick="navigate('appels');closeMobileSidebar()"><span class="nav-icon">💬</span> Messagerie</div>
 </div>
@@ -1022,6 +1023,29 @@ comeoChargerLibResiliente(
           </div>
           <div class="field"><label>N° Pièce</label><input type="text" id="ecr-piece" placeholder="Auto"></div>
           <div class="field"><label>Libellé général</label><input type="text" id="ecr-libelle" placeholder="Description…"></div>
+          <div class="field ij-panel" style="grid-column:1/-1">
+            <label>✦ Journal intelligent — décrivez l'opération</label>
+            <div class="ij-row">
+              <input type="text" id="ij-desc" placeholder="ex. achat de fournitures payé par banque" onkeydown="if(event.key==='Enter'){event.preventDefault();ijLancer()}">
+              <input type="number" id="ij-montant" placeholder="Montant TTC" min="0" step="0.01">
+              <input type="number" id="ij-taux" value="18" min="0" step="0.01" title="Taux de TVA (%)">
+              <button type="button" class="btn btn-sm-wire" onclick="ijLancer()">Proposer</button>
+            </div>
+            <div class="ij-row" style="grid-template-columns:auto 1fr;align-items:center" ondragover="event.preventDefault()" ondrop="event.preventDefault();pjDeposer(event.dataTransfer.files[0])">
+              <label class="btn btn-sm-wire" style="cursor:pointer">📎 Déposer une pièce (image)
+                <input type="file" id="pj-file" accept="image/jpeg,image/png,image/webp" style="display:none" onchange="pjDeposer(this.files[0]);this.value=''">
+              </label>
+              <select id="pj-sens" class="search-input" title="Nature de la pièce">
+                <option value="achat_credit">Facture d'achat — à crédit</option>
+                <option value="achat_banque">Facture d'achat — payée par banque</option>
+                <option value="achat_caisse">Facture d'achat — payée en caisse</option>
+                <option value="vente_credit">Facture de vente — à crédit</option>
+                <option value="vente_banque">Facture de vente — encaissée par banque</option>
+              </select>
+            </div>
+            <div id="pj-status"></div>
+            <div id="ij-result"></div>
+          </div>
         </div>
       </div>
 
@@ -1035,6 +1059,15 @@ comeoChargerLibResiliente(
         </div>
         <div id="lignesCardContainer"></div>
         <button class="add-line-btn" onclick="addLigne()">＋ Ajouter une ligne</button>
+        <div class="ij-row" style="grid-template-columns:1fr auto auto auto auto auto;margin-top:8px">
+          <select id="mdl-select" class="search-input"><option value="">— Modèles récurrents —</option></select>
+          <button type="button" class="btn btn-sm-wire" onclick="modeleAppliquer()">Appliquer</button>
+          <button type="button" class="btn btn-sm-wire" onclick="modeleEnregistrer()">💾 Enregistrer comme modèle</button>
+          <button type="button" class="btn btn-sm-wire" onclick="modeleSupprimer()" title="Supprimer le modèle sélectionné">✕</button>
+          <button type="button" class="btn btn-sm-wire" onclick="ecrPrevisualiser()">👁 Prévisualiser (Alt+P)</button>
+          <button type="button" class="btn btn-sm-wire" onclick="rcEditer()" title="Personnaliser les raccourcis">⌨</button>
+        </div>
+        <div id="ecr-previsu" style="margin-top:8px"></div>
         <div class="bal-bar">
           <div class="bal-item"><label>Débit</label><span class="val" id="totalDebitDisplay" style="color:var(--info-text)">0</span></div>
           <div class="bal-item"><label>Crédit</label><span class="val" id="totalCreditDisplay" style="color:var(--success-text)">0</span></div>
@@ -1613,6 +1646,14 @@ comeoChargerLibResiliente(
     </div>
 
     <!-- ═══════════════════ TAXES & DÉCLARATIONS FISCALES ═══════════════════ -->
+    <div class="view" id="view-controle">
+      <div class="ph">
+        <div><h1>Contrôle de cohérence</h1><p>Déséquilibres · doublons · dates · comptes hors plan</p></div>
+        <div class="ph-actions"><button class="btn btn-sm-wire" onclick="renderControle()">↻ Relancer l'analyse</button></div>
+      </div>
+      <div id="controleContent"></div>
+    </div>
+
     <div class="view" id="view-taxes">
       <div class="ph">
         <div><h1>Taxes & Déclarations</h1><p>TVA · IRG · IS · Déclarations mensuelles/annuelles</p></div>
@@ -1688,7 +1729,22 @@ comeoChargerLibResiliente(
 
     <!-- PLAN COMPTABLE -->
     <div class="view" id="view-plancomptable">
-      <div class="ph"><div><h1>Plan Comptable SYSCOHADA</h1><p>Révisé 2023</p></div></div>
+      <div class="ph"><div><h1>Plan Comptable SYSCOHADA</h1><p>Révisé 2023 · standard + comptes personnalisés</p></div>
+        <div class="ph-actions">
+          <button class="btn btn-sm-wire" onclick="pcOuvrirAjout()">+ Nouveau compte</button>
+          <button class="btn btn-sm-wire" onclick="pcVerifier()">🛡 Vérifier</button>
+          <button class="btn btn-sm-wire" onclick="pcHistorique()">🕘 Historique</button>
+          <button class="btn btn-sm-wire" onclick="pcExporter()">↓ Export CSV</button>
+        </div></div>
+      <div id="pcAddPanel" class="ij-panel" style="display:none;margin-bottom:12px">
+        <div class="ij-row" style="grid-template-columns:160px 1fr auto">
+          <input type="text" id="pcNewCode" placeholder="N° (ex. 604100)" inputmode="numeric" maxlength="12" autocomplete="off">
+          <input type="text" id="pcNewLib" placeholder="Intitulé" maxlength="120" onkeydown="if(event.key==='Enter'){event.preventDefault();pcAjouter()}">
+          <button type="button" class="btn btn-sm-wire" onclick="pcAjouter()">Créer</button>
+        </div>
+        <div id="pcAddMsg"></div>
+      </div>
+      <div id="pcPanelOut" style="margin-bottom:12px"></div>
       <div class="toolbar">
         <input type="text" class="search-input" placeholder="Code ou libellé…" id="pcSearch" oninput="renderPlanComptable()" style="min-width:200px;flex:1">
         <select id="pcClass" class="search-input" style="min-width:140px" onchange="renderPlanComptable()">
