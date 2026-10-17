@@ -8,6 +8,7 @@ import {
   sendPasswordResetEmail,
   GoogleAuthProvider,
   signInWithPopup,
+  sendEmailVerification,
 } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
 import {
   getFirestore,
@@ -22,6 +23,7 @@ import {
   getDoc,
   onSnapshot,
   where,
+  serverTimestamp,
 } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 import {
   getDatabase,
@@ -96,6 +98,7 @@ window._fbDoc = doc;
 window._fbQuery = query;
 window._fbOrderBy = orderBy;
 window._fbSetDoc = setDoc;
+window._fbServerTs = serverTimestamp;
 window._fbGetDoc = getDoc;
 window._fbReady = true;
 window._firebaseFirestore = { onSnapshot, doc, getDocs, collection, query, where };
@@ -3054,6 +3057,12 @@ function isPeriodeLocked(dateStr) {
 }
 
 async function saveEcritureToFirestore(ecriture) {
+  // Contrôles communs à TOUTES les écritures (manuelles et automatiques) avant enregistrement
+  const _lg = ecriture.lignes || [];
+  const _d = _lg.reduce((s, l) => s + (Number(l.debit) || 0), 0), _c = _lg.reduce((s, l) => s + (Number(l.credit) || 0), 0);
+  if (_lg.length < 2 || _lg.some((l) => !isFinite(Number(l.debit) || 0) || !isFinite(Number(l.credit) || 0))) { toast('Écriture refusée : au moins deux lignes aux montants valides sont requises.', 'error'); return null; }
+  if (Math.abs(_d - _c) >= 0.01) { toast('Écriture refusée : déséquilibrée (débit ' + Math.round(_d * 100) / 100 + ' ≠ crédit ' + Math.round(_c * 100) / 100 + ').', 'error'); return null; }
+  if (isPeriodeLocked(ecriture.date)) { toast('🔒 Écriture refusée : l\'exercice ' + String(ecriture.date).substring(0, 4) + ' est verrouillé.', 'error'); return null; }
   try {
     const ownerID = getOwnerProfileId();
     const col = window._fbCollection(window._db, 'profiles', ownerID, 'ecritures');
@@ -3085,6 +3094,8 @@ const VIEW_KEYS = {
   'dashboard-ceo': "d'ensemble",
   'compte-banque': 'banque',
   saisie: 'saisie',
+  controle: 'contrôle',
+  msgco: 'inter-entreprises',
   journal: 'journal',
   grandlivre: 'grand',
   balance: 'balance',
@@ -4628,6 +4639,569 @@ async function importJournalApercu(raw) {
 window.importJournalApercu = importJournalApercu;
 
 // ══════════════════════════════════════════
+// PILOTAGE DES STOCKS : alertes, immobilisés, mouvements inhabituels, inventaire rapproché
+// ══════════════════════════════════════════
+const _r3 = (n) => Math.round(n * 1000) / 1000;
+function stockAnalyser(arts, auj, opt, valeurFn) {
+  const o = { joursImmo: 90, facteur: 2, ...(opt || {}) };
+  const jours = (d) => Math.floor((Date.parse(auj) - Date.parse(d)) / 86400000);
+  return (arts || []).map((a) => {
+    const qte = a.qteActuelle || 0, seuil = a.seuil ?? 0;
+    const mv = a.mouvements || [];
+    const sorties = mv.filter((m) => m.type === 'sortie' && m.date);
+    const dern = sorties.map((m) => m.date).sort().pop() || null;
+    const jSans = dern ? jours(dern) : null;
+    const statut = qte <= 0 ? 'rupture' : qte <= seuil ? 'bas' : 'ok';
+    const immobilise = qte > 0 && (dern === null ? mv.length > 0 && jours(mv.map((m) => m.date).filter(Boolean).sort()[0] || auj) >= o.joursImmo : jSans >= o.joursImmo);
+    let inhabituel = null;
+    if (sorties.length >= 6) {
+      const q = sorties.map((m) => m.qte || 0); const dernier = q[q.length - 1]; const base = q.slice(0, -1);
+      const moy = base.reduce((s, x) => s + x, 0) / base.length; const sd = Math.sqrt(base.reduce((s, x) => s + (x - moy) ** 2, 0) / base.length);
+      if (sd > 0 && dernier > moy + 3 * sd) inhabituel = 'Dernière sortie (' + dernier + ') très supérieure à la moyenne (' + _r3(moy) + ')';
+    }
+    const inv = mv.filter((m) => m.type === 'inventaire' && m.ecart).slice(-1)[0] || null;
+    const reappro = statut === 'ok' ? 0 : Math.max(0, Math.ceil(o.facteur * seuil - qte));
+    return { nom: a.nom, qte, seuil, valeur: valeurFn ? valeurFn(a) : 0, statut, immobilise, jSans, dernierSortie: dern, inhabituel, dernierEcart: inv ? { ecart: inv.ecart, date: inv.date } : null, reappro };
+  });
+}
+function stockAjuster(art, physique, date, user) {
+  const avant = art.qteActuelle || 0; const ecart = _r3(physique - avant);
+  if (!ecart) return null;
+  if (!art.mouvements) art.mouvements = []; if (!art.lots) art.lots = [];
+  const mvt = { id: Date.now() + Math.floor(Math.random() * 1000), type: 'inventaire', qte: physique, pu: 0, valeur: 0, date, user, ts: new Date().toISOString(), qteTheorique: avant, ecart, source: 'inventaire_physique' };
+  if (ecart < 0) {
+    let reste = -ecart, cout = 0;
+    if (art.methode === 'fifo') { while (reste > 0.0001 && art.lots.length) { const l = art.lots[0]; const p = Math.min(l.qte, reste); cout += p * l.pu; l.qte -= p; reste -= p; if (l.qte <= 0.0001) art.lots.shift(); } }
+    else cout = -ecart * (art.cmup || 0);
+    mvt.coutSorti = Math.round(cout * 100) / 100; mvt.valeurEcart = -mvt.coutSorti;
+  } else {
+    const pu = art.methode === 'fifo' ? (art.lots.length ? art.lots[art.lots.length - 1].pu : (art.cmup || 0)) : (art.cmup || 0);
+    if (art.methode === 'fifo') art.lots.push({ qte: ecart, pu });
+    mvt.pu = pu; mvt.valeurEcart = Math.round(ecart * pu * 100) / 100;
+  }
+  art.qteActuelle = physique; art.mouvements.push(mvt);
+  return mvt;
+}
+
+let _stockTab = 'alertes';
+const _stkP = { joursImmo: 90, facteur: 2 };
+function stockOnglet(t) { _stockTab = t; stockPilotageRender(); }
+function stockParam() { _stkP.joursImmo = Math.max(1, parseInt(document.getElementById('stk-jimmo').value) || 90); _stkP.facteur = Math.max(1, parseFloat(document.getElementById('stk-fact').value) || 2); stockPilotageRender(); }
+function stockPersister(art) {
+  if (!window._fbReady || !currentProfile?.id) return Promise.resolve(false);
+  return window._fbSetDoc(window._fbDoc(window._db, 'profiles', currentProfile.id, 'stocks', String(art.id)), art).then(() => true);
+}
+function stockPilotageRender() {
+  const box = document.getElementById('stockPilotage'); if (!box) return;
+  const auj = new Date().toISOString().substring(0, 10);
+  const an = stockAnalyser(stockArticles, auj, _stkP, valeurStockArticle);
+  const tab = (k, l) => `<button type="button" class="btn btn-sm-wire" style="${_stockTab === k ? 'font-weight:700;border-color:currentColor' : ''}" onclick="stockOnglet('${k}')">${l}</button>`;
+  let corps = '';
+  if (_stockTab === 'alertes') {
+    const l = an.filter((a) => a.statut !== 'ok' || a.immobilise || a.inhabituel || a.dernierEcart);
+    const lbl = { rupture: 'Rupture', bas: 'Sous seuil', ok: 'OK' };
+    corps = `<div class="ij-row" style="grid-template-columns:auto 90px auto 90px auto;align-items:center;font-size:12.5px"><span>Immobilisé après</span><input type="number" id="stk-jimmo" value="${_stkP.joursImmo}" min="1" onchange="stockParam()"><span>jours · réappro. = ramener à</span><input type="number" id="stk-fact" value="${_stkP.facteur}" min="1" step="0.5" onchange="stockParam()"><span>× le seuil</span></div>`
+      + (l.length ? `<div style="overflow-x:auto"><table class="ij-table"><thead><tr><th>Article</th><th>Stock</th><th>Seuil</th><th>Statut</th><th>Valeur</th><th>Dernière sortie</th><th>Réappro. suggéré</th><th>Observations</th></tr></thead><tbody>${l.map((a) => `<tr><td>${escapeHtml(a.nom)}</td><td style="text-align:right">${_r3(a.qte)}</td><td style="text-align:right">${_r3(a.seuil)}</td><td><span class="ctl-pill ${a.statut === 'rupture' ? 'ctl-critique' : a.statut === 'bas' ? 'ctl-attention' : 'ctl-info'}">${lbl[a.statut]}</span></td><td style="text-align:right">${fn(a.valeur)}</td><td>${a.dernierSortie ? escapeHtml(a.dernierSortie) + ' (' + a.jSans + ' j)' : '—'}</td><td style="text-align:right">${a.reappro || ''}</td><td>${[a.immobilise ? 'Immobilisé / faible rotation' : '', a.inhabituel || '', a.dernierEcart ? 'Dernier écart d\'inventaire : ' + a.dernierEcart.ecart + ' (' + a.dernierEcart.date + ')' : ''].filter(Boolean).map(escapeHtml).join(' · ')}</td></tr>`).join('')}</tbody></table></div><div class="ph-actions" style="margin-top:8px"><button type="button" class="btn btn-sm-wire" onclick="stockExporterReappro()">↓ Liste de réapprovisionnement (CSV)</button></div>` : '<div class="empty-state"><p>Aucune alerte de stock</p></div>');
+  } else if (_stockTab === 'inventaire') {
+    corps = `<div class="ij-row" style="grid-template-columns:auto 170px 1fr;align-items:center;font-size:12.5px"><span>Date de l'inventaire</span><input type="date" id="stk-inv-date" value="${auj}"><span>Saisissez le stock physique compté ; laissez vide pour ne pas toucher à l'article.</span></div>
+      <div style="overflow-x:auto"><table class="ij-table"><thead><tr><th>Article</th><th>Théorique</th><th>Physique</th><th>Écart</th><th>Valeur de l'écart</th></tr></thead><tbody>${an.map((a, i) => `<tr><td>${escapeHtml(a.nom)}</td><td style="text-align:right">${_r3(a.qte)}</td><td><input type="number" step="any" min="0" data-i="${i}" id="stk-ph-${i}" style="width:100px;text-align:right" oninput="stockInvCalc()"></td><td id="stk-ec-${i}" style="text-align:right"></td><td id="stk-ve-${i}" style="text-align:right"></td></tr>`).join('')}</tbody></table></div>
+      <div class="ph-actions" style="margin-top:8px"><span id="stk-inv-tot" class="ctl-detail"></span><button type="button" class="btn btn-ink" onclick="stockInvValider()">Valider l'inventaire</button></div>`;
+  } else if (_stockTab === '3d') {
+    corps = '<div id="stk3d-wrap" style="position:relative"></div>';
+  } else {
+    const q = (document.getElementById('stk-mq')?.value || '').toLowerCase();
+    const l = stockArticles.flatMap((a) => (a.mouvements || []).map((m) => ({ ...m, art: a.nom }))).filter((m) => !q || m.art.toLowerCase().includes(q)).sort((x, y) => String(y.date).localeCompare(String(x.date)) || String(y.ts || '').localeCompare(String(x.ts || ''))).slice(0, 300);
+    corps = `<input type="text" id="stk-mq" class="search-input" placeholder="Filtrer par article…" value="${escapeAttr(q)}" oninput="stockPilotageRender();document.getElementById('stk-mq').focus()" style="margin-bottom:8px">`
+      + (l.length ? `<div style="overflow-x:auto"><table class="ij-table"><thead><tr><th>Date</th><th>Article</th><th>Type</th><th>Quantité</th><th>PU</th><th>Écart</th><th>Utilisateur</th></tr></thead><tbody>${l.map((m) => `<tr><td>${escapeHtml(m.date || '')}</td><td>${escapeHtml(m.art)}</td><td>${escapeHtml(m.type || '')}</td><td style="text-align:right">${_r3(m.qte || 0)}</td><td style="text-align:right">${fn(m.pu || 0)}</td><td style="text-align:right">${m.ecart ? m.ecart : ''}</td><td>${escapeHtml(m.user || '—')}</td></tr>`).join('')}</tbody></table></div><div class="ctl-detail">300 mouvements les plus récents. « — » : mouvement antérieur au suivi des utilisateurs.</div>` : '<div class="empty-state"><p>Aucun mouvement</p></div>');
+  }
+  box.innerHTML = `<div class="ph-actions" style="margin-bottom:10px">${tab('alertes', '🔔 Alertes & réappro.')}${tab('inventaire', '📋 Inventaire physique')}${tab('mouvements', '🕘 Historique des mouvements')}${tab('3d', '🧊 Vue 3D')}</div>${corps}`;
+  if (_stockTab === '3d') stock3dMonter(); else stock3dDetruire();
+}
+function stockInvCalc() {
+  let net = 0, n = 0;
+  stockArticles.forEach((a, i) => {
+    const v = document.getElementById('stk-ph-' + i)?.value;
+    const ce = document.getElementById('stk-ec-' + i), cv = document.getElementById('stk-ve-' + i);
+    if (!ce) return;
+    if (v === '' || v === undefined || isNaN(parseFloat(v))) { ce.textContent = ''; cv.textContent = ''; return; }
+    const ec = _r3(parseFloat(v) - (a.qteActuelle || 0));
+    const pu = a.methode === 'fifo' ? (ec < 0 ? ((a.lots || [])[0]?.pu ?? 0) : ((a.lots || []).slice(-1)[0]?.pu ?? a.cmup ?? 0)) : (a.cmup || 0);
+    const val = Math.round(ec * pu * 100) / 100;
+    ce.textContent = ec > 0 ? '+' + ec : ec; ce.style.color = ec === 0 ? '' : ec < 0 ? '#e5484d' : '#2f9e44';
+    cv.textContent = ec ? fn(val) : ''; if (ec) { n++; net += val; }
+  });
+  const t = document.getElementById('stk-inv-tot'); if (t) t.textContent = n ? n + ' écart(s) · valeur nette estimée ' + fn(net) : '';
+}
+async function stockInvValider() {
+  const date = document.getElementById('stk-inv-date').value;
+  if (!date || isNaN(Date.parse(date))) { toast('Date d\'inventaire invalide', 'error'); return; }
+  if (isPeriodeLocked(date)) { toast('🔒 Période verrouillée — inventaire impossible.', 'error'); return; }
+  const lots = [];
+  stockArticles.forEach((a, i) => { const v = document.getElementById('stk-ph-' + i)?.value; if (v !== '' && v !== undefined && !isNaN(parseFloat(v)) && parseFloat(v) >= 0 && _r3(parseFloat(v) - (a.qteActuelle || 0)) !== 0) lots.push([a, parseFloat(v)]); });
+  if (!lots.length) { toast('Aucun écart à enregistrer.', 'info'); return; }
+  if (!confirm('Enregistrer ' + lots.length + ' ajustement(s) d\'inventaire au ' + date + ' ?\n\nLes pertes sont valorisées au coût de la méthode de chaque article, les gains au dernier coût. Les mouvements restent dans l\'historique.')) return;
+  const user = currentProfile?.email || currentProfile?.company || 'Inconnu';
+  let ok = 0, net = 0, echecs = 0;
+  for (const [a, ph] of lots) {
+    const m = stockAjuster(a, ph, date, user); if (!m) continue;
+    net += m.valeurEcart || 0; ok++;
+    try { await stockPersister(a); } catch (e) { echecs++; }
+  }
+  auditLog('INVENTAIRE_STOCK', 'STOCKS', `${ok} ajustement(s) au ${date}, valeur nette ${Math.round(net)}`);
+  toast(echecs ? `Inventaire appliqué (${ok}) mais ${echecs} sauvegarde(s) Firestore en échec — vérifiez la connexion.` : `✓ Inventaire validé : ${ok} ajustement(s)`, echecs ? 'error' : 'success');
+  renderStocks(); stockPilotageRender();
+}
+function stockExporterReappro() {
+  const an = stockAnalyser(stockArticles, new Date().toISOString().substring(0, 10), _stkP, valeurStockArticle).filter((a) => a.reappro > 0);
+  const q = (v) => '"' + String(v).replace(/"/g, '""') + '"';
+  const l = ['Article;Stock;Seuil;Quantite suggeree'].concat(an.map((a) => [q(a.nom), a.qte, a.seuil, a.reappro].join(';')));
+  const el = document.createElement('a'); el.href = URL.createObjectURL(new Blob(['\uFEFF' + l.join('\r\n')], { type: 'text/csv;charset=utf-8' })); el.download = 'reapprovisionnement.csv'; el.click(); setTimeout(() => URL.revokeObjectURL(el.href), 2000);
+}
+{ const _rs = RENDERERS.stocks; RENDERERS.stocks = () => { if (_rs) _rs(); stockPilotageRender(); }; }
+Object.assign(window, { stockOnglet, stockParam, stockPilotageRender, stockInvCalc, stockInvValider, stockExporterReappro });
+
+// ══════════════════════════════════════════
+// CONTRÔLE ÉTENDU (balance, soldes inhabituels, stocks, créances) + CLÔTURE GUIDÉE
+// ══════════════════════════════════════════
+function analyserEtendue(ctx) {
+  const an = []; const add = (niveau, titre, detail, action) => an.push({ niveau, titre, detail, action });
+  const ec = ctx.ecritures || []; const r2 = (n) => Math.round(n * 100) / 100;
+  let D = 0, C = 0; const soldes = {};
+  ec.forEach((e) => (e.lignes || []).forEach((l) => { D += l.debit || 0; C += l.credit || 0; const k = String(l.compte || '').trim(); if (k) soldes[k] = r2((soldes[k] || 0) + (l.debit || 0) - (l.credit || 0)); }));
+  if (Math.abs(D - C) >= 0.01) add('critique', 'Balance non équilibrée', 'Total débit ' + r2(D) + ' ≠ total crédit ' + r2(C) + ' (écart ' + r2(D - C) + ').', 'Rechercher les écritures déséquilibrées dans la liste ci-dessus.');
+  Object.keys(soldes).forEach((k) => {
+    const s = soldes[k]; if (Math.abs(s) < 0.01) return;
+    const cred = s < 0, deb = s > 0; const lib = ctx.plan && ctx.plan[k] ? ' (' + ctx.plan[k] + ')' : '';
+    const sig = (m) => 'Compte ' + k + lib + ' : solde ' + (cred ? 'créditeur ' : 'débiteur ') + Math.abs(s) + ' — ' + m;
+    if (/^57/.test(k) && cred) add('critique', 'Caisse créditrice', sig('une caisse ne peut pas être négative.'), 'Vérifier les encaissements non saisis ou les décaissements en trop.');
+    else if (/^52/.test(k) && cred) add('attention', 'Banque créditrice', sig('découvert réel ou erreur d\'imputation.'), 'Rapprocher avec le relevé bancaire.');
+    else if (/^41/.test(k) && !/^419/.test(k) && cred) add('attention', 'Client créditeur', sig('avance non identifiée ou règlement en double.'), 'Lettrer le compte ou reclasser en 419 si c\'est une avance.');
+    else if (/^40/.test(k) && !/^409/.test(k) && deb) add('attention', 'Fournisseur débiteur', sig('règlement en double ou avoir non saisi.'), 'Lettrer le compte ou reclasser en 409 si c\'est une avance.');
+    else if (/^2[0-7]/.test(k) && cred) add('attention', 'Immobilisation créditrice', sig('sortie d\'immobilisation mal imputée ?'), 'Vérifier les cessions et les amortissements.');
+    else if (/^(28|29)/.test(k) && deb) add('attention', 'Amortissement / dépréciation débiteur', sig('reprise ou erreur de sens.'), 'Vérifier le sens des écritures.');
+    else if (/^6/.test(k) && cred) add('info', 'Charge créditrice', sig('rabais, annulation ou erreur.'), 'Vérifier la nature de l\'écriture.');
+    else if (/^7/.test(k) && deb) add('info', 'Produit débiteur', sig('annulation de vente ou erreur.'), 'Vérifier la nature de l\'écriture.');
+  });
+  (ctx.stock || []).forEach((a) => {
+    const q = a.qteActuelle || 0;
+    if (q < 0) add('critique', 'Stock négatif', 'Article « ' + a.nom + ' » : quantité ' + q + '.', 'Corriger les sorties ou enregistrer l\'entrée manquante.');
+    if (a.methode === 'fifo' && Math.abs((a.lots || []).reduce((s, l) => s + l.qte, 0) - q) > 0.001) add('attention', 'Lots FIFO incohérents', 'Article « ' + a.nom + ' » : lots ≠ quantité.', 'Refaire un inventaire pour recaler les lots.');
+    const nc = (a.mouvements || []).filter((m) => m.alerte === 'stock_insuffisant').length;
+    if (nc) add('critique', 'Sortie supérieure au stock', 'Article « ' + a.nom + ' » : ' + nc + ' sortie(s) ont dépassé le stock disponible (coût sous-évalué).', 'Enregistrer les entrées manquantes puis refaire un inventaire.');
+    if (a.methode !== 'fifo' && q > 0 && !(a.cmup > 0)) add('attention', 'Stock sans valeur', 'Article « ' + a.nom + ' » : quantité ' + q + ' mais coût moyen nul.', 'Renseigner le coût d\'achat.');
+  });
+  const ech = (ctx.factures || []).filter((f) => f.type === 'facture' && ['envoyee', 'retard', 'partielle'].includes(f.statut) && f.dateEcheance && f.dateEcheance < ctx.auj && (f.ttc || 0) - (f.montantPaye || 0) > 0);
+  if (ech.length) add('attention', 'Créances échues', ech.length + ' facture(s) échue(s) impayée(s) pour ' + r2(ech.reduce((s, f) => s + (f.ttc || 0) - (f.montantPaye || 0), 0)) + '.', 'Relancer les clients ou constater une dépréciation.');
+  return an;
+}
+const CLO_MANUELS = [
+  { id: 'rapprochement', t: 'Rapprochement bancaire effectué pour tous les comptes 52' },
+  { id: 'justificatifs', t: 'Justificatifs manquants complétés ou justifiés' },
+  { id: 'regularisations', t: 'Régularisations passées (amortissements, provisions, charges et produits constatés d\'avance)' },
+  { id: 'soldes', t: 'Soldes inhabituels examinés et justifiés' },
+  { id: 'inventaire', t: 'Inventaire physique des stocks validé', siStock: true },
+];
+function analyserCloture(annee, ctx) {
+  const ecA = (ctx.ecritures || []).filter((e) => String(e.date || '').startsWith(String(annee)));
+  const coh = ctx.coherence(ecA); const ext = analyserEtendue({ ...ctx, ecritures: ecA });
+  const tous = coh.concat(ext);
+  const par = (...titres) => tous.filter((a) => titres.some((t) => a.titre.startsWith(t)));
+  const items = [];
+  const item = (id, titre, liste, bloquant, ok, action) => items.push({ id, titre, etat: liste.length ? (bloquant ? 'bloquant' : 'alerte') : 'ok', detail: liste.length ? liste.length + ' point(s) : ' + liste.slice(0, 3).map((a) => a.detail).join(' · ') + (liste.length > 3 ? ' …' : '') : ok, action: liste.length ? action : '' });
+  items.push({ id: 'periode', titre: 'Exercice contrôlé', etat: ecA.length ? 'ok' : 'bloquant', detail: ecA.length ? ecA.length + ' écriture(s) sur ' + annee : 'Aucune écriture sur ' + annee, action: ecA.length ? '' : 'Rien à clôturer.' });
+  item('equilibre', 'Écritures valides et équilibrées', par('Écriture déséquilibrée', 'Écriture à une seule ligne', 'Date invalide'), true, 'Toutes les écritures sont équilibrées.', 'Corriger ou contrepasser les écritures concernées.');
+  item('balance', 'Balance équilibrée', par('Balance non équilibrée'), true, 'Total débit = total crédit.', 'Traiter d\'abord les écritures déséquilibrées.');
+  item('horsplan', 'Comptes présents au plan comptable', par('Compte hors plan'), false, 'Tous les comptes utilisés existent au plan.', 'Créer les comptes manquants.');
+  item('doublons', 'Pas de doublon probable', par('Doublon'), false, 'Aucun doublon détecté.', 'Confirmer ou contrepasser.');
+  item('pieces', 'Pièces justificatives référencées', par('Numéro de pièce'), false, 'Toutes les écritures ont un numéro de pièce.', 'Renseigner les pièces.');
+  item('soldes_auto', 'Soldes cohérents avec leur nature', par('Caisse', 'Banque', 'Client', 'Fournisseur', 'Immobilisation', 'Amortissement', 'Charge', 'Produit'), false, 'Aucun solde inhabituel.', 'Examiner chaque solde.');
+  item('stock_auto', 'Stocks cohérents', par('Stock', 'Lots FIFO', 'Sortie supérieure'), true, (ctx.stock || []).length ? 'Quantités et valorisations cohérentes.' : 'Sans objet (aucun article).', 'Corriger les stocks signalés.');
+  item('creances', 'Créances échues suivies', par('Créances échues'), false, 'Aucune créance échue impayée.', 'Relancer ou déprécier.');
+  const man = ctx.manuel || {};
+  CLO_MANUELS.filter((m) => !m.siStock || (ctx.stock || []).length).forEach((m) => items.push({ id: m.id, titre: m.t, etat: man[m.id] ? 'ok' : 'manuel', detail: man[m.id] ? 'Confirmé' : 'À confirmer par le comptable', action: '', manuel: true }));
+  const bloq = items.filter((i) => i.etat === 'bloquant').length, manque = items.filter((i) => i.etat === 'manuel').length;
+  return { items, bloquants: bloq, manuelsRestants: manque, alertes: items.filter((i) => i.etat === 'alerte').length, pret: bloq === 0 && manque === 0 };
+}
+
+let _cloManuel = {}; let _cloAnnee = null;
+function cloAnneeDefaut() { const ys = [...new Set(ecritures.map((e) => String(e.date || '').substring(0, 4)).filter((y) => /^\d{4}$/.test(y)))].sort(); return _cloAnnee || ys[ys.length - 1] || String(new Date().getFullYear()); }
+async function cloChargerManuel(annee) {
+  try { const s = await window._fbGetDoc(window._fbDoc(window._db, 'profiles', getOwnerProfileId(), 'config', 'cloture_' + annee)); _cloManuel[annee] = s.exists() ? (s.data().manuel || {}) : {}; }
+  catch (e) { _cloManuel[annee] = _cloManuel[annee] || {}; }
+  renderCloture();
+}
+function cloCollab() { return typeof isCollabMode !== 'undefined' && isCollabMode; }
+function renderCloture() {
+  const box = document.getElementById('clotureContent'); if (!box) return;
+  const annee = cloAnneeDefaut(); _cloAnnee = annee;
+  if (!_cloManuel[annee]) { _cloManuel[annee] = {}; cloChargerManuel(annee); }
+  const res = analyserCloture(annee, { ecritures, plan: PC, stock: stockArticles, factures: facturesList, auj: new Date().toISOString().substring(0, 10), manuel: _cloManuel[annee], coherence: (l) => analyserCoherence(l) });
+  const ys = [...new Set(ecritures.map((e) => String(e.date || '').substring(0, 4)).filter((y) => /^\d{4}$/.test(y)).concat([annee]))].sort();
+  const verrou = lockedPeriods.has(annee);
+  const ico = { ok: '✓', alerte: '⚠', bloquant: '✕', manuel: '☐' }, cls = { ok: 'ctl-info', alerte: 'ctl-attention', bloquant: 'ctl-critique', manuel: 'ctl-attention' };
+  box.innerHTML = `<h2 style="font-size:16px;margin:0 0 8px">Clôture comptable guidée</h2>
+  <div class="ij-row" style="grid-template-columns:auto 120px 1fr;align-items:center"><span>Exercice</span><select id="clo-annee" class="search-input" onchange="cloChangerAnnee(this.value)">${ys.map((y) => `<option value="${escapeAttr(y)}" ${y === annee ? 'selected' : ''}>${escapeHtml(y)}</option>`).join('')}</select>${verrou ? '<span class="ctl-pill ctl-info">🔒 Exercice verrouillé</span>' : ''}</div>
+  <div class="ctl-summary"><span class="ctl-pill ctl-critique">${res.bloquants} bloquant(s)</span><span class="ctl-pill ctl-attention">${res.alertes} alerte(s)</span><span class="ctl-pill ctl-attention">${res.manuelsRestants} à confirmer</span></div>
+  ${res.items.map((i) => `<div class="ctl-item ${cls[i.etat]}"><div class="ctl-title">${ico[i.etat]} ${i.manuel ? `<label><input type="checkbox" ${i.etat === 'ok' ? 'checked' : ''} ${verrou || cloCollab() ? 'disabled' : ''} onchange="clotureCocher('${i.id}',this.checked)"> ${escapeHtml(i.titre)}</label>` : escapeHtml(i.titre)}</div><div class="ctl-detail">${escapeHtml(i.detail)}</div>${i.action ? `<div class="ctl-action">→ ${escapeHtml(i.action)}</div>` : ''}</div>`).join('')}
+  <div class="ctl-item ctl-attention"><div class="ctl-detail"><b>Attention :</b> le verrouillage d'un exercice est <b>irréversible depuis l'application</b> (aucune fonction de déverrouillage n'existe). Il interdit toute nouvelle écriture sur ${escapeHtml(annee)}.${res.alertes ? ' Des alertes subsistent : elles ne bloquent pas, mais vérifiez-les.' : ''}</div></div>
+  <div class="ph-actions" style="margin-top:10px"><button type="button" class="btn btn-ink" ${res.pret && !verrou && !cloCollab() ? '' : 'disabled'} onclick="clotureVerrouiller()">🔒 Verrouiller l'exercice ${escapeHtml(annee)}</button>${cloCollab() ? '<span class="ctl-detail">Seul le propriétaire peut clôturer.</span>' : ''}</div>`;
+}
+async function clotureCocher(id, v) {
+  if (cloCollab()) { toast('Seul le propriétaire peut modifier la clôture.', 'error'); return; }
+  const annee = cloAnneeDefaut(); if (lockedPeriods.has(annee)) return;
+  _cloManuel[annee] = { ..._cloManuel[annee], [id]: !!v };
+  try { await window._fbSetDoc(window._fbDoc(window._db, 'profiles', getOwnerProfileId(), 'config', 'cloture_' + annee), { manuel: _cloManuel[annee], updatedBy: currentProfile?.email || '', updatedAt: new Date().toISOString() }, { merge: true }); }
+  catch (e) { toast('Sauvegarde de la case impossible : ' + e.message, 'error'); }
+  auditLog('CLOTURE_CHECKLIST', 'COMPTABILITE', `${annee} : ${id} = ${!!v}`);
+  renderCloture();
+}
+async function clotureVerrouiller() {
+  if (cloCollab()) { toast('Seul le propriétaire peut clôturer.', 'error'); return; }
+  const annee = cloAnneeDefaut();
+  const res = analyserCloture(annee, { ecritures, plan: PC, stock: stockArticles, factures: facturesList, auj: new Date().toISOString().substring(0, 10), manuel: _cloManuel[annee], coherence: (l) => analyserCoherence(l) });
+  if (!res.pret) { toast('Clôture impossible : points bloquants ou confirmations manquantes.', 'error'); return; }
+  if (!confirm('Verrouiller définitivement l\'exercice ' + annee + ' ?\n\nAucune écriture ne pourra plus être ajoutée, modifiée ou supprimée sur cette année, et l\'application ne propose pas de déverrouillage.')) return;
+  if ((prompt('Tapez l\'année ' + annee + ' pour confirmer :') || '').trim() !== annee) { toast('Confirmation incorrecte : clôture annulée.', 'info'); return; }
+  await lockPeriod(annee);
+  auditLog('CLOTURE_EXERCICE', 'COMPTABILITE', 'Exercice ' + annee + ' verrouillé (' + res.alertes + ' alerte(s) restante(s))');
+  toast('🔒 Exercice ' + annee + ' verrouillé', 'success'); renderCloture();
+}
+function cloChangerAnnee(v) { _cloAnnee = String(v); renderCloture(); }
+Object.assign(window, { renderCloture, clotureCocher, clotureVerrouiller, cloChangerAnnee });
+
+function stock3dDisposer(an, colonnes) {
+  const cols = Math.max(1, colonnes || 6);
+  return an.map((a, i) => {
+    const ratio = a.seuil > 0 ? Math.min(1, a.qte / (a.seuil * 2)) : (a.qte > 0 ? 0.6 : 0);
+    const statut = a.statut === 'rupture' ? 'rupture' : a.statut === 'bas' ? 'bas' : a.immobilise ? 'immobilise' : 'ok';
+    const h = a.qte <= 0 ? 0.08 : Math.max(0.25, ratio * 1.6);
+    const couleur = { rupture: 0xe5484d, bas: 0xf5a524, immobilise: 0x6b7a90, ok: 0x2f9e44 }[statut];
+    return { i, nom: a.nom, statut, h, couleur, x: (i % cols) * 1.3, z: Math.floor(i / cols) * 1.5, drapeau: !!(a.inhabituel || a.dernierEcart), ecart: !!a.dernierEcart };
+  });
+}
+
+let _s3d = null;
+function stock3dFaible() {
+  try { if (matchMedia('(prefers-reduced-motion: reduce)').matches) return 'réduction des animations demandée'; } catch (e) {}
+  if (navigator.deviceMemory && navigator.deviceMemory < 4) return 'mémoire limitée';
+  if (navigator.hardwareConcurrency && navigator.hardwareConcurrency < 4) return 'processeur modeste';
+  return null;
+}
+function stock3dWebGL() { try { const c = document.createElement('canvas'); return !!(c.getContext('webgl') || c.getContext('experimental-webgl')); } catch (e) { return false; } }
+function stock3dCharger() {
+  if (window.THREE) return Promise.resolve();
+  return new Promise((ok, ko) => { const s = document.createElement('script'); s.src = 'https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js'; s.onload = ok; s.onerror = () => ko(new Error('Three.js non chargé (réseau ou politique de sécurité)')); document.head.appendChild(s); });
+}
+function stock3dDetruire() {
+  if (!_s3d) return;
+  try { _s3d.ac.abort(); if (_s3d.raf) cancelAnimationFrame(_s3d.raf); _s3d.ro.disconnect(); _s3d.scene.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); }); _s3d.renderer.dispose(); _s3d.renderer.domElement.remove(); } catch (e) {}
+  _s3d = null;
+}
+function stock3dMsg(wrap, texte, bouton) {
+  wrap.innerHTML = `<div class="ctl-item ctl-attention"><div class="ctl-detail">${escapeHtml(texte)}</div></div>`;
+  if (bouton) { const b = document.createElement('button'); b.type = 'button'; b.className = 'btn btn-sm-wire'; b.textContent = bouton.t; b.onclick = bouton.f; wrap.appendChild(b); }
+}
+async function stock3dMonter(forcer) {
+  stock3dDetruire();
+  const wrap = document.getElementById('stk3d-wrap'); if (!wrap) return;
+  if (!stockArticles.length) { stock3dMsg(wrap, 'Aucun article en stock : rien à afficher.'); return; }
+  if (!stock3dWebGL()) { stock3dMsg(wrap, 'WebGL indisponible sur cet appareil : utilisez la vue classique (onglet Alertes ou Historique).'); return; }
+  const faible = stock3dFaible();
+  if (faible && !forcer) { stock3dMsg(wrap, 'Vue 3D désactivée par défaut (' + faible + '). La vue classique reste disponible.', { t: 'Activer quand même', f: () => stock3dMonter(true) }); return; }
+  wrap.innerHTML = '<div class="ctl-detail">Chargement de la vue 3D…</div>';
+  try { await stock3dCharger(); } catch (e) { stock3dMsg(wrap, e.message); return; }
+  if (_stockTab !== '3d' || !document.getElementById('stk3d-wrap')) return;
+  const T = window.THREE;
+  const an = stockAnalyser(stockArticles, new Date().toISOString().substring(0, 10), _stkP, valeurStockArticle);
+  const cols = Math.min(8, Math.max(2, Math.ceil(Math.sqrt(an.length * 1.5))));
+  const items = stock3dDisposer(an, cols);
+  const W = wrap.clientWidth || 600, H = W < 520 ? 320 : 440;
+  wrap.innerHTML = '';
+  const leg = document.createElement('div'); leg.className = 'ph-actions'; leg.style.cssText = 'margin-bottom:6px;font-size:12px';
+  const filtres = [['tout', 'Tout'], ['rupture', '🟥 Ruptures'], ['bas', '🟧 Sous seuil'], ['immobilise', '⬜ Immobilisés'], ['ecart', '🟣 Écarts / inhabituels']];
+  filtres.forEach(([k, l]) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'btn btn-sm-wire'; b.textContent = l; b.onclick = () => filtrer(k); leg.appendChild(b); });
+  wrap.appendChild(leg);
+  const holder = document.createElement('div'); holder.style.cssText = `position:relative;height:${H}px;border-radius:8px;overflow:hidden;background:#1b2230;touch-action:none`;
+  wrap.appendChild(holder);
+  const tip = document.createElement('div'); tip.style.cssText = 'position:absolute;pointer-events:none;background:rgba(0,0,0,.85);color:#fff;font-size:12px;padding:4px 8px;border-radius:6px;display:none;z-index:2;white-space:nowrap';
+  holder.appendChild(tip);
+  const det = document.createElement('div'); det.className = 'ctl-detail'; det.style.marginTop = '8px'; det.textContent = 'Cliquez sur un bloc pour voir le détail. Glisser : tourner · molette ou pincement : zoom · flèches du clavier : tourner.';
+  wrap.appendChild(det);
+  const renderer = new T.WebGLRenderer({ antialias: !faible, alpha: false });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, faible ? 1 : 2)); renderer.setSize(W, H); renderer.setClearColor(0x1b2230);
+  const cv = renderer.domElement; cv.tabIndex = 0; cv.setAttribute('role', 'img'); cv.setAttribute('aria-label', 'Vue 3D des stocks : ' + items.length + ' articles. Une vue tabulaire accessible est disponible dans les autres onglets.'); holder.appendChild(cv);
+  const scene = new T.Scene();
+  scene.add(new T.AmbientLight(0xffffff, 0.65)); const dl = new T.DirectionalLight(0xffffff, 0.8); dl.position.set(5, 10, 6); scene.add(dl);
+  const camera = new T.PerspectiveCamera(45, W / H, 0.1, 200);
+  const rows = Math.ceil(items.length / cols); const cx = ((cols - 1) * 1.3) / 2, cz = ((rows - 1) * 1.5) / 2;
+  for (let r = 0; r < rows; r++) { const p = new T.Mesh(new T.BoxGeometry(cols * 1.3, 0.06, 1.2), new T.MeshLambertMaterial({ color: 0x3a4660 })); p.position.set(cx, 0.03, r * 1.5); scene.add(p); }
+  const meshes = [];
+  items.forEach((b) => {
+    const m = new T.Mesh(new T.BoxGeometry(0.9, b.h, 0.9), new T.MeshLambertMaterial({ color: b.couleur, transparent: true, opacity: 1 }));
+    m.position.set(b.x, 0.06 + b.h / 2, b.z); m.userData = { b, an: an[b.i] }; scene.add(m); meshes.push(m);
+    if (b.drapeau) { const f = new T.Mesh(new T.SphereGeometry(0.13, 12, 12), new T.MeshLambertMaterial({ color: 0xc026d3 })); f.position.set(b.x, 0.06 + b.h + 0.3, b.z); f.userData = m.userData; scene.add(f); meshes.push(f); }
+  });
+  let th = 0.8, ph = 1.0, rad = Math.max(7, Math.max(cols * 1.3, rows * 1.5) * 1.3);
+  const ac = new AbortController(); const sig = { signal: ac.signal };
+  const st = { scene, renderer, ac, raf: 0, ro: null };
+  const maj = () => { camera.position.set(cx + rad * Math.sin(ph) * Math.cos(th), rad * Math.cos(ph), cz + rad * Math.sin(ph) * Math.sin(th)); camera.lookAt(cx, 0.4, cz); };
+  const dessiner = () => { if (st.raf) return; st.raf = requestAnimationFrame(() => { st.raf = 0; maj(); renderer.render(scene, camera); }); };
+  function filtrer(k) { meshes.forEach((m) => { const b = m.userData.b, a = m.userData.an; const vis = k === 'tout' || (k === 'ecart' ? b.drapeau : b.statut === k); if (m.material) m.material.opacity = vis ? 1 : 0.12; }); dessiner(); }
+  const ray = new T.Raycaster(), v2 = new T.Vector2();
+  const pointer = (ev) => { const r = cv.getBoundingClientRect(); v2.set(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1); ray.setFromCamera(v2, camera); const h = ray.intersectObjects(meshes)[0]; return h ? h.object : null; };
+  const pts = new Map(); let bouge = 0, dist0 = 0;
+  cv.addEventListener('pointerdown', (e) => { cv.setPointerCapture(e.pointerId); pts.set(e.pointerId, { x: e.clientX, y: e.clientY }); bouge = 0; if (pts.size === 2) { const [a, b] = [...pts.values()]; dist0 = Math.hypot(a.x - b.x, a.y - b.y); } }, sig);
+  cv.addEventListener('pointermove', (e) => {
+    const p = pts.get(e.pointerId);
+    if (p) {
+      const dx = e.clientX - p.x, dy = e.clientY - p.y; bouge += Math.abs(dx) + Math.abs(dy);
+      if (pts.size === 1) { th -= dx * 0.008; ph = Math.min(1.45, Math.max(0.2, ph - dy * 0.008)); }
+      pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pts.size === 2) { const [a, b] = [...pts.values()]; const d = Math.hypot(a.x - b.x, a.y - b.y); if (dist0) rad = Math.min(40, Math.max(3, rad * (dist0 / d))); dist0 = d; }
+      tip.style.display = 'none'; dessiner(); return;
+    }
+    const o = pointer(e);
+    if (o) { const a = o.userData.an; tip.textContent = a.nom + ' — ' + _r3(a.qte) + ' (seuil ' + _r3(a.seuil) + ')'; const r = holder.getBoundingClientRect(); tip.style.left = Math.min(e.clientX - r.left + 12, r.width - 160) + 'px'; tip.style.top = (e.clientY - r.top + 12) + 'px'; tip.style.display = 'block'; } else tip.style.display = 'none';
+  }, sig);
+  const fin = (e) => { const clic = bouge < 6 && pts.has(e.pointerId); pts.delete(e.pointerId); if (clic) selectionner(pointer(e)); };
+  cv.addEventListener('pointerup', fin, sig); cv.addEventListener('pointercancel', (e) => pts.delete(e.pointerId), sig); cv.addEventListener('pointerleave', () => { tip.style.display = 'none'; }, sig);
+  cv.addEventListener('wheel', (e) => { e.preventDefault(); rad = Math.min(40, Math.max(3, rad * (1 + e.deltaY * 0.001))); dessiner(); }, { passive: false, signal: ac.signal });
+  cv.addEventListener('keydown', (e) => { const k = e.key; if (k === 'ArrowLeft') th += 0.1; else if (k === 'ArrowRight') th -= 0.1; else if (k === 'ArrowUp') ph = Math.max(0.2, ph - 0.1); else if (k === 'ArrowDown') ph = Math.min(1.45, ph + 0.1); else if (k === '+') rad = Math.max(3, rad * 0.9); else if (k === '-') rad = Math.min(40, rad * 1.1); else return; e.preventDefault(); dessiner(); }, sig);
+  function selectionner(o) {
+    if (!o) { det.textContent = 'Cliquez sur un bloc pour voir le détail.'; return; }
+    const a = o.userData.an; const obs = [a.immobilise ? 'immobilisé / faible rotation' : '', a.inhabituel || '', a.dernierEcart ? 'dernier écart d\'inventaire ' + a.dernierEcart.ecart + ' (' + a.dernierEcart.date + ')' : ''].filter(Boolean).join(' · ');
+    det.textContent = a.nom + ' — ' + { rupture: 'RUPTURE', bas: 'sous le seuil', ok: 'stock correct' }[a.statut] + ' · quantité ' + _r3(a.qte) + ' · seuil ' + _r3(a.seuil) + ' · valeur ' + fn(a.valeur) + (a.dernierSortie ? ' · dernière sortie ' + a.dernierSortie : ' · aucune sortie') + (a.reappro ? ' · réappro. suggéré ' + a.reappro : '') + (obs ? ' · ' + obs : '') + ' ';
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'btn btn-sm-wire'; b.textContent = 'Voir les mouvements'; b.onclick = () => { _stockTab = 'mouvements'; stockPilotageRender(); const q = document.getElementById('stk-mq'); if (q) { q.value = a.nom; stockPilotageRender(); } }; det.appendChild(b);
+  }
+  st.ro = new ResizeObserver(() => { const w = wrap.clientWidth; if (w > 0) { renderer.setSize(w, H); camera.aspect = w / H; camera.updateProjectionMatrix(); dessiner(); } }); st.ro.observe(wrap);
+  _s3d = st; dessiner();
+}
+Object.assign(window, { stock3dMonter, stock3dDetruire });
+
+// ══════════════════════════════════════════
+// MESSAGERIE INTER-ENTREPRISES (identité vérifiée, annuaire, conversations, groupes)
+// ══════════════════════════════════════════
+const MC_FREE = /@(gmail|googlemail|yahoo|ymail|hotmail|outlook|live|msn|icloud|me|aol|proton|protonmail|gmx|mail)\.[a-z.]+$/i;
+function mcEmailPro(e) {
+  const t = String(e || '').trim().toLowerCase();
+  if (!/^[^\s@\/]+@[^\s@\/]+\.[a-z]{2,}$/.test(t)) return { ok: false, raison: 'Adresse e-mail invalide.' };
+  if (MC_FREE.test(t)) return { ok: false, raison: 'Adresse personnelle (messagerie grand public) : utilisez l\'adresse professionnelle de l\'entreprise.' };
+  return { ok: true, email: t };
+}
+function mcDirectId(a, b) { return 'd_' + [a, b].sort().join('_'); }
+function mcMs(m) { return m.tsServer && m.tsServer.toMillis ? m.tsServer.toMillis() : (Date.parse(m.ts) || 0); }
+function mcStatut(m, participants, uid) {
+  const autres = participants.filter((p) => p !== uid);
+  if (!autres.length) return 'envoyé';
+  const lus = autres.filter((p) => m.readBy && m.readBy[p]).length;
+  return lus === autres.length ? 'lu' : lus ? 'lu par ' + lus + '/' + autres.length : 'envoyé';
+}
+function mcNonLus(msgs, uid) { return msgs.filter((m) => m.senderId !== uid && !(m.readBy && m.readBy[uid])).length; }
+function mcFiltrerConvs(convs, uid, filtre, q, nomFn) {
+  const t = String(q || '').toLowerCase();
+  return convs.filter((c) => {
+    const arch = !!(c.archived && c.archived[uid]);
+    if (filtre === 'archives' ? !arch : arch) return false;
+    if (filtre === 'epingles' && !(c.pinned && c.pinned[uid])) return false;
+    if (!t) return true;
+    return nomFn(c).toLowerCase().includes(t) || String(c.lastMessage?.text || '').toLowerCase().includes(t);
+  }).sort((a, b) => (((b.pinned && b.pinned[uid]) ? 1 : 0) - ((a.pinned && a.pinned[uid]) ? 1 : 0)) || (mcMs({ tsServer: b.lastTs, ts: b.createdAt }) - mcMs({ tsServer: a.lastTs, ts: a.createdAt })));
+}
+function mcCibles(saisie) {
+  const vus = new Set(), ok = [], rejets = [];
+  String(saisie || '').split(/[\s,;]+/).filter(Boolean).forEach((x) => { const r = mcEmailPro(x); if (!r.ok) { rejets.push(x + ' : ' + r.raison); return; } if (!vus.has(r.email)) { vus.add(r.email); ok.push(r.email); } });
+  return { ok, rejets };
+}
+
+// ── Messagerie inter-entreprises : identité vérifiée (Firebase Auth), annuaire, conversations ──
+const _mc = { uid: null, email: null, company: null, convs: [], conv: null, msgs: [], uC: null, uM: null, noms: {}, filtre: 'tous', q: '', mq: '', reply: null, pret: false };
+const mcEl = (id) => document.getElementById(id);
+const mcFS = () => window._firebaseFirestore;
+const mcRefDoc = (...p) => window._fbDoc(window._db, ...p);
+const mcRefCol = (...p) => window._fbCollection(window._db, ...p);
+function mcMsgCarte(titre, corpsHtml) { return `<div class="ctl-item ctl-attention" style="max-width:640px"><div class="ctl-title">${escapeHtml(titre)}</div>${corpsHtml}</div>`; }
+async function renderMsgCo() {
+  const root = mcEl('msgcoContent'); if (!root) return;
+  const u = auth.currentUser;
+  if (!u) { root.innerHTML = mcMsgCarte('Connexion requise', '<div class="ctl-detail">Connectez-vous pour utiliser la messagerie inter-entreprises.</div>'); return; }
+  if (cloCollab()) { root.innerHTML = mcMsgCarte('Réservé au propriétaire', '<div class="ctl-detail">Seul le compte propriétaire de l\'entreprise peut échanger avec d\'autres entreprises.</div>'); return; }
+  _mc.uid = u.uid; _mc.email = String(u.email || '').toLowerCase();
+  const pro = mcEmailPro(_mc.email);
+  if (!u.emailVerified) { root.innerHTML = mcMsgCarte('1. Vérifier votre adresse e-mail', `<div class="ctl-detail">Adresse du compte : <b>${escapeHtml(_mc.email)}</b>. Un e-mail contenant un lien de vérification vous sera envoyé. Saisir l'adresse ne suffit pas : l'accès n'est ouvert qu'après avoir cliqué sur ce lien.</div><div class="ph-actions" style="margin-top:8px"><button class="btn btn-sm-wire" onclick="mcEnvoyerVerif()">Envoyer le lien de vérification</button><button class="btn btn-ink" onclick="mcActualiserVerif()">J'ai cliqué sur le lien</button></div>`); return; }
+  if (!pro.ok) { root.innerHTML = mcMsgCarte('Adresse professionnelle requise', `<div class="ctl-detail">${escapeHtml(pro.raison)} Connectez-vous avec le compte dont l'adresse appartient au domaine de votre entreprise.</div>`); return; }
+  try {
+    const id = await window._fbGetDoc(mcRefDoc('mc_identites', _mc.uid));
+    if (!id.exists()) {
+      root.innerHTML = mcMsgCarte('2. Publier l\'identité professionnelle de l\'entreprise', `<div class="ctl-detail">Adresse vérifiée : <b>${escapeHtml(_mc.email)}</b>. Votre raison sociale et cette adresse seront visibles des autres entreprises vérifiées qui connaissent l'adresse.</div><div class="ij-row" style="grid-template-columns:1fr auto;margin-top:8px"><input type="text" id="mc-company" maxlength="80" placeholder="Raison sociale" value="${escapeAttr(currentProfile?.company || currentSociete?.nom || '')}"><button class="btn btn-ink" onclick="mcPublier()">Publier</button></div>`); return;
+    }
+    _mc.company = id.data().company;
+  } catch (e) { root.innerHTML = mcMsgCarte('Service indisponible', `<div class="ctl-detail">${escapeHtml(e.code === 'permission-denied' ? 'Accès refusé : les règles de sécurité Firestore de la messagerie ne sont pas encore déployées (voir le fichier de règles fourni).' : e.message)}</div>`); return; }
+  mcMonter();
+}
+async function mcEnvoyerVerif() { try { await sendEmailVerification(auth.currentUser); toast('E-mail de vérification envoyé à ' + auth.currentUser.email, 'success'); } catch (e) { toast('Envoi impossible : ' + e.message, 'error'); } }
+async function mcActualiserVerif() { try { await auth.currentUser.reload(); await auth.currentUser.getIdToken(true); } catch (e) { toast(e.message, 'error'); } renderMsgCo(); }
+async function mcPublier() {
+  const company = (mcEl('mc-company').value || '').trim();
+  if (company.length < 2 || company.length > 80) { toast('Raison sociale : 2 à 80 caractères.', 'error'); return; }
+  try {
+    const ts = window._fbServerTs();
+    await window._fbSetDoc(mcRefDoc('mc_identites', _mc.uid), { company, email: _mc.email, uid: _mc.uid, createdAt: ts });
+    await window._fbSetDoc(mcRefDoc('mc_annuaire', _mc.email), { uid: _mc.uid, company, createdAt: ts });
+    auditLog('MESSAGERIE_IDENTITE', 'MESSAGERIE', 'Identité professionnelle publiée : ' + _mc.email);
+    toast('✓ Identité publiée', 'success'); renderMsgCo();
+  } catch (e) { toast('Publication impossible : ' + e.message, 'error'); }
+}
+async function mcNom(uid) {
+  if (_mc.noms[uid]) return _mc.noms[uid];
+  _mc.noms[uid] = '…';
+  try { const s = await window._fbGetDoc(mcRefDoc('mc_identites', uid)); _mc.noms[uid] = s.exists() ? s.data().company : 'Entreprise inconnue'; } catch (e) { _mc.noms[uid] = 'Entreprise'; }
+  mcRenderList(); if (_mc.conv) mcRenderHead();
+  return _mc.noms[uid];
+}
+function mcNomConv(c) { if (c.title) return c.title; return c.participants.filter((p) => p !== _mc.uid).map((p) => { if (!_mc.noms[p]) mcNom(p); return _mc.noms[p] || '…'; }).join(', ') || 'Conversation'; }
+function mcNonLue(c) { return !!(c.lastMessage && c.lastMessage.senderId !== _mc.uid && mcMs({ tsServer: c.lastTs }) > (Date.parse((c.lastRead || {})[_mc.uid]) || 0)); }
+function mcMonter() {
+  const root = mcEl('msgcoContent');
+  if (!mcEl('mc-list')) {
+    root.innerHTML = `<div class="mc-wrap" id="mc-wrap"><div class="mc-side"><div class="ctl-detail" style="margin-bottom:6px">🏢 <b id="mc-me"></b><br><span id="mc-me-mail"></span></div><button class="btn btn-ink" style="width:100%" onclick="mcNouvelle()">＋ Nouvelle conversation</button><input type="text" id="mc-search" class="search-input" placeholder="Rechercher une entreprise ou un message…" style="margin:8px 0" oninput="_mcQ(this.value)"><div class="ph-actions" style="margin-bottom:6px"><button class="btn btn-sm-wire" onclick="mcFiltre('tous')">Tous</button><button class="btn btn-sm-wire" onclick="mcFiltre('epingles')">📌</button><button class="btn btn-sm-wire" onclick="mcFiltre('archives')">🗄</button></div><div id="mc-list"></div></div><div class="mc-main"><div id="mc-head" class="mc-head"></div><div id="mc-msgs" class="mc-msgs"></div><div id="mc-replybar"></div><div class="mc-compose"><textarea id="mc-input" rows="2" maxlength="4000" placeholder="Votre message… (Entrée pour envoyer, Maj+Entrée : saut de ligne)"></textarea><button class="btn btn-ink" onclick="mcEnvoyer()">Envoyer</button></div></div></div>`;
+    mcEl('mc-input').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); mcEnvoyer(); } });
+  }
+  mcEl('mc-me').textContent = _mc.company; mcEl('mc-me-mail').textContent = _mc.email;
+  if (_mc.uC) return;
+  const F = mcFS();
+  _mc.uC = F.onSnapshot(F.query(mcRefCol('mc_conversations'), F.where('participants', 'array-contains', _mc.uid)), (snap) => {
+    _mc.convs = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
+    mcRenderList(); mcBadge();
+    if (_mc.conv) { const c = _mc.convs.find((x) => x.id === _mc.conv.id); if (c) { _mc.conv = c; mcRenderHead(); } }
+  }, (err) => toast('Messagerie : ' + err.message, 'error'));
+  mcRenderList(); mcRenderHead();
+}
+function mcBadge() { const n = _mc.convs.filter(mcNonLue).length; const b = mcEl('mc-nav-badge'); if (b) { b.textContent = n || ''; b.style.display = n ? 'inline-block' : 'none'; } }
+function _mcQ(v) { _mc.q = v; mcRenderList(); }
+function mcFiltre(f) { _mc.filtre = f; mcRenderList(); }
+function mcRenderList() {
+  const box = mcEl('mc-list'); if (!box) return;
+  const l = mcFiltrerConvs(_mc.convs, _mc.uid, _mc.filtre, _mc.q, mcNomConv);
+  box.textContent = '';
+  if (!l.length) { const p = document.createElement('div'); p.className = 'ctl-detail'; p.textContent = _mc.filtre === 'tous' ? 'Aucune conversation. Créez-en une avec « Nouvelle conversation ».' : 'Aucun élément dans ce filtre.'; box.appendChild(p); return; }
+  l.forEach((c) => {
+    const d = document.createElement('div'); d.className = 'mc-conv' + (_mc.conv && _mc.conv.id === c.id ? ' actif' : '') + (mcNonLue(c) ? ' nonlu' : '');
+    const t = document.createElement('div'); t.className = 'mc-conv-t'; t.textContent = ((c.pinned || {})[_mc.uid] ? '📌 ' : '') + (c.type === 'group' ? '👥 ' : '') + mcNomConv(c);
+    const s = document.createElement('div'); s.className = 'mc-conv-s'; s.textContent = c.lastMessage ? c.lastMessage.text : 'Aucun message';
+    d.append(t, s); d.onclick = () => mcOuvrir(c.id); box.appendChild(d);
+  });
+}
+function mcRenderHead() {
+  const h = mcEl('mc-head'); if (!h) return; h.textContent = '';
+  if (!_mc.conv) { h.textContent = 'Sélectionnez une conversation'; return; }
+  const c = _mc.conv; const rb0 = document.createElement('button'); rb0.className = 'btn btn-sm-wire mc-retour'; rb0.textContent = '←'; rb0.setAttribute('aria-label', 'Retour à la liste'); rb0.onclick = () => mcEl('mc-wrap')?.classList.remove('mc-ouvert'); h.appendChild(rb0);
+  const t = document.createElement('b'); t.textContent = mcNomConv(c); h.appendChild(t);
+  if (c.type === 'group') { const p = document.createElement('span'); p.className = 'ctl-detail'; p.textContent = ' · ' + c.participants.length + ' participants'; h.appendChild(p); }
+  const bar = document.createElement('span'); bar.style.marginLeft = 'auto';
+  [['📌', 'pinned', 'Épingler'], ['🗄', 'archived', 'Archiver']].forEach(([ic, k, ti]) => { const b = document.createElement('button'); b.className = 'btn btn-sm-wire'; b.title = ti; b.textContent = ic + ((c[k] || {})[_mc.uid] ? ' ✓' : ''); b.onclick = () => mcBasculer(k); bar.appendChild(b); });
+  const mq = document.createElement('input'); mq.type = 'text'; mq.placeholder = 'Chercher dans la conversation'; mq.className = 'search-input'; mq.style.width = '190px'; mq.value = _mc.mq; mq.oninput = () => { _mc.mq = mq.value; mcRenderMsgs(); }; bar.prepend(mq);
+  h.appendChild(bar);
+}
+async function mcBasculer(k) { const c = _mc.conv; if (!c) return; try { await window._fbSetDoc(mcRefDoc('mc_conversations', c.id), { [k]: { [_mc.uid]: !((c[k] || {})[_mc.uid]) } }, { merge: true }); } catch (e) { toast(e.message, 'error'); } }
+function mcOuvrir(id) {
+  const c = _mc.convs.find((x) => x.id === id); if (!c) return;
+  if (_mc.uM) { _mc.uM(); _mc.uM = null; }
+  _mc.conv = c; _mc.msgs = []; _mc.reply = null; _mc.mq = '';
+  mcEl('mc-wrap')?.classList.add('mc-ouvert'); mcRenderHead(); mcRenderList(); mcRenderReply();
+  const F = mcFS();
+  _mc.uM = F.onSnapshot(mcRefCol('mc_conversations', id, 'messages'), (snap) => {
+    _mc.msgs = snap.docs.map((d) => ({ ...d.data(), id: d.id })).sort((a, b) => mcMs(a) - mcMs(b) || a.id.localeCompare(b.id)).slice(-300);
+    mcRenderMsgs(); mcMarquerLu();
+  }, (err) => toast('Messages : ' + err.message, 'error'));
+}
+async function mcMarquerLu() {
+  const c = _mc.conv; if (!c || document.hidden) return;
+  const non = _mc.msgs.filter((m) => m.senderId !== _mc.uid && !(m.readBy && m.readBy[_mc.uid])).slice(-50);
+  try {
+    for (const m of non) await window._fbSetDoc(mcRefDoc('mc_conversations', c.id, 'messages', m.id), { readBy: { [_mc.uid]: new Date().toISOString() } }, { merge: true });
+    if (mcNonLue(c)) await window._fbSetDoc(mcRefDoc('mc_conversations', c.id), { lastRead: { [_mc.uid]: new Date().toISOString() } }, { merge: true });
+  } catch (e) { /* lecture non bloquante */ }
+}
+function mcRenderMsgs() {
+  const box = mcEl('mc-msgs'); if (!box) return; box.textContent = '';
+  const q = _mc.mq.toLowerCase(); const c = _mc.conv; if (!c) return;
+  const l = _mc.msgs.filter((m) => !q || String(m.text).toLowerCase().includes(q) || String(m.senderName).toLowerCase().includes(q));
+  if (!l.length) { const p = document.createElement('div'); p.className = 'ctl-detail'; p.textContent = q ? 'Aucun message ne correspond (recherche limitée aux 300 derniers messages chargés).' : 'Aucun message. Écrivez le premier.'; box.appendChild(p); return; }
+  l.forEach((m) => {
+    const moi = m.senderId === _mc.uid; const b = document.createElement('div'); b.className = 'mc-bulle ' + (moi ? 'moi' : 'autre');
+    if (!moi && c.type === 'group') { const n = document.createElement('div'); n.className = 'mc-nom'; n.textContent = m.senderName; b.appendChild(n); }
+    if (m.replyTo) { const r = document.createElement('div'); r.className = 'mc-citation'; r.textContent = (m.replyTo.senderName || '') + ' : ' + (m.replyTo.text || ''); b.appendChild(r); }
+    const t = document.createElement('div'); t.className = 'mc-texte'; t.textContent = m.text; b.appendChild(t);
+    const f = document.createElement('div'); f.className = 'mc-meta'; const d = new Date(mcMs(m)); f.textContent = (mcMs(m) ? d.toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' }) : 'envoi…') + (moi ? ' · ' + mcStatut(m, c.participants, _mc.uid) : '');
+    const rb = document.createElement('button'); rb.className = 'pc-mini'; rb.textContent = '↩ Répondre'; rb.onclick = () => { _mc.reply = { id: m.id, senderName: m.senderName, text: String(m.text).substring(0, 200) }; mcRenderReply(); mcEl('mc-input').focus(); };
+    f.appendChild(rb); b.appendChild(f); box.appendChild(b);
+  });
+  box.scrollTop = box.scrollHeight;
+}
+function mcRenderReply() { const r = mcEl('mc-replybar'); if (!r) return; r.textContent = ''; if (!_mc.reply) return; const d = document.createElement('div'); d.className = 'mc-citation'; d.style.margin = '4px 8px'; d.textContent = 'Réponse à ' + _mc.reply.senderName + ' : ' + _mc.reply.text + '  '; const x = document.createElement('button'); x.className = 'pc-mini'; x.textContent = '✕'; x.onclick = () => { _mc.reply = null; mcRenderReply(); }; d.appendChild(x); r.appendChild(d); }
+async function mcPoster(convId, texte, reply) {
+  const ts = window._fbServerTs(); const iso = new Date().toISOString();
+  const m = { senderId: _mc.uid, senderName: _mc.company, text: texte, ts: iso, tsServer: ts, replyTo: reply || null, readBy: { [_mc.uid]: iso } };
+  await window._fbAddDoc(mcRefCol('mc_conversations', convId, 'messages'), m);
+  await window._fbSetDoc(mcRefDoc('mc_conversations', convId), { lastMessage: { text: texte.substring(0, 80), senderId: _mc.uid }, lastTs: ts, lastRead: { [_mc.uid]: iso } }, { merge: true });
+}
+async function mcEnvoyer() {
+  const inp = mcEl('mc-input'); const t = (inp.value || '').trim(); if (!t || !_mc.conv) return;
+  inp.value = ''; const rep = _mc.reply; _mc.reply = null; mcRenderReply();
+  try { await mcPoster(_mc.conv.id, t, rep); } catch (e) { inp.value = t; _mc.reply = rep; mcRenderReply(); toast('Message non envoyé : ' + e.message, 'error'); }
+}
+function mcNouvelle() {
+  const ov = document.createElement('div'); ov.className = 'modal-overlay'; ov.style.display = 'flex'; ov.id = 'mcNouvelleModal';
+  ov.innerHTML = `<div class="modal-box" style="width:520px;max-width:94vw"><div class="modal-title">Nouvelle conversation</div>
+  <label class="ctl-detail">Adresse(s) e-mail professionnelle(s) des entreprises (séparées par des virgules ou espaces)</label><textarea id="mcn-emails" rows="2" class="search-input" style="width:100%"></textarea>
+  <label class="ctl-detail">Si plusieurs destinataires :</label><select id="mcn-mode" class="search-input" style="width:100%"><option value="separe">Messages séparés et confidentiels (chacun ne voit que sa conversation)</option><option value="groupe">Groupe de discussion (tous voient tout)</option></select>
+  <input type="text" id="mcn-titre" class="search-input" style="width:100%;margin-top:6px" maxlength="80" placeholder="Nom du groupe (si groupe)">
+  <label class="ctl-detail">Message (facultatif)</label><textarea id="mcn-msg" rows="3" maxlength="4000" class="search-input" style="width:100%"></textarea>
+  <div id="mcn-res" class="ctl-detail" style="margin-top:6px"></div>
+  <div class="ph-actions" style="justify-content:flex-end;margin-top:8px"><button class="btn btn-sm-wire" onclick="document.getElementById('mcNouvelleModal').remove()">Annuler</button><button class="btn btn-ink" id="mcn-go" onclick="mcCreer()">Créer</button></div></div>`;
+  document.body.appendChild(ov);
+}
+async function mcCreer() {
+  const res = mcEl('mcn-res'); const msg = (mcEl('mcn-msg').value || '').trim();
+  const { ok, rejets } = mcCibles(mcEl('mcn-emails').value);
+  const lignes = rejets.slice();
+  if (!ok.length) { res.textContent = (lignes.join(' | ') || 'Saisissez au moins une adresse.'); return; }
+  mcEl('mcn-go').disabled = true; res.textContent = 'Vérification des destinataires…';
+  const cibles = [];
+  for (const e of ok) {
+    if (e === _mc.email) { lignes.push(e + ' : c\'est votre propre adresse.'); continue; }
+    try { const s = await window._fbGetDoc(mcRefDoc('mc_annuaire', e)); if (s.exists() && s.data().uid !== _mc.uid) cibles.push({ email: e, uid: s.data().uid, company: s.data().company }); else lignes.push(e + ' : aucune entreprise vérifiée à cette adresse.'); }
+    catch (err) { lignes.push(e + ' : ' + err.message); }
+  }
+  if (!cibles.length) { res.textContent = lignes.join(' | '); mcEl('mcn-go').disabled = false; return; }
+  cibles.forEach((c) => { _mc.noms[c.uid] = c.company; });
+  const groupe = cibles.length > 1 && mcEl('mcn-mode').value === 'groupe';
+  const iso = new Date().toISOString(); let premier = null;
+  try {
+    if (groupe) {
+      const titre = (mcEl('mcn-titre').value || '').trim(); if (titre.length < 2) { res.textContent = 'Donnez un nom au groupe.'; mcEl('mcn-go').disabled = false; return; }
+      if (cibles.length + 1 > 20) { res.textContent = '20 participants maximum.'; mcEl('mcn-go').disabled = false; return; }
+      const ref = window._fbDoc(mcRefCol('mc_conversations'));
+      await window._fbSetDoc(ref, { type: 'group', title: titre, participants: [_mc.uid, ...cibles.map((c) => c.uid)], createdBy: _mc.uid, createdAt: iso });
+      premier = ref.id; if (msg) await mcPoster(ref.id, msg, null);
+    } else {
+      for (const c of cibles) {
+        const id = mcDirectId(_mc.uid, c.uid); const ref = mcRefDoc('mc_conversations', id); const ex = await window._fbGetDoc(ref);
+        if (!ex.exists()) await window._fbSetDoc(ref, { type: 'direct', participants: [_mc.uid, c.uid], createdBy: _mc.uid, createdAt: iso });
+        if (msg) await mcPoster(id, msg, null);
+        if (!premier) premier = id;
+      }
+    }
+    auditLog('MESSAGERIE_CONVERSATION', 'MESSAGERIE', (groupe ? 'Groupe' : 'Conversation(s)') + ' créé(s) avec ' + cibles.length + ' entreprise(s)');
+  } catch (err) { res.textContent = 'Création impossible : ' + err.message; mcEl('mcn-go').disabled = false; return; }
+  if (lignes.length) toast('Non traité : ' + lignes.join(' | '), 'info');
+  mcEl('mcNouvelleModal')?.remove();
+  setTimeout(() => mcOuvrir(premier), 600);
+}
+RENDERERS.msgco = renderMsgCo;
+Object.assign(window, { renderMsgCo, mcEnvoyerVerif, mcActualiserVerif, mcPublier, mcNouvelle, mcCreer, mcEnvoyer, mcFiltre, _mcQ });
+
+// ══════════════════════════════════════════
 // PIÈCE JUSTIFICATIVE + OCR LOCAL → JOURNAL INTELLIGENT (aucune IA externe)
 // ══════════════════════════════════════════
 let _pieceCourante = null; // { id, nom, hash, mime }
@@ -5093,12 +5667,12 @@ window.ijLancer = ijLancer; window.ijAppliquer = ijAppliquer;
 // ══════════════════════════════════════════
 // CONTRÔLE DE COHÉRENCE (détection préventive, lecture seule)
 // ══════════════════════════════════════════
-function analyserCoherence() {
+function analyserCoherence(liste) {
   const anomalies = [];
   const add = (niveau, titre, detail, action, ref) => anomalies.push({ niveau, titre, detail, action, ref });
   const vus = new Map();
   const aujourdhui = new Date().toISOString().substring(0, 10);
-  ecritures.forEach((e) => {
+  (liste || ecritures).forEach((e) => {
     const ref = e.piece || e.id;
     const lg = e.lignes || [];
     const d = lg.reduce((s, l) => s + (l.debit || 0), 0);
@@ -5124,7 +5698,8 @@ function analyserCoherence() {
 function renderControle() {
   const box = document.getElementById('controleContent');
   if (!box) return;
-  const an = analyserCoherence();
+  renderCloture();
+  const an = analyserCoherence().concat(analyserEtendue({ ecritures, plan: PC, stock: stockArticles, factures: facturesList, auj: new Date().toISOString().substring(0, 10) }));
   const ordre = { critique: 0, attention: 1, info: 2 };
   an.sort((a, b) => ordre[a.niveau] - ordre[b.niveau]);
   const nb = (n) => an.filter((a) => a.niveau === n).length;
@@ -8574,6 +9149,8 @@ async function autoComptabiliserFacture(fac) {
   const groupId = 'grp_fac_' + fac.id;
   const piece = fac.numero;
   const verrouilleeParScan = fac.origine === 'scan_ia';
+  if (ecritures.some((e) => e.groupId === groupId)) { console.warn('[COMEO] Facture ' + piece + ' déjà comptabilisée — écriture non dupliquée.'); return; }
+  if (Math.abs((fac.ht || 0) + (fac.tva || 0) - (fac.ttc || 0)) >= 0.01) { toast('Facture ' + piece + ' non comptabilisée : HT + TVA ≠ TTC. Corrigez la facture.', 'error'); return; }
   // Écriture VE — Constatation vente
   const ecr = {
     id: Date.now(),
@@ -8604,13 +9181,13 @@ async function autoComptabiliserFacture(fac) {
 async function marquerPayee(id) {
   const fac = facturesList.find((f) => f.id === id);
   if (!fac) return;
+  const reste = Math.round(((fac.ttc || 0) - (fac.montantPaye || 0)) * 100) / 100;
+  if (fac.statut === 'payee' || reste <= 0) { toast('Facture déjà soldée — aucune écriture générée.', 'info'); return; }
+  const prevStatut = fac.statut, prevPaye = fac.montantPaye;
   fac.statut = 'payee';
   fac.montantPaye = fac.ttc;
   try {
-    if (fac._docId) {
-      await window._fbSetDoc(window._fbDoc(window._db, 'profiles', currentProfile.id, 'factures', fac._docId), fac);
-    }
-    // Écriture BQ — Encaissement
+    // Écriture BQ — Encaissement du reste à payer (créée AVANT de figer le statut de la facture)
     const ecr = {
       id: Date.now(),
       date: new Date().toISOString().split('T')[0],
@@ -8623,18 +9200,19 @@ async function marquerPayee(id) {
       groupIdx: 0,
       createdAt: new Date().toISOString(),
       lignes: sortLignesDebitAvantCredit([
-        { compte: '521', libelle: 'Banques locales', debit: fac.ttc, credit: 0 },
-        { compte: '411', libelle: `Client ${fac.clientNom}`, debit: 0, credit: fac.ttc },
+        { compte: '521', libelle: 'Banques locales', debit: reste, credit: 0 },
+        { compte: '411', libelle: `Client ${fac.clientNom}`, debit: 0, credit: reste },
       ]),
     };
     const docId = await saveEcritureToFirestore(ecr);
-    if (docId) {
-      ecritures.push(ecr);
-      updateStats();
-    }
+    if (!docId) { fac.statut = prevStatut; fac.montantPaye = prevPaye; renderFactures(); toast('Écriture bancaire non enregistrée : la facture reste impayée.', 'error'); return; }
+    ecritures.push(ecr);
+    updateStats();
+    if (fac._docId) await window._fbSetDoc(window._fbDoc(window._db, 'profiles', currentProfile.id, 'factures', fac._docId), fac);
     renderFactures();
-    toast(`✓ Facture ${fac.numero} marquée payée + écriture banque générée`, 'success');
+    toast(`✓ Facture ${fac.numero} marquée payée + écriture banque générée (${fn(reste)})`, 'success');
   } catch (e) {
+    fac.statut = prevStatut; fac.montantPaye = prevPaye;
     toast('Erreur : ' + e.message, 'error');
   }
 }
@@ -11038,6 +11616,13 @@ async function saveStock() {
   const seuil = parseFloat(document.getElementById('stock-seuil').value) || 5;
   const methodeChoisie = document.getElementById('stock-methode')?.value || 'cmup';
   if (!article || !qte || !date) { toast('Remplissez tous les champs', 'error'); return; }
+  if (qte < 0 || pu < 0) { toast('Quantité et prix doivent être positifs', 'error'); return; }
+  if (isPeriodeLocked(date)) { toast('🔒 Période verrouillée — mouvement impossible.', 'error'); return; }
+  const _exist = stockArticles.find(a => a.nom.toLowerCase() === article.toLowerCase());
+  if (type === 'sortie' && (!_exist || qte > (_exist.qteActuelle || 0) + 0.0001)) {
+    toast(`Sortie refusée : stock disponible ${_exist ? _exist.qteActuelle : 0} (demandé ${qte}). Enregistrez d'abord l'entrée ou corrigez la quantité.`, 'error');
+    return;
+  }
   // Trouver ou créer l'article
   let art = stockArticles.find(a => a.nom.toLowerCase() === article.toLowerCase());
   if (!art) {
@@ -11046,7 +11631,8 @@ async function saveStock() {
   }
   if (!art.methode) art.methode = 'cmup';
   if (!art.lots) art.lots = [];
-  const mvt = { type, qte, pu, date, valeur: qte * pu };
+  const mvt = { id: Date.now() + Math.floor(Math.random() * 1000), type, qte, pu, date, valeur: qte * pu, user: currentProfile?.email || currentProfile?.company || 'Inconnu', ts: new Date().toISOString() };
+  const qteAvant = art.qteActuelle || 0;
   art.mouvements.push(mvt);
 
   if (art.methode === 'fifo') {
@@ -11078,7 +11664,7 @@ async function saveStock() {
       const ancVal = art.qteActuelle * art.cmup;
       const nvVal = qte * pu;
       art.qteActuelle += qte;
-      art.cmup = art.qteActuelle > 0 ? Math.round((ancVal + nvVal) / art.qteActuelle) : pu;
+      art.cmup = art.qteActuelle > 0 ? Math.round(((ancVal + nvVal) / art.qteActuelle) * 100) / 100 : pu;
     } else if (type === 'sortie') {
       mvt.coutSorti = qte * art.cmup;
       art.qteActuelle = Math.max(0, art.qteActuelle - qte);
@@ -11086,13 +11672,15 @@ async function saveStock() {
       art.qteActuelle = qte; // inventaire
     }
   }
-  art.seuil = seuil;
+  if (type === 'inventaire') { mvt.qteTheorique = qteAvant; mvt.ecart = Math.round((qte - qteAvant) * 1000) / 1000; }
+  if (document.getElementById('stock-seuil').value !== '' || art.seuil == null) art.seuil = seuil;
   if (window._fbReady && currentProfile?.id) {
-    try { await window._fbSetDoc(window._fbDoc(window._db, 'profiles', currentProfile.id, 'stocks', String(art.id)), art); } catch(e) {}
+    try { await window._fbSetDoc(window._fbDoc(window._db, 'profiles', currentProfile.id, 'stocks', String(art.id)), art); } catch(e) { toast('⚠ Mouvement appliqué localement mais NON sauvegardé : ' + e.message, 'error'); }
   }
   document.getElementById('stockModal').style.display = 'none';
   toast(`✓ Mouvement stock "${article}" enregistré (méthode ${art.methode === 'fifo' ? 'FIFO/PEPS' : 'CMUP'})`, 'success');
   renderStocks();
+  stockPilotageRender();
 }
 
 // Valeur comptable actuelle d'un article, quelle que soit sa méthode de valorisation
@@ -11276,7 +11864,12 @@ async function gcMouvementStock(nom, type, qte, pu, date) {
     stockArticles.push(art);
   }
   if (!art.lots) art.lots = [];
-  const mvt = { type, qte, pu, date, valeur: qte * pu, source: 'gestcom' };
+  const mvt = { id: Date.now() + Math.floor(Math.random() * 1000), type, qte, pu, date, valeur: qte * pu, source: 'gestcom', user: currentProfile?.email || currentProfile?.company || 'Inconnu', ts: new Date().toISOString() };
+  const qteAvant = art.qteActuelle || 0;
+  if (type === 'sortie' && qte > qteAvant + 0.0001) {
+    mvt.alerte = 'stock_insuffisant'; mvt.qteNonCouverte = Math.round((qte - qteAvant) * 1000) / 1000;
+    toast(`⚠ Sortie « ${nom} » supérieure au stock disponible (${qteAvant}) : l'écart est enregistré et signalé au contrôle de cohérence.`, 'error');
+  }
   art.mouvements.push(mvt);
   if (art.methode === 'fifo') {
     if (type === 'entree') { art.lots.push({ qte, pu }); art.qteActuelle += qte; }
@@ -11293,15 +11886,16 @@ async function gcMouvementStock(nom, type, qte, pu, date) {
   } else if (type === 'entree') {
     const anc = art.qteActuelle * art.cmup;
     art.qteActuelle += qte;
-    art.cmup = art.qteActuelle > 0 ? Math.round((anc + qte * pu) / art.qteActuelle) : pu;
+    art.cmup = art.qteActuelle > 0 ? Math.round(((anc + qte * pu) / art.qteActuelle) * 100) / 100 : pu;
   } else if (type === 'sortie') { mvt.coutSorti = qte * art.cmup; art.qteActuelle = Math.max(0, art.qteActuelle - qte); }
   else art.qteActuelle = qte;
+  if (type === 'inventaire') { mvt.qteTheorique = qteAvant; mvt.ecart = Math.round((qte - qteAvant) * 1000) / 1000; }
   await gcPersistStock(art);
   return mvt;
 }
 async function gcPersistStock(art) {
   if (window._fbReady && currentProfile?.id) {
-    try { await window._fbSetDoc(window._fbDoc(window._db, 'profiles', currentProfile.id, 'stocks', String(art.id)), art); } catch (e) {}
+    try { await window._fbSetDoc(window._fbDoc(window._db, 'profiles', currentProfile.id, 'stocks', String(art.id)), art); } catch (e) { toast('⚠ Stock modifié localement mais NON sauvegardé : ' + e.message, 'error'); }
   }
 }
 
