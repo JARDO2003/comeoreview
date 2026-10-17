@@ -1059,6 +1059,28 @@ select.af-input option { color:var(--tone-1a1408); background:var(--surface); pa
 
 /* EMPTY */
 @media (max-width:640px) { #view-saisie .ij-row { grid-template-columns:1fr 1fr !important; } #view-saisie .ij-row select { grid-column:1/-1; } }
+.mc-retour { display:none; }
+/* Messagerie inter-entreprises */
+.mc-wrap { display:grid; grid-template-columns:320px 1fr; gap:12px; height:70vh; min-height:420px; }
+.mc-side { overflow-y:auto; border:1px solid rgba(127,127,127,.3); border-radius:10px; padding:10px; }
+.mc-main { display:flex; flex-direction:column; border:1px solid rgba(127,127,127,.3); border-radius:10px; min-width:0; }
+.mc-head { display:flex; align-items:center; gap:8px; padding:10px 12px; border-bottom:1px solid rgba(127,127,127,.3); flex-wrap:wrap; }
+.mc-msgs { flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:8px; }
+.mc-compose { display:flex; gap:8px; padding:8px; border-top:1px solid rgba(127,127,127,.3); }
+.mc-compose textarea { flex:1; resize:none; }
+.mc-conv { padding:8px 10px; border-radius:8px; cursor:pointer; margin-bottom:4px; }
+.mc-conv:hover, .mc-conv.actif { background:rgba(127,127,127,.15); }
+.mc-conv.nonlu .mc-conv-t { font-weight:700; }
+.mc-conv.nonlu::after { content:'●'; color:#3b82f6; float:right; margin-top:-34px; }
+.mc-conv-t { font-size:13px; } .mc-conv-s { font-size:11.5px; color:var(--faint); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.mc-bulle { max-width:78%; padding:8px 10px; border-radius:10px; font-size:13px; }
+.mc-bulle.moi { align-self:flex-end; background:rgba(59,130,246,.2); }
+.mc-bulle.autre { align-self:flex-start; background:rgba(127,127,127,.18); }
+.mc-nom { font-size:11px; font-weight:700; color:#3b82f6; }
+.mc-texte { white-space:pre-wrap; overflow-wrap:anywhere; }
+.mc-citation { font-size:11.5px; border-left:3px solid #3b82f6; padding:2px 8px; margin-bottom:4px; color:var(--faint); background:rgba(127,127,127,.1); }
+.mc-meta { font-size:10.5px; color:var(--faint); margin-top:3px; }
+@media (max-width:760px) { .mc-retour { display:inline-block; } .mc-wrap { grid-template-columns:1fr; height:auto; } .mc-wrap .mc-main { display:none; min-height:60vh; } .mc-wrap.mc-ouvert .mc-side { display:none; } .mc-wrap.mc-ouvert .mc-main { display:flex; } }
 /* Plan comptable perso */
 .pc-badge { font-size:9.5px; padding:1px 6px; border-radius:999px; border:1px solid #3b82f6; color:#3b82f6; margin-left:auto; }
 .pc-mini { background:none; border:none; cursor:pointer; color:var(--faint); font-size:12px; padding:0 4px; }
