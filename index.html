@@ -418,6 +418,7 @@ comeoChargerLibResiliente(
   <div class="nav-item" onclick="navigate('controle');closeMobileSidebar()"><span class="nav-icon">🛡</span> Contrôle de cohérence</div>
   <div class="nav-item" onclick="navigate('taxes');closeMobileSidebar()"><span class="nav-icon">📋</span> Taxes & Déclarations</div>
   <div class="nav-item" onclick="navigate('appels');closeMobileSidebar()"><span class="nav-icon">💬</span> Messagerie</div>
+  <div class="nav-item" onclick="navigate('msgco');closeMobileSidebar()"><span class="nav-icon">🏢</span> Messagerie inter-entreprises <span id="mc-nav-badge" class="pc-badge" style="display:none"></span></div>
 </div>
 <div class="sb-section">
   <div class="sb-title">Référentiel</div>
@@ -1352,6 +1353,7 @@ comeoChargerLibResiliente(
         <div class="kpi"><div class="kpi-label">Alertes stock bas</div><div class="kpi-value" id="stock-kpi-alertes" style="color:var(--rust)">0</div><div class="kpi-sub">sous seuil</div></div>
         <div class="kpi"><div class="kpi-label">Mouvements (mois)</div><div class="kpi-value" id="stock-kpi-mvt" style="color:var(--blue)">0</div><div class="kpi-sub">entrées+sorties</div></div>
       </div>
+      <div class="card" id="stockPilotage" style="margin-bottom:16px"></div>
       <div class="card" id="stockContent">
         <div class="empty-state"><div class="icon">📦</div><p>Aucun article en stock. Ajoutez un mouvement pour commencer.</p></div>
       </div>
@@ -1652,6 +1654,12 @@ comeoChargerLibResiliente(
         <div class="ph-actions"><button class="btn btn-sm-wire" onclick="renderControle()">↻ Relancer l'analyse</button></div>
       </div>
       <div id="controleContent"></div>
+      <div id="clotureContent" style="margin-top:24px"></div>
+    </div>
+
+    <div class="view" id="view-msgco">
+      <div class="ph"><div><h1>Messagerie inter-entreprises</h1><p>Identité vérifiée par e-mail · conversations privées et groupes · statuts de lecture</p></div></div>
+      <div id="msgcoContent"></div>
     </div>
 
     <div class="view" id="view-taxes">
